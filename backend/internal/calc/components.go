@@ -31,7 +31,18 @@ const (
 	MPctOf     = "pct_of"     // % of another component (Of)
 	MRemainder = "remainder"  // the balancing figure
 	MLegacyVar = "legacy_var" // migration 014's variable: % of gross accrued and paid every cycle (automatic); kept for safety, unused since 017
+	// MPerEmp is a fixed ₹ a month entered on each employee (Input.EmpAmts by the component's code; employee_pay.comp_amts),
+	// 0 for someone with none: the "Reimbursement" component (owner, 20 Nov 2026). It is part of the fixed gross, so the
+	// balancing component (Special allowance) gets less and the gross stays as entered.
+	MPerEmp = "per_emp"
 )
+
+// ReimbCode is the code of the per-employee "Reimbursement" component every structure carries (migration 024).
+const ReimbCode = "reimb"
+
+// ReimbComponent is the fixed "Reimbursement" component: a ₹ amount entered per employee, part of the fixed gross,
+// taxable, outside the PF, ESI and bonus wages, shown on the payslip.
+var ReimbComponent = Component{Code: ReimbCode, Name: "Reimbursement", Kind: CompFixed, Side: SideEarn, Method: MPerEmp, Taxable: true, Payslip: true}
 
 // Component roles the statutory rules read: basic and da make the labour-code wage and the Basic that PF admin,
 // EDLI, gratuity and PL encashment use; hra is shown as HRA.
@@ -82,6 +93,7 @@ func LegacyComponents(S Structure) []Component {
 	return []Component{
 		{Code: "basic", Name: "Basic + DA", Kind: CompFixed, Side: SideEarn, Role: RoleBasic, Method: MPctGross, Value: S.BasicPct, Taxable: true, PF: true, ESI: true, Bonus: true, Payslip: true},
 		{Code: "hra", Name: "HRA", Kind: CompFixed, Side: SideEarn, Role: RoleHRA, Method: MPctBasic, Value: S.HraPct, Taxable: true, ESI: true, Payslip: true},
+		ReimbComponent, // 0 unless the person has an amount (migration 024), so the result is as before
 		{Code: "sa", Name: "Special allowance", Kind: CompFixed, Side: SideEarn, Method: MRemainder, Taxable: true, PF: S.PfWage == "basicSa", ESI: true, Payslip: true},
 		{Code: "var", Name: "Variable pay", Kind: CompVariable, Side: SideEarn, Method: MLegacyVar, Value: S.VarPct, Cycle: S.VarCycle, Taxable: true, Payslip: true},
 	}
@@ -96,7 +108,7 @@ func TargetComponents(S Structure) []Component {
 	if cyc != 3 && cyc != 6 && cyc != 12 {
 		cyc = 1
 	}
-	l[3] = Component{Code: "var", Name: "Variable pay", Kind: CompVariable, Side: SideEarn, Method: MRemainder, Cycle: cyc, Taxable: true, Payslip: true}
+	l[len(l)-1] = Component{Code: "var", Name: "Variable pay", Kind: CompVariable, Side: SideEarn, Method: MRemainder, Cycle: cyc, Taxable: true, Payslip: true}
 	return l
 }
 
@@ -152,9 +164,35 @@ func ymIndex(ym string) int {
 	return y*12 + m - 1
 }
 
+// WithReimb is comps with the Reimbursement component placed before the fixed balancing component (or after the
+// fixed earnings) when it has no per-employee component yet; ok is false when nothing was added.
+func WithReimb(comps []Component) ([]Component, bool) {
+	at := -1
+	for i, c := range comps {
+		if c.Method == MPerEmp || c.Code == ReimbCode {
+			return comps, false
+		}
+		if at < 0 && c.Kind == CompFixed && c.Side == SideEarn && c.Method == MRemainder {
+			at = i
+		}
+	}
+	if at < 0 {
+		at = 0
+		for i, c := range comps {
+			if c.Kind == CompFixed && c.Side == SideEarn {
+				at = i + 1
+			}
+		}
+	}
+	out := append([]Component{}, comps[:at]...)
+	out = append(out, ReimbComponent)
+	return append(out, comps[at:]...), true
+}
+
 // head is what the components (or the classic rates) give the rest of the calculation.
 type head struct {
 	basic, hra, sa      float64
+	reimb               float64 // per-employee fixed amounts (MPerEmp earnings)
 	pfWage, bonusBase   float64
 	nonESI, nonTax, ded float64
 	variable, varPay    float64
@@ -260,6 +298,8 @@ func compHead(p Input, S Structure, T TypeRules, gross, full float64, jm int) he
 			switch c.Method {
 			case MAmount:
 				v = c.Value * scale
+			case MPerEmp:
+				v = p.EmpAmts[c.Code] * scale
 			case MPctCTC:
 				v = ctc * c.Value / 100 * scale
 			case MPctGross:
@@ -328,11 +368,13 @@ func compHead(p Input, S Structure, T TypeRules, gross, full float64, jm int) he
 			}
 			h.ded += v
 		} else {
-			switch c.Role {
-			case RoleBasic, RoleDA:
+			switch {
+			case c.Role == RoleBasic || c.Role == RoleDA:
 				h.basic += v
-			case RoleHRA:
+			case c.Role == RoleHRA:
 				h.hra += v
+			case c.Method == MPerEmp:
+				h.reimb += v
 			default:
 				h.sa += v
 			}
@@ -349,7 +391,7 @@ func compHead(p Input, S Structure, T TypeRules, gross, full float64, jm int) he
 				h.nonTax += v
 			}
 		}
-		if designed {
+		if designed && (c.Method != MPerEmp || v != 0) { // a per-employee amount of 0 is no line (pay as before)
 			h.lines = append(h.lines, CompLine{Code: c.Code, Name: c.Name, Kind: CompFixed, Side: c.Side, Amount: v, Taxable: c.Taxable, Payslip: c.Payslip})
 		}
 	}

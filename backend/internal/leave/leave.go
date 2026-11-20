@@ -46,6 +46,59 @@ type LV struct {
 	Neg     float64 `json:"neg"`
 	PlEnc   bool    `json:"plEnc"`
 	CoValid int     `json:"coValid"` // days a comp-off credit stays usable; 0 = 90
+	// Short leave (owner, 20 Nov 2026): a window of up to ShortH hours on one day, ShortN times a month; no balance.
+	// Zero values read as the defaults (2 a month, 2 hours each); ShortOff switches it off for the plan.
+	ShortOff bool    `json:"shortOff,omitempty"`
+	ShortN   int     `json:"shortN,omitempty"`
+	ShortH   float64 `json:"shortH,omitempty"`
+}
+
+// ShortLeaveType is the name short leave requests carry (payload.ltype); it is not a leave type with a balance.
+const ShortLeaveType = "Short leave"
+
+// Short is the plan's short leave rule: allowed, how many a month and the most hours each.
+func (lv LV) Short() (on bool, perMonth int, maxH float64) {
+	perMonth, maxH = lv.ShortN, lv.ShortH
+	if perMonth <= 0 {
+		perMonth = 2
+	}
+	if maxH <= 0 {
+		maxH = 2
+	}
+	return !lv.ShortOff, perMonth, maxH
+}
+
+// ShortErrors are the short leave rules for a window from–to (HH:MM, minutes after midnight) when taken already holds
+// the short leaves pending or approved in the same month.
+func ShortErrors(lv LV, from, to int, taken int) []string {
+	on, n, maxH := lv.Short()
+	if !on {
+		return []string{"Short leave is not allowed in this leave plan"}
+	}
+	er := []string{}
+	switch {
+	case to <= from:
+		er = append(er, "The to-time must be after the from-time")
+	case float64(to-from) > maxH*60+1e-9:
+		er = append(er, fmt.Sprintf("Short leave is at most %s at a time. This request is %s", hoursWord(maxH*60), hoursWord(float64(to-from))))
+	}
+	if taken >= n {
+		er = append(er, fmt.Sprintf("Short leave is allowed %d time%s a month and %d %s already taken or waiting this month", n, plural(n), taken,
+			map[bool]string{true: "is", false: "are"}[taken == 1]))
+	}
+	return er
+}
+
+// hoursWord is minutes as people say them: "2 hours", "1 hour 30 minutes".
+func hoursWord(m float64) string {
+	h, mm := int(m)/60, int(m)%60
+	switch {
+	case mm == 0:
+		return fmt.Sprintf("%d hour%s", h, plural(h))
+	case h == 0:
+		return fmt.Sprintf("%d minutes", mm)
+	}
+	return fmt.Sprintf("%d hour%s %d minutes", h, plural(h), mm)
 }
 
 type LRX struct {

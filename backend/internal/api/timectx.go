@@ -457,7 +457,8 @@ type rosterCell struct {
 type leaveSpan struct {
 	ID, Type, From, To, Status string
 	Days                       float64
-	Half                       bool // a half-day leave (one date)
+	Half                       bool   // a half-day leave (one date)
+	HalfOf                     string // which half is leave: first or second
 	Cov                        map[string]bool
 }
 
@@ -473,13 +474,21 @@ type monthData struct {
 	leaves map[string][]leaveSpan // approved and pending
 	decide map[string]map[string]decision
 	regs   map[string]map[string]string // pending regularization request id by date
+	shorts map[string]map[string][]shortSpan
 	today  string
+}
+
+// shortSpan is a short leave on a date (short_leave.go): its window in minutes and its status (Approved or Pending).
+type shortSpan struct {
+	ID, Status string
+	attend.Window
 }
 
 // loadMonth loads roster, punches (from the day before from), leave and decisions for the employees.
 func loadMonth(ctx context.Context, q store.Q, ts *timeSet, ids []string, from, to string) (*monthData, error) {
 	m := &monthData{ts: ts, roster: map[string]map[string]rosterCell{}, raw: map[string]map[string]*attend.Raw{},
-		leaves: map[string][]leaveSpan{}, decide: map[string]map[string]decision{}, regs: map[string]map[string]string{}, today: today()}
+		leaves: map[string][]leaveSpan{}, decide: map[string]map[string]decision{}, regs: map[string]map[string]string{}, shorts: map[string]map[string][]shortSpan{},
+		today: today()}
 	if ids == nil {
 		ids = []string{}
 	}
@@ -511,10 +520,12 @@ func loadMonth(ctx context.Context, q store.Q, ts *timeSet, ids []string, from, 
 		m.raw[id][str(r["date"])] = &attend.Raw{In: str(r["in_time"]), Out: str(r["out_time"]), OutDate: str(r["out_date"]), Src: str(r["source"])}
 	}
 	// Leave approved or waiting that touches the range; "cov" lists the dates a request counts (none: every date).
+	// A short leave (payload.short) is a window of one day, not a day of leave: loaded apart below.
 	rows, err = q.C("approval_request").Find(ctx, bson.D{{Key: "wf", Value: "leave"}, {Key: "status", Value: bson.D{{Key: "$in", Value: bson.A{"Approved", "Pending"}}}},
-		who, {Key: "payload.to", Value: bson.D{{Key: "$gte", Value: pre}}}, {Key: "payload.from", Value: bson.D{{Key: "$lte", Value: to}}}},
+		who, {Key: "payload.to", Value: bson.D{{Key: "$gte", Value: pre}}}, {Key: "payload.from", Value: bson.D{{Key: "$lte", Value: to}}},
+		{Key: "payload.short", Value: bson.D{{Key: "$ne", Value: true}}}},
 		options.Find().SetProjection(bson.D{{Key: "employee_id", Value: 1}, {Key: "status", Value: 1}, {Key: "payload.ltype", Value: 1}, {Key: "payload.from", Value: 1},
-			{Key: "payload.to", Value: 1}, {Key: "payload.cov", Value: 1}, {Key: "payload.half", Value: 1}, {Key: "facts.days", Value: 1}}))
+			{Key: "payload.to", Value: 1}, {Key: "payload.cov", Value: 1}, {Key: "payload.half", Value: 1}, {Key: "payload.halfOf", Value: 1}, {Key: "facts.days", Value: 1}}))
 	if err != nil {
 		return nil, err
 	}
@@ -522,7 +533,7 @@ func loadMonth(ctx context.Context, q store.Q, ts *timeSet, ids []string, from, 
 		pl, _ := r["payload"].(map[string]any)
 		fa, _ := r["facts"].(map[string]any)
 		l := leaveSpan{ID: str(r["id"]), Type: str(pl["ltype"]), From: str(pl["from"]), To: str(pl["to"]), Status: str(r["status"]), Days: timectxNum(fa["days"]),
-			Half: pl["half"] == true}
+			Half: pl["half"] == true, HalfOf: str(pl["halfOf"])}
 		if cov := timectxStrs(pl["cov"]); len(cov) > 0 {
 			l.Cov = map[string]bool{}
 			for _, d := range cov {
@@ -531,6 +542,9 @@ func loadMonth(ctx context.Context, q store.Q, ts *timeSet, ids []string, from, 
 		}
 		id := str(r["employee_id"])
 		m.leaves[id] = append(m.leaves[id], l)
+	}
+	if err := m.loadShorts(ctx, q, who, pre, to); err != nil {
+		return nil, err
 	}
 	rows, err = q.C("deviation_decision").Find(ctx, bson.D{who, {Key: "date", Value: timectxBetween(from, to)}})
 	if err != nil {
@@ -601,12 +615,17 @@ func (m *monthData) planned(e *emp, p *workPolicy, d string) attend.Plan {
 	if l := m.leaveOn(e, d, false); l != nil && !m.unpaid(l.Type) {
 		return attend.Plan{Code: "L"}
 	}
+	return m.shiftPlan(e, p, d)
+}
+
+// shiftPlan is the day's roster plan whatever leave there is, with the approved short leave windows.
+func (m *monthData) shiftPlan(e *emp, p *workPolicy, d string) attend.Plan {
 	c := m.rosterCode(e, p, d)
 	if rosterCodes[c] { // a week off, holiday or leave, even if an old shift took the same code (TIME-042)
 		return attend.Plan{Code: c}
 	}
 	if s, r, ok := m.ts.shiftOn(c, d); ok {
-		return attend.Plan{Code: c, Shift: &s, Rules: r}
+		return attend.Plan{Code: c, Shift: &s, Rules: r, Short: m.shortWindows(e.ID, d)}
 	}
 	return attend.Plan{Code: c}
 }
@@ -652,9 +671,10 @@ func (m *monthData) span(e *emp, p *workPolicy, from, to string) attend.Month {
 			in.After = true
 		}
 		if l := m.leaveOn(e, d, false); l != nil {
-			in.Leave, in.Unpaid, in.Half = l.Type, m.unpaid(l.Type), l.Half
+			in.Leave, in.Unpaid, in.Half, in.HalfOf = l.Type, m.unpaid(l.Type), l.Half, l.HalfOf
 			if l.Half && !in.Before && !in.After {
-				in.Rec = m.rec(e, p, d) // the other half: worked if anything is punched (RUN-15)
+				in.Rec = m.rec(e, p, d) // the other half: worked when punched, by the shift's half-day rule (RUN-15)
+				in.Plan = m.shiftPlan(e, p, d)
 			}
 		}
 		if !in.Before && !in.After && in.Leave == "" && !in.Future {

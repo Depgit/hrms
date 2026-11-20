@@ -9,7 +9,7 @@ import PersonPicker from '../components/PersonPicker';
  *  person by default; "Split by days stayed" in Settings). The split is the company's own cost calculation only: it is
  *  never part of payroll, the payslip or CTC. GET/PUT /api/hst/… (hst.go). */
 
-type T = 'board' | 'units' | 'stays' | 'split' | 'settings';
+type T = 'board' | 'units' | 'stays' | 'waiting' | 'split' | 'settings';
 type Item = { label: string; amount: number };
 type Setup = {
   settings: { byDays: boolean; leaseDays: number; incDays: number; boardDays: number };
@@ -28,7 +28,7 @@ export default function Accommodation() {
   const setup = useLoad(() => api<Setup>('/hst/setup'), []);
   const s = setup.data;
   const tabs: [T, string][] = [['board', 'Occupancy board'], ['units', 'Units and leases'],
-    ...(s && s.can.allot > 0 ? [['stays', 'Check-in and check-out']] as [T, string][] : []),
+    ...(s && s.can.allot > 0 ? [['stays', 'Check-in and check-out'], ['waiting', 'Waiting for a bed']] as [T, string][] : []),
     ...(s && s.can.setup > 0 ? [['split', 'Month cost split'], ['settings', 'Settings']] as [T, string][] : [])];
   const t = (tabs.find(([k]) => k === qs.get('tab'))?.[0] ?? 'board') as T;
   const unit = qs.get('unit') || '';
@@ -40,10 +40,37 @@ export default function Accommodation() {
     {t === 'board' ? <Board onUnit={openUnit} />
       : t === 'units' ? <Units s={s} onUnit={openUnit} />
       : t === 'stays' ? <Stays s={s} />
+      : t === 'waiting' ? <Waiting />
       : t === 'split' ? <Split />
       : <Settings s={s} onSaved={setup.reload} />}
     {unit && <UnitDrawer id={unit} s={s} onClose={() => setQs({ tab: t })} />}
   </>;
+}
+
+// ---------- Waiting for a bed (hst_auto.go) ----------
+
+/** Joiners whose offer had company accommodation but no bed was free when they joined. The next free bed in the
+ *  cluster is given automatically (the 5-minute sweep); a check-in by hand also takes them off the list. */
+function Waiting() {
+  const d = useLoad(() => api('/hst/waiting'), []);
+  const x = d.data;
+  const drop = async (id: string) => {
+    const reason = window.prompt('Why does this person no longer need a bed?');
+    if (!reason?.trim()) return;
+    try { await api(`/hst/waiting/${encodeURIComponent(id)}/drop`, { body: { reason } }); toast('Taken off the list'); d.reload(); } catch (e: any) { toast(e.message); }
+  };
+  if (!x) return <Loading error={d.error} />;
+  return <div className="card">
+    <h3>Waiting for a bed</h3>
+    <p className="mute" style={{ fontSize: 12.5 }}>Joiners tagged for company accommodation on the offer when no bed was free. They get the next free bed in their cluster by themselves; you can also check them in by hand under Check-in and check-out.</p>
+    {x.rows.length === 0 ? <p className="mute" style={{ fontSize: 12.5 }}>Nobody is waiting.</p>
+      : <div className="tw"><table><thead><tr><th>Employee</th><th>Gender</th><th>Property</th><th>Cluster</th><th>Waiting since</th><th></th></tr></thead><tbody>
+        {x.rows.map((r: any) => <tr key={r.employeeId}>
+          <td><b>{r.name}</b><div className="mute mono" style={{ fontSize: 12 }}>{r.employeeId}</div></td><td>{r.gender || '—'}</td><td>{r.location}</td>
+          <td>{r.cluster}{r.city ? `, ${r.city}` : ''}</td><td>{fmtD(r.since)}</td>
+          <td>{x.canEdit && <button className="btn sm" onClick={() => drop(r.employeeId)}>No longer needed</button>}</td>
+        </tr>)}</tbody></table></div>}
+  </div>;
 }
 
 // ---------- Occupancy board ----------

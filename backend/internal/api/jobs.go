@@ -65,8 +65,8 @@ func (s *Server) runMaintenance(ctx context.Context) error {
 	if _, err := s.PfExemptSweep(ctx); err != nil { // PF exemption of joiners (pfuan.go)
 		return fmt.Errorf("PF exemption: %w", err)
 	}
-	s.costSweepLogged(ctx) // cost snapshots of published months not frozen yet (cost.go)
-	s.hstSweepLogged(ctx)  // accommodation reminders: lease end, rent increase, check-out after exit or transfer (hst.go)
+	s.costSweepLogged(ctx)    // cost snapshots of published months not frozen yet (cost.go)
+	s.hstSweepLogged(ctx)     // accommodation reminders: lease end, rent increase, check-out after exit or transfer (hst.go)
 	s.hstWaitSweepLogged(ctx) // joiners waiting for a bed get one when it frees up (hst_auto.go)
 	return nil
 }

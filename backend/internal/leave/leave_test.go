@@ -2,6 +2,7 @@ package leave
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -101,5 +102,25 @@ func TestWindow(t *testing.T) {
 	}
 	if er := WindowErrors(pl, "Privilege leave", "2026-11-10", "2026-11-09", 1); len(er) != 1 {
 		t.Error("no back-dating", er)
+	}
+}
+
+// Short leave (owner, 20 Nov 2026): at most the plan's hours (default 2) and the plan's number a month (default 2).
+func TestShortLeaveRules(t *testing.T) {
+	lv := LV{}
+	if er := ShortErrors(lv, 9*60, 11*60, 1); len(er) != 0 {
+		t.Fatalf("2 hours, second this month: %v", er)
+	}
+	if er := ShortErrors(lv, 9*60, 11*60+15, 0); len(er) != 1 || !strings.Contains(er[0], "at most 2 hours") {
+		t.Fatalf("2h15 allowed: %v", er)
+	}
+	if er := ShortErrors(lv, 16*60, 17*60, 2); len(er) != 1 || !strings.Contains(er[0], "2 times a month") {
+		t.Fatalf("third this month allowed: %v", er)
+	}
+	if er := ShortErrors(LV{ShortN: 3, ShortH: 3}, 9*60, 12*60, 2); len(er) != 0 {
+		t.Fatalf("plan of 3 a month, 3 hours: %v", er)
+	}
+	if er := ShortErrors(LV{ShortOff: true}, 9*60, 10*60, 0); len(er) != 1 {
+		t.Fatalf("switched off: %v", er)
 	}
 }

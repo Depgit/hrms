@@ -4,7 +4,7 @@ import { api, fmtD, inr, uploadDoc, today } from '../api';
 import { useAuth } from '../auth';
 import { Chain, Field, Loading, Modal, Pill, toast, useLoad } from '../components/ui';
 import PersonPicker from '../components/PersonPicker';
-import { TeamCover, leaveCountLine } from './Approvals';
+import { SHORT, TeamCover, leaveCountLine, leavePayload, shortHrs } from './Approvals';
 import { TYPE_RULES } from './Compensation';
 import { MyNominations } from './Nominations';
 import { MyAttendance, MyDiscipline } from './MyTime';
@@ -91,8 +91,8 @@ function MyLeave({ e, bal, reloadBal, canLeave }: { e: any; bal: any; reloadBal:
         <div className="tw"><table>
           <thead><tr><th>Request</th><th>Leave</th><th>Dates</th><th className="num">Days</th><th>Status</th><th></th></tr></thead>
           <tbody>{mine?.map((r) => <tr key={r.id}>
-            <td className="mono">{r.id}</td><td>{r.payload.ltype}</td><td>{fmtD(r.payload.from)}{r.payload.to !== r.payload.from ? ` to ${fmtD(r.payload.to)}` : ''}</td>
-            <td className="num">{r.facts?.days}</td><td>{stPill(r.status)}{r.status === 'Pending' && r.waiting_on && <div className="mute" style={{ fontSize: 12 }}>Waiting for {r.waiting_on}{r.waiting_name ? ` (${r.waiting_name})` : ''}</div>}</td>
+            <td className="mono">{r.id}</td><td>{r.payload.ltype}{r.payload.half && r.payload.halfOf ? ` (${r.payload.halfOf} half)` : ''}</td><td>{fmtD(r.payload.from)}{r.payload.short ? `, ${r.payload.fromTime} to ${r.payload.toTime}` : r.payload.to !== r.payload.from ? ` to ${fmtD(r.payload.to)}` : ''}</td>
+            <td className="num">{r.payload.short ? shortHrs(r.payload) : r.facts?.days}</td><td>{stPill(r.status)}{r.status === 'Pending' && r.waiting_on && <div className="mute" style={{ fontSize: 12 }}>Waiting for {r.waiting_on}{r.waiting_name ? ` (${r.waiting_name})` : ''}</div>}</td>
             <td>{r.status === 'Pending' && <button className="btn sm" onClick={() => cancel(r.id, done, 'Request cancelled. The days are back in your balance')}>Cancel request</button>}</td>
           </tr>)}
             {mine && !mine.length && <tr><td colSpan={6} className="mute">No leave requests yet.</td></tr>}</tbody>
@@ -103,10 +103,11 @@ function MyLeave({ e, bal, reloadBal, canLeave }: { e: any; bal: any; reloadBal:
   );
 }
 
-/** The leave request dialog (prototype nrModal('leave')). */
+/** The leave request dialog (prototype nrModal('leave')). A short leave (part of a day, 20 Nov 2026) is chosen as the leave type
+ *  "Short leave" when the leave plan allows it: a date, a from-time and a to-time, no balance. */
 function LeaveDialog({ e, bal, onClose, onDone }: { e: any; bal: any; onClose: () => void; onDone: () => void }) {
-  const types: any[] = (bal?.types ?? []).filter((x: any) => x.applyBy !== 'hr');
-  const [p, setP] = useState<any>({ ltype: types[0]?.type ?? '', from: today(), to: today(), note: '', half: false, doc: '' });
+  const types: any[] = [...(bal?.types ?? []).filter((x: any) => x.applyBy !== 'hr'), ...(bal?.short ? [{ type: SHORT, short: true }] : [])];
+  const [p, setP] = useState<any>({ ltype: types[0]?.type ?? '', from: today(), to: today(), note: '', half: false, halfOf: 'first', doc: '', fromTime: '', toTime: '' });
   const [err, setErr] = useState<string[]>([]);
   const [sim, setSim] = useState<any>(null);
   const [simErr, setSimErr] = useState('');
@@ -115,19 +116,21 @@ function LeaveDialog({ e, bal, onClose, onDone }: { e: any; bal: any; onClose: (
   const onFrom = useLoad(() => (p.from ? api<any>(`/leave/balances/me?on=${p.from}`).catch(() => null) : Promise.resolve(null)), [p.from]);
   const curBal = (onFrom.data?.types ?? []).find((x: any) => x.type === cur?.type)?.balance ?? (onFrom.data ? undefined : cur?.balance);
   const [docName, setDocName] = useState('');
-  const to = p.half ? p.from : p.to || p.from;
+  const isShort = !!cur?.short;
+  const to = p.half || isShort ? p.from : p.to || p.from;
   const days = p.from && to >= p.from ? Math.round((new Date(to + 'T00:00:00').getTime() - new Date(p.from + 'T00:00:00').getTime()) / 864e5) + 1 : 0;
   // The route preview (prototype nrPrev): days counted, team cover and who approves, as the dates change.
   useEffect(() => {
     if (!cur || !days) { setSim(null); return; }
-    const t = setTimeout(() => api('/approvals/simulate', { body: { wf: 'leave', employeeId: e.id, payload: { ltype: cur.type, from: p.from, to, half: p.half || undefined } } })
+    if (isShort && (!p.fromTime || !p.toTime)) { setSim(null); return; }
+    const t = setTimeout(() => api('/approvals/simulate', { body: { wf: 'leave', employeeId: e.id, payload: leavePayload(cur, p, to) } })
       .then((x) => { setSim(x); setSimErr(''); }).catch((x) => { setSim(null); setSimErr(x.message); }), 250);
     return () => clearTimeout(t);
-  }, [cur?.type, p.from, to, p.half, days, e.id]);
+  }, [cur?.type, p.from, to, p.half, p.halfOf, p.fromTime, p.toTime, days, e.id]);
   const send = async () => {
     setErr([]);
     try {
-      const r = await api('/approvals', { body: { wf: 'leave', payload: { ltype: cur?.type, from: p.from, to, note: p.note, half: p.half || undefined, doc: p.doc || undefined } } });
+      const r = await api('/approvals', { body: { wf: 'leave', payload: { ...leavePayload(cur, p, to), note: p.note } } });
       toast(`${r.id} sent for approval`); onDone();
     } catch (x: any) { setErr((x.details as string[]) || [x.message]); }
   };
@@ -141,17 +144,21 @@ function LeaveDialog({ e, bal, onClose, onDone }: { e: any; bal: any; onClose: (
     <div style={{ marginTop: 12 }}><div className="form">
       <Field label="Employee"><PersonPicker label="Employee" people={[e]} value={e.id} onChange={() => {}} disabled /></Field>
       <Field label="Leave type"><select value={cur?.type ?? ''} onChange={(x) => { setP({ ...p, ltype: x.target.value, doc: '' }); setDocName(''); }}>{types.map((x) => <option key={x.type}>{x.type}</option>)}</select></Field>
-      <Field label="From"><input type="date" value={p.from} onChange={(x) => setP({ ...p, from: x.target.value, to: p.to < x.target.value ? x.target.value : p.to })} /></Field>
-      {!p.half && <Field label="To"><input type="date" value={p.to} onChange={(x) => setP({ ...p, to: x.target.value })} /></Field>}
+      <Field label={isShort ? 'Date' : 'From'}><input type="date" value={p.from} onChange={(x) => setP({ ...p, from: x.target.value, to: p.to < x.target.value ? x.target.value : p.to })} /></Field>
+      {!p.half && !isShort && <Field label="To"><input type="date" value={p.to} onChange={(x) => setP({ ...p, to: x.target.value })} /></Field>}
+      {isShort && <><Field label="From time"><input type="time" value={p.fromTime} onChange={(x) => setP({ ...p, fromTime: x.target.value })} /></Field>
+        <Field label="To time"><input type="time" value={p.toTime} onChange={(x) => setP({ ...p, toTime: x.target.value })} /></Field></>}
       <label className="field full"><span>Reason</span><input type="text" value={p.note} onChange={(x) => setP({ ...p, note: x.target.value })} /></label>
       {cur?.docAfter > 0 && <label className="field full"><span>{cur.docLabel || 'Document'} (needed when more than {cur.docAfter} day{cur.docAfter > 1 ? 's' : ''})</span>
         <input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={(x) => upload(x.target.files?.[0])} />{docName && <small className="mute">Attached: {docName}</small>}</label>}
     </div>
     {/* Half-day leave is a leave plan setting ("Half-day leave allowed"); kept below the prototype's fields. */}
-    {bal?.half && <label className="chkl" style={{ marginTop: 10 }}><input type="checkbox" checked={p.half} onChange={(x) => setP({ ...p, half: x.target.checked })} />Half day</label>}</div>
+    {bal?.half && !isShort && <div className="row" style={{ marginTop: 10, gap: 12 }}><label className="chkl"><input type="checkbox" checked={p.half} onChange={(x) => setP({ ...p, half: x.target.checked })} />Half day</label>
+      {p.half && <select value={p.halfOf} onChange={(x) => setP({ ...p, halfOf: x.target.value })}><option value="first">First half on leave</option><option value="second">Second half on leave</option></select>}</div>}
+    {isShort && <p className="mute" style={{ fontSize: 12.5, margin: '10px 0 0' }}>Up to {bal.short.maxHours} hours, {bal.short.perMonth} a month. No balance is used; once approved the time is not counted as late, early or short hours.</p>}</div>
     {cur && <div className="card" style={{ marginTop: 14 }}>
-      <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>{cur.type} balance on {fmtD(p.from || today())}: <b>{curBal ? curBal.bal : 'not applicable'}</b>{curBal ? ` (credited ${curBal.credit}, used ${curBal.used}, waiting ${curBal.pending || 0})` : ''}</p>
-      {sim?.days != null && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>{leaveCountLine(cur.type, sim.days, sim.offs ?? 0, sim.range ?? 0)}</p>}
+      {!isShort && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>{cur.type} balance on {fmtD(p.from || today())}: <b>{curBal ? curBal.bal : 'not applicable'}</b>{curBal ? ` (credited ${curBal.credit}, used ${curBal.used}, waiting ${curBal.pending || 0})` : ''}</p>}
+      {sim?.days != null && !isShort && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>{leaveCountLine(cur.type, sim.days, sim.offs ?? 0, sim.range ?? 0)}</p>}
       {sim?.team != null && <TeamCover from={p.from} to={to} teamOff={sim.teamOff} team={sim.team} location={sim.location} dept={sim.department} />}
       {sim && <><h3>Approval route</h3>
         {sim.chain.length ? <Chain steps={sim.chain} /> : <div className="mute" style={{ fontSize: 13 }}>No approver is needed. It is approved straight away.</div>}

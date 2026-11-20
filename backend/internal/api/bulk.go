@@ -155,9 +155,9 @@ var bulkTemplates = []*bulkTemplate{
 		lists: map[string]bulkList{"Reason": bulkReasons("Separation")}, row: bulkOff},
 	{Key: "sal", Name: "Salary breakup", Data: true,
 		Cols: []string{"Employee ID", "Monthly Gross", "Variable Pay %", "Variable Payout Cycle", "Meal Deduction", "Accommodation Deduction", "Salary Structure", "Structure Effective From", "Reason for change", "Effective From",
-			salTotalCol, salTargetCol, salModeCol},
-		Optional: []string{salTotalCol, salTargetCol, salModeCol},
-		Hint:     "Every changed row needs a Reason for change and an Effective From date. " + salCompHint + " A gross change applies from that date: a date after the 1st pays that month split by days (the old gross before it, the new one from it); a past month raises an arrear (or a recovery) for approval, a future month is scheduled. Download the current data first. The calculated columns in the download are for reference and are ignored on upload. Blank cells keep the current value. Variable pay applies to types that earn it; meal and accommodation deductions apply to permanent staff only.",
+			salTotalCol, salTargetCol, salModeCol, reimbCol},
+		Optional: []string{salTotalCol, salTargetCol, salModeCol, reimbCol},
+		Hint:     "Every changed row needs a Reason for change and an Effective From date. " + salCompHint + " A gross change applies from that date: a date after the 1st pays that month split by days (the old gross before it, the new one from it); a past month raises an arrear (or a recovery) for approval, a future month is scheduled. Download the current data first. The calculated columns in the download are for reference and are ignored on upload. Blank cells keep the current value. Variable pay applies to types that earn it; meal and accommodation deductions apply to permanent staff only. Reimbursement (₹) is the fixed Reimbursement a month inside the gross (Basic and HRA first, then the Reimbursement, the special allowance takes the rest); it cannot be more than what is left after Basic and HRA, and 0 removes it.",
 		allow:    func(c *Ctx) bool { return c.Level("bulk.update") >= 2 && c.Level("emp.salary") >= 2 },
 		lists: map[string]bulkList{"Variable Payout Cycle": bulkFixed("1", "3", "6", "12"), salModeCol: bulkFixed("%", "₹"), "Salary Structure": bulkActive("salary_structure", "name"),
 			"Reason for change": bulkReasons("Salary")},
@@ -375,7 +375,7 @@ func (s *Server) bulkCurrent(ctx context.Context, c *Ctx, t *bulkTemplate) ([]st
 			}
 			return []string{"Employee ID", "New Gross", "Effective From", "Name", "Grade", "City", "Current Gross"}, out, nil
 		}
-		cols := append(append([]string{}, t.Cols...), "Name", "Employment Type", "Grade", "City", "Location", "Structure now", "Basic", "HRA", "Special Allowance", "Bonus",
+		cols := append(append([]string{}, t.Cols...), "Name", "Employment Type", "Grade", "City", "Location", "Structure now", "Basic", "HRA", "Reimbursement", "Special Allowance", "Bonus",
 			"Variable Pay (payout)", "Total Earnings", "Employee PF", "Employee ESI", "Employee LWF", "TDS", "Total Deductions", "Net Pay", "Employer PF", "EPFO Admin",
 			"Employer ESI", "Employer LWF", "Medical Insurance", "Gratuity", "Leave Encashment Provision", "Monthly CTC", "Payout Target for the Cycle")
 		// The variable payouts due in the open month (bulk_varpay.go): the first on the person's row, any more on rows of
@@ -415,7 +415,7 @@ func (s *Server) bulkCurrent(ctx context.Context, c *Ctx, t *bulkTemplate) ([]st
 			name, st := structureFor(ctx, q, id, now)
 			p := payFor(ctx, q, id, typ)
 			res := calc.Calc(calc.Input{Type: calc.EmploymentType(typ), Gross: g, Structure: withMedical(&st, p.Medical), VarPct: p.VarPct, VarCycle: p.VarCycle, Meal: p.Meal, Accom: p.Accom,
-				Lwf: lwfFor(ctx, q, e.LocID, now)})
+				Lwf: lwfFor(ctx, q, e.LocID, now), EmpAmts: p.CompAmts})
 			R := func(v float64) any { return int64(v + 0.5) }
 			var vp, vc any = "", ""
 			if p.VarPct != nil {
@@ -427,7 +427,7 @@ func (s *Server) bulkCurrent(ctx context.Context, c *Ctx, t *bulkTemplate) ([]st
 			var total, target, tmode any = "", "", ""
 			if st.Designed { // variable pay as a target (paycomp.go): total pay, the target and how it is given
 				in := calc.Input{Type: calc.EmploymentType(typ), Gross: g, Structure: withMedical(&st, p.Medical), Meal: p.Meal, Accom: p.Accom,
-					Lwf: lwfFor(ctx, q, e.LocID, now)}
+					Lwf: lwfFor(ctx, q, e.LocID, now), EmpAmts: p.CompAmts}
 				target, tmode = 0.0, "₹"
 				if t := targetAt(loadTargets(ctx, q, id), ym); t != nil {
 					t.apply(&in)
@@ -448,9 +448,9 @@ func (s *Server) bulkCurrent(ctx context.Context, c *Ctx, t *bulkTemplate) ([]st
 			if l := pays[id]; len(l) > 0 {
 				first = l[0]
 			}
-			out = append(out, append(append([]any{id, g, vp, vc, nz(p.Meal), nz(p.Accom), "", "", "", "", total, target, tmode}, first[:len(payCols)]...),
+			out = append(out, append(append([]any{id, g, vp, vc, nz(p.Meal), nz(p.Accom), "", "", "", "", total, target, tmode, nz(reimbOf(p))}, first[:len(payCols)]...),
 				e.Name, typ, e.Grade, city(e), e.Location, name,
-				R(res.Basic), R(res.Hra), R(res.Sa), R(res.Bonus), R(res.VarPay), R(res.TotalEarn), R(res.EePF), R(res.EeESI), R(res.LwfEe), R(res.Tds), R(res.Ded), R(res.Net),
+				R(res.Basic), R(res.Hra), R(res.Reimb), R(res.Sa), R(res.Bonus), R(res.VarPay), R(res.TotalEarn), R(res.EePF), R(res.EeESI), R(res.LwfEe), R(res.Tds), R(res.Ded), R(res.Net),
 				R(res.ErPF), R(res.Admin), R(res.ErESI), R(res.LwfEr), R(res.Med), R(res.Grat), R(res.PlEnc), R(res.CTC), first[len(payCols)]))
 			for i := 1; i < len(pays[id]); i++ {
 				out = append(out, payRow(id, e.Name, pays[id][i]))
@@ -1257,6 +1257,10 @@ func bulkSal(s *Server, ctx context.Context, tx store.Q, c *Ctx, r bulkRow, appl
 	if same(accom, curPay.Accom) {
 		accom = nil
 	}
+	reimb := num(reimbCol, 0)
+	if same(reimb, reimbOf(curPay)) {
+		reimb = nil
+	}
 	if (vp != nil || vc != nil) && !t.Variable {
 		res.Errors = append(res.Errors, typ+" staff do not earn variable pay")
 	}
@@ -1294,7 +1298,7 @@ func bulkSal(s *Server, ctx context.Context, tx store.Q, c *Ctx, r bulkRow, appl
 	if designed && (vp != nil || vc != nil) {
 		res.Errors = append(res.Errors, "Variable Pay % and Variable Payout Cycle are for a percentage structure: give "+salTargetCol+" and "+salModeCol+" (% or ₹) instead")
 	}
-	payChange := gross != nil || vp != nil || vc != nil || meal != nil || accom != nil || vt != nil
+	payChange := gross != nil || vp != nil || vc != nil || meal != nil || accom != nil || vt != nil || reimb != nil
 	eff := excelDate(r.V["Effective From"])
 	var reason string
 	if payChange {
@@ -1307,12 +1311,41 @@ func bulkSal(s *Server, ctx context.Context, tx store.Q, c *Ctx, r bulkRow, appl
 			res.Errors = append(res.Errors, fmt.Sprintf("Reason for change “%s” is not a salary reason", r.V["Reason for change"]))
 		}
 	}
+	if reimb != nil || (gross != nil && reimbOf(curPay) > 0) { // the Reimbursement must fit in the gross it is paid with
+		amt, g := reimbOf(curPay), 0.0
+		if reimb != nil {
+			amt = *reimb
+		}
+		if gross != nil {
+			g = *gross
+		}
+		on := eff
+		if !isDate(on) {
+			on = today()
+		}
+		if err := reimbCheckFor(ctx, tx, res.ID, typ, on, g, amt); err != nil {
+			if ae, ok := err.(*apiError); ok {
+				res.Errors = append(res.Errors, ae.Message)
+			} else {
+				return res, err
+			}
+		}
+	}
 	if len(res.Errors) > 0 {
 		return res, nil
 	}
 	if gross != nil {
 		if err := s.applyGross(ctx, tx, c, res.ID, eff, *gross, reason, apply, &res); err != nil {
 			return res, err
+		}
+	}
+	if reimb != nil {
+		ch, err := setReimb(ctx, tx, c, res.ID, reimbOf(curPay), *reimb, reason, eff, "Bulk update")
+		if err != nil {
+			return res, err
+		}
+		if ch != nil {
+			res.Changes = append(res.Changes, *ch)
 		}
 	}
 	if vp != nil || vc != nil || meal != nil || accom != nil {

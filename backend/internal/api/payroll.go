@@ -912,6 +912,29 @@ func sheetWithFee(rows []*PayRowOut, cols []string, out [][]any) ([]string, [][]
 	return nc, out
 }
 
+// sheetWithReimb adds a "Reimbursement" column after HRA when a row has one (reimb.go), so a month without any gives
+// exactly the sheet it gave before.
+func sheetWithReimb(rows []*PayRowOut, cols []string, out [][]any) ([]string, [][]any) {
+	at := -1
+	for i, c := range cols {
+		if c == "HRA" {
+			at = i + 1
+		}
+	}
+	has := false
+	for _, o := range rows {
+		has = has || o.R.Reimb != 0
+	}
+	if !has || at < 0 {
+		return cols, out
+	}
+	ins := func(l []any, v any) []any { return append(append(append([]any{}, l[:at]...), v), l[at:]...) }
+	for i, o := range rows {
+		out[i] = ins(out[i], figuresOf(o).Reimb)
+	}
+	return append(append(append([]string{}, cols[:at]...), "Reimbursement"), cols[at:]...), out
+}
+
 func lineText(l []calc.Line) string {
 	out := []string{}
 	for _, x := range l {
@@ -969,6 +992,7 @@ func (s *Server) payrollSheet(r *http.Request, c *Ctx) (string, []string, [][]an
 	}
 	cols, out := sheetWithComps(rows, out)
 	cols, out = sheetWithFee(rows, cols, out)
+	cols, out = sheetWithReimb(rows, cols, out)
 	return "payroll-sheet-" + ym + ".xlsx", cols, out, nil
 }
 
@@ -1179,6 +1203,7 @@ func (s *Server) payrollRegisterSheet(r *http.Request, c *Ctx) (string, []string
 	}
 	cols, out := sheetWithComps(rows, out)
 	cols, out = sheetWithFee(rows, cols, out)
+	cols, out = sheetWithReimb(rows, cols, out)
 	return "payroll-register-" + ym + ".xlsx", cols, out, nil
 }
 

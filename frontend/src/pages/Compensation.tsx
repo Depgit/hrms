@@ -57,7 +57,7 @@ export function Statement({ c, type, std, rules, lwf, month = 0 }: { c: any; typ
       {H(ret ? 'Retainer' : 'Fixed salary')}
       {ret ? R('Retainer fee', c.fee ?? c.gross, 'A month; TDS under section 194J')
         : comps.length ? fixedC.map((x) => <Fragment key={x.code}>{R(x.name, x.amount, how(x.code))}</Fragment>)
-        : <>{R('Basic + DA', c.basic, `${S.basicPct}% of gross`)}{R('HRA', c.hra, `${S.hraPct}% of basic`)}{R('Special allowance', c.sa, 'Balancing figure')}</>}
+        : <>{R('Basic + DA', c.basic, `${S.basicPct}% of gross`)}{R('HRA', c.hra, `${S.hraPct}% of basic`)}{c.reimb > 0 && R('Reimbursement', c.reimb, 'Set on the employee')}{R('Special allowance', c.sa, 'Balancing figure')}</>}
       {!ret && R('Gross salary', c.gross, '', true)}
       {c.bonus > 0 && R('Bonus', c.bonus, `${S.bonusPct}% of basic up to ${inr(S.bonusCalc || 7000)}, for gross up to ${inr(S.bonusCeil)}`)}
       {c.variable > 0 && H('Variable pay, on top of fixed')}
@@ -97,7 +97,7 @@ export function compHow(d: any, all: any[] = []): string {
   const cap = [d.min > 0 ? `at least ${inr(d.min)}` : '', d.max > 0 ? `at most ${inr(d.max)}` : ''].filter(Boolean).join(', ');
   const of = all.find((x) => x.code === d.of)?.name ?? d.of;
   const base = ({ amount: `${inr(d.value)} a month`, pct_ctc: `${d.value}% of CTC`, pct_gross: `${d.value}% of fixed gross`, pct_basic: `${d.value}% of Basic`,
-    pct_of: `${d.value}% of ${of}`, remainder: d.kind === 'variable' ? 'The rest of the variable target' : 'Balancing figure', legacy_var: `${d.value}% of gross, accrued monthly` } as Record<string, string>)[d.method] ?? '';
+    pct_of: `${d.value}% of ${of}`, remainder: d.kind === 'variable' ? 'The rest of the variable target' : 'Balancing figure', per_emp: 'Amount set on each employee', legacy_var: `${d.value}% of gross, accrued monthly` } as Record<string, string>)[d.method] ?? '';
   return cap ? `${base} (${cap})` : base;
 }
 
@@ -586,7 +586,7 @@ export function MapPeople({ s, onClose, onDone }: { s: { id: string; name: strin
 
 type Comp = { code: string; name: string; kind: 'fixed' | 'variable'; side: 'earn' | 'ded'; role?: string; method: string; value: number; of?: string; min?: number; max?: number; cycle?: number;
   taxable: boolean; pf: boolean; esi: boolean; bonus: boolean; payslip: boolean; id?: string; status?: string };
-const METHODS: [string, string][] = [['amount', 'Fixed ₹ a month'], ['pct_ctc', '% of CTC'], ['pct_gross', '% of fixed gross'], ['pct_basic', '% of Basic'], ['pct_of', '% of another component'], ['remainder', 'Remainder (balancing)']];
+const METHODS: [string, string][] = [['amount', 'Fixed ₹ a month'], ['pct_ctc', '% of CTC'], ['pct_gross', '% of fixed gross'], ['pct_basic', '% of Basic'], ['pct_of', '% of another component'], ['remainder', 'Remainder (balancing)'], ['per_emp', 'Amount set on each employee']];
 const ROLES: [string, string][] = [['', '—'], ['basic', 'Basic'], ['da', 'DA'], ['hra', 'HRA']];
 const CYCLES: [number, string][] = [[1, 'Monthly'], [3, 'Quarterly'], [6, 'Half-yearly'], [12, 'Yearly']];
 const FLAGS: [keyof Comp, string][] = [['taxable', 'Taxable'], ['pf', 'PF wage'], ['esi', 'ESI wage'], ['bonus', 'Bonus wage'], ['payslip', 'On payslip']];
@@ -682,7 +682,7 @@ function CompEditor({ comps, lib, readOnly, onChange }: { comps: Comp[]; lib: Co
         <td><select value={c.method} onChange={(e) => set(i, 'method', e.target.value)}>{METHODS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
           {c.method === 'pct_of' && <select value={c.of || ''} onChange={(e) => set(i, 'of', e.target.value)} style={{ marginLeft: 4 }}><option value="">of…</option>
             {comps.filter((o) => o.code !== c.code).map((o) => <option key={o.code} value={o.code}>{o.name}</option>)}</select>}</td>
-        <td>{c.method === 'remainder' ? <span className="mute">—</span> : num(i, 'value')}</td>
+        <td>{c.method === 'remainder' || c.method === 'per_emp' ? <span className="mute">—</span> : num(i, 'value')}</td>
         <td>{c.method === 'remainder' ? '' : num(i, 'min', 80)}</td><td>{c.method === 'remainder' ? '' : num(i, 'max', 80)}</td>
         <td>{c.kind === 'variable' ? <select value={c.cycle || 1} onChange={(e) => set(i, 'cycle', +e.target.value)}>{CYCLES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select> : '—'}</td>
         <td style={{ whiteSpace: 'nowrap', fontSize: 12 }}>{FLAGS.filter(([k]) => c.side === 'earn' && (c.kind === 'fixed' || k === 'taxable' || k === 'payslip') || k === 'payslip').map(([k, l]) =>
@@ -708,7 +708,7 @@ function LibEditor({ c: c0, all, onClose, onSave }: { c: Comp; all: Comp[]; onCl
       <Field label="Earning or deduction"><select value={c.side} onChange={(e) => set('side', e.target.value)}><option value="earn">Earning</option><option value="ded">Deduction</option></select></Field>
       <Field label="Worked out as"><select value={c.method} onChange={(e) => set('method', e.target.value)}>{METHODS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></Field>
       {c.method === 'pct_of' && <Field label="% of which component"><select value={c.of || ''} onChange={(e) => set('of', e.target.value)}><option value="">Choose</option>{all.filter((o) => o.code !== c.code).map((o) => <option key={o.code} value={o.code}>{o.name}</option>)}</select></Field>}
-      {c.method !== 'remainder' && <><Field label={c.method === 'amount' ? '₹ a month' : '%'}><input type="number" min={0} step="any" value={c.value || ''} onChange={(e) => set('value', +e.target.value || 0)} /></Field>
+      {c.method !== 'remainder' && <>{c.method !== 'per_emp' && <Field label={c.method === 'amount' ? '₹ a month' : '%'}><input type="number" min={0} step="any" value={c.value || ''} onChange={(e) => set('value', +e.target.value || 0)} /></Field>}
         <Field label="Minimum ₹ a month (optional)"><input type="number" min={0} value={c.min || ''} onChange={(e) => set('min', +e.target.value || 0)} /></Field>
         <Field label="Maximum ₹ a month (optional)"><input type="number" min={0} value={c.max || ''} onChange={(e) => set('max', +e.target.value || 0)} /></Field></>}
       {c.kind === 'fixed' && c.side === 'earn' && <Field label="Role"><select value={c.role || ''} onChange={(e) => set('role', e.target.value)}>{ROLES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></Field>}

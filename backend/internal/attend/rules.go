@@ -288,6 +288,10 @@ func (e Eff) Eval(plan Plan, rec *Rec, lateStart *int, override bool) DayEval {
 	if override {
 		ls = lateStart
 	}
+	if ls != nil && len(plan.Short) > 0 { // an approved short leave at the start moves the late mark to its end
+		x := plan.ExcusedStart(*ls, int(p.Grace))
+		ls = &x
+	}
 	if e.ByPunch && plan.Shift != nil && rec.In != "" {
 		// Attendance based on punch: an in punch makes it a full day; the hour rules are not used.
 		ev := DayEval{Status: "Present", Tone: "ok"}
@@ -308,6 +312,12 @@ func (e Eff) Eval(plan Plan, rec *Rec, lateStart *int, override bool) DayEval {
 		return DayEval{Status: "Missing out punch", Tone: "warn"}
 	}
 	h := e.Hours(a, b, plan.Shift)
+	if c := plan.shortCredit(a, b); c > 0 { // the short leave's hours count as worked
+		h += c
+		if e.MaxH > 0 && h > e.MaxH {
+			h = e.MaxH
+		}
+	}
 	// Arriving inside the grace minutes counts as on time (business decision, 13 Nov 2026): the minutes
 	// lost to a late arrival within grace are credited, so an 8-hour shift worked from start+grace to its
 	// end is still a full day. Beyond grace nothing is credited: the hour thresholds and the late mark

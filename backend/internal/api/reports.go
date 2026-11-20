@@ -361,6 +361,8 @@ func init() {
 			Filters: with("month", "city", "dept"), Extra: []repExtra{{K: "late", L: "Changes", O: [][2]string{{"", "All changes"}, {"late", "Late changes only"}}}},
 			Run: repRosterChanges, Note: repRosterNote},
 		{ID: "leave_bal", Group: "Attendance and roster", Name: "Leave balances", Hint: "Casual, privilege and sick leave as on today", Filters: all, Run: repLeave},
+		{ID: "short_leave", Group: "Attendance and roster", Name: "Short leave", Hint: "Short leaves (part of a day) with the time, hours, reason and status",
+			Filters: with("range", "city", "dept"), Run: repShortLeave},
 		{ID: "deviations", Group: "Attendance and roster", Name: "Roster deviations", Hint: "Planned shift against actual punches, with the manager’s decision",
 			Filters: with("range", "city", "dept"), Extra: []repExtra{{K: "ds", L: "Decision", O: [][2]string{{"", "All"}, {"Pending", "Waiting"}, {"OK", "OK"}, {"Not OK", "Not OK"}}}},
 			Run: repDeviations},

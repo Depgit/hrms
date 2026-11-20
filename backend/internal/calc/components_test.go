@@ -308,3 +308,44 @@ func TestAllBasicOptOut(t *testing.T) {
 		t.Fatalf("fixed lines %d non-taxable %v: %+v", fixed, r.NonTax, r.Comps)
 	}
 }
+
+// Reimbursement (owner, 20 Nov 2026): a per-employee ₹ amount inside the fixed gross. ₹3,000 on a gross of ₹30,000 on
+// Version 1 gives Basic 15,000, HRA 7,500, Reimbursement 3,000 and Special allowance 4,500; PF stays on Basic only, the
+// gross is unchanged, and with no amount the result is bit for bit what it was.
+func TestReimbursementInFixedPay(t *testing.T) {
+	S := DefaultStructure
+	S.Comps, S.Designed, S.Converted = TargetComponents(S), true, true
+	old := DefaultStructure
+	old.Comps, old.Designed, old.Converted = TargetComponents(old), true, true
+	old.Comps = append(old.Comps[:2:2], old.Comps[3:]...) // the template before the Reimbursement was added
+	for _, st := range []*Structure{nil, &S} {
+		r := Calc(Input{Type: Permanent, Gross: 30000, Structure: st, EmpAmts: map[string]float64{ReimbCode: 3000}})
+		if r.Gross != 30000 || r.Basic != 15000 || r.Hra != 7500 || r.Reimb != 3000 || r.Sa != 4500 {
+			t.Fatalf("breakup gross %v basic %v hra %v reimb %v sa %v", r.Gross, r.Basic, r.Hra, r.Reimb, r.Sa)
+		}
+		if r.PfBase != 15000 || r.EePF != 1800 || r.ErPF != 1800 {
+			t.Fatalf("PF wage %v, PF %v / %v: want Basic only", r.PfBase, r.EePF, r.ErPF)
+		}
+		if st != nil {
+			found := false
+			for _, l := range r.Comps {
+				found = found || (l.Code == ReimbCode && l.Amount == 3000 && l.Taxable && l.Payslip)
+			}
+			if !found {
+				t.Fatalf("no Reimbursement line: %+v", r.Comps)
+			}
+		}
+	}
+	// ESI wage leaves the Reimbursement out (a gross within the ESI ceiling).
+	r := Calc(Input{Type: Permanent, Gross: 20000, Structure: &S, EmpAmts: map[string]float64{ReimbCode: 2000}})
+	if r.EeESI != 135 { // 0.75% of 18,000
+		t.Fatalf("ESI %v, want 135 on 18,000", r.EeESI)
+	}
+	for _, g := range []float64{12000, 30000, 87654.32} {
+		a := Calc(Input{Type: Permanent, Gross: g, Structure: &S})
+		b := Calc(Input{Type: Permanent, Gross: g, Structure: &old})
+		if !reflect.DeepEqual(a, b) {
+			t.Fatalf("gross %v: no amount changed the result\n%+v\n%+v", g, a, b)
+		}
+	}
+}

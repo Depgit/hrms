@@ -169,6 +169,9 @@ type payOptions struct {
 	// AllBasic and AllBasicFrom: the whole fixed gross paid as Basic from that month (the "no PF" choice, pfuan.go).
 	AllBasic     bool   `json:"allBasic,omitempty"`
 	AllBasicFrom string `json:"allBasicFrom,omitempty"`
+	// CompAmts: the person's own ₹ a month for the per-employee pay components (calc.MPerEmp), by code; "reimb" is the
+	// Reimbursement in the fixed pay (reimb.go).
+	CompAmts map[string]float64 `json:"compAmts,omitempty"`
 }
 
 // allBasicIn: the whole fixed gross is paid as Basic in month ym ("optout" PF choice, pfuan.go), only while PF exempt.
@@ -195,6 +198,7 @@ func payFor(ctx context.Context, q store.Q, id, empType string) payOptions {
 		p.PfExempt = r["pf_exempt"] == true
 		p.VarStart = str(r["var_start"])
 		p.AllBasic, p.AllBasicFrom = r["all_basic"] == true, str(r["all_basic_from"])
+		p.CompAmts = byCompOf(r["comp_amts"])
 	}
 	t := calc.RulesFor(calc.EmploymentType(empType))
 	if !t.Variable {
@@ -224,6 +228,8 @@ func (s *Server) employeePayPut(r *http.Request, c *Ctx) (any, error) {
 		// figure (nil: unchanged). On a structure still on percentage rates only "pct" is taken, as the Variable pay %.
 		VarMode string   `json:"varMode"`
 		VarVal  *float64 `json:"varVal"`
+		// Reimb is the Reimbursement in the fixed pay, ₹ a month (nil: unchanged; reimb.go).
+		Reimb *float64 `json:"reimb"`
 	}
 	if err := decode(r, &b); err != nil {
 		return nil, err
@@ -266,12 +272,22 @@ func (s *Server) employeePayPut(r *http.Request, c *Ctx) (any, error) {
 	if b.Meal < 0 || b.Accom < 0 {
 		return nil, bad("Deductions cannot be negative")
 	}
+	if b.Reimb != nil {
+		if err := reimbCheckFor(ctx, s.st.DB, id, empType, openYm(ctx, s.st.DB)+"-01", 0, *b.Reimb); err != nil {
+			return nil, err
+		}
+	}
 	return nil, s.st.Tx(ctx, func(tx store.Q) error {
 		reason, ok := employeesReason(ctx, tx, "Salary", b.Reason)
 		if !ok {
 			return bad("Choose a reason for the change")
 		}
 		old := payFor(ctx, tx, id, empType)
+		if b.Reimb != nil {
+			if _, err := setReimb(ctx, tx, c, id, reimbOf(old), *b.Reimb, reason, today(), "Manual"); err != nil {
+				return err
+			}
+		}
 		set := bson.M{"var_pct": b.VarPct, "var_cycle": b.VarCycle, "meal": b.Meal, "accommodation": b.Accom}
 		if !sameFloatPtr(old.VarPct, b.VarPct) { // a new % applies from the open month on (RUN-31)
 			set["var_from"], set["var_prev_pct"] = openYm(ctx, tx), old.VarPct
@@ -347,7 +363,7 @@ var exportSections = []exportSection{
 	{"personal", "Personal details", "emp.personal", []string{"Mobile", "Email", "Date of birth", "Gender", "1st child name", "2nd child name"}},
 	{"stat", "Statutory IDs", "emp.govid", []string{"PAN", "Aadhaar", "UAN", "ESIC no", "PAN check", "Existing UAN?"}},
 	{"bank", "Bank", "emp.bank", []string{"Bank (current)", "Account number", "IFSC", "Bank effective from"}},
-	{"salary", "Salary structure and pay", "emp.salary", []string{"Monthly gross", "Salary structure", "Structure effective from", "Basic", "HRA", "Special allowance", "Variable pay %", "Variable payout cycle (months)", "Meal deduction", "Accommodation deduction", "PF employee", "ESI employee", "CTC a month", "Tax regime", "Medical insurance (₹ a month)"}},
+	{"salary", "Salary structure and pay", "emp.salary", []string{"Monthly gross", "Salary structure", "Structure effective from", "Basic", "HRA", "Special allowance", "Reimbursement", "Variable pay %", "Variable payout cycle (months)", "Meal deduction", "Accommodation deduction", "PF employee", "ESI employee", "CTC a month", "Tax regime", "Medical insurance (₹ a month)"}},
 	{"policy", "Work policy and leave", "emp.directory", []string{"Work policy", "Mapped through", "Probation ends", "Weekly off", "Casual leave days", "Privilege leave days", "Sick leave days", "Notice period (days)", "Holiday calendar"}},
 	{"appr", "Approvers", "emp.directory", []string{"Leave approvers", "Attendance regularization approvers", "Resignation approvers", "Claim approvers (up to ₹5,000)", "Advance approvers (up to ₹20,000)"}},
 	{"hist", "Service history", "emp.directory", []string{"Times rejoined", "First joining date", "Previous code", "Earlier service"}},
@@ -538,7 +554,7 @@ func (s *Server) employeeExport(w http.ResponseWriter, r *http.Request) {
 				name, st := structureFor(ctx, s.st.DB, id, date)
 				p := payFor(ctx, s.st.DB, id, str("type"))
 				in := calc.Input{Type: calc.EmploymentType(str("type")), Gross: gross, Structure: withMedical(&st, p.Medical), VarPct: p.VarPct, VarCycle: p.VarCycle,
-					Meal: p.Meal, Accom: p.Accom, Lwf: lwfFor(ctx, s.st.DB, str("location_id"), date)}
+					Meal: p.Meal, Accom: p.Accom, Lwf: lwfFor(ctx, s.st.DB, str("location_id"), date), EmpAmts: p.CompAmts}
 				varTargetInput(ctx, s.st.DB, id, date[:7], st, &in) // a structure made from components (paycomp.go)
 				res := calc.Calc(in)
 				money := func(v float64) string {
@@ -555,7 +571,7 @@ func (s *Server) employeeExport(w http.ResponseWriter, r *http.Request) {
 					vc = fmt.Sprint(*p.VarCycle)
 				}
 				from, regime := salaryExtra(ctx, s.st.DB, id, xc.fy)
-				line = append(line, money(gross), name, from, money(res.Basic), money(res.Hra), money(res.Sa), vp, vc,
+				line = append(line, money(gross), name, from, money(res.Basic), money(res.Hra), money(res.Sa), money(res.Reimb), vp, vc,
 					fmt.Sprint(p.Meal), fmt.Sprint(p.Accom), money(res.EePF), money(res.EeESI), money(res.CTC), regime, money(res.Med))
 			case "policy":
 				em, err := loadEmp(ctx, s.st.DB, id)

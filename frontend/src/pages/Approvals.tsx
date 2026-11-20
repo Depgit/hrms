@@ -237,7 +237,7 @@ function titleOf(r: any, ctx: { offer?: any; locs?: { locs: any[]; cities: any[]
     case 'shortlist': return `Shortlist ${r.candidate_id} · ${r.designation ?? ''} · approve to send the candidate to the interview`;
     case 'interview': return `Interview of ${r.candidate_id} · the hiring manager records Selected or Not selected`;
     case 'verify': { const o = ctx.offer; return o ? `Joining verification · ${o.joining?.done ?? 0} of ${o.joining?.total ?? 0} mandatory items complete · ${Object.keys(o.docs || {}).length} documents uploaded` : 'Joining verification'; }
-    case 'leave': { const d = f.days ?? 1, roll = f.roll ?? d; return `${p.ltype}, ${d} day${d > 1 ? 's' : ''}${roll > d ? ` (${roll} in 30 days)` : ''} · ${fmtD(p.from)} to ${fmtD(p.to)}`; }
+    case 'leave': { if (p.short) return `Short leave, ${p.fromTime} to ${p.toTime} · ${fmtD(p.from)}`; const d = f.days ?? 1, roll = f.roll ?? d; return `${p.ltype}, ${d === 0.5 ? `half a day${p.halfOf ? ` (${p.halfOf} half)` : ''}` : `${d} day${d > 1 ? 's' : ''}`}${roll > d ? ` (${roll} in 30 days)` : ''} · ${fmtD(p.from)} to ${fmtD(p.to)}`; }
     case 'regularize': {
       // A "Roster changed" regularization names the change behind it (prototype makeWfReq).
       const x = r.rosterChange;
@@ -465,6 +465,21 @@ export function TeamCover({ from, to, teamOff, team, location, dept }: { from: s
   return <div className={`note ${inside ? 'bad' : ''}`} style={{ marginTop: 10, fontSize: 13 }}><b>Team cover</b> · {[location, dept].filter(Boolean).join(', ')}{location || dept ? ', ' : ''}{peers} other{peers === 1 ? '' : 's'}
     {days.length ? <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>{days.map((x) => <li key={x.d}><b>{fmtD(x.d)}{x.d < from ? ' (day before)' : x.d > to ? ' (day after)' : ''}</b>: {x.list.join(', ')}</li>)}</ul>
       : <div style={{ marginTop: 4 }}>Nobody else in the team is off on these days or either side.</div>}</div>;
+}
+
+/** A short leave's length, "2h" or "1h 30m". */
+export const shortHrs = (p: any) => {
+  const m = (t: string) => { const [h, mm] = String(t || '').split(':').map(Number); return h * 60 + mm; };
+  const n = m(p.toTime) - m(p.fromTime);
+  return n > 0 ? `${Math.floor(n / 60) ? `${Math.floor(n / 60)}h` : ''}${n % 60 ? ` ${n % 60}m` : ''}`.trim() : '';
+};
+
+export const SHORT = 'Short leave';
+
+/** The leave payload as the server takes it: a short leave's times, a half day's half, else the dates. */
+export function leavePayload(cur: any, p: any, to: string) {
+  if (cur?.short) return { short: true, ltype: SHORT, from: p.from, to: p.from, fromTime: p.fromTime, toTime: p.toTime };
+  return { ltype: cur?.type, from: p.from, to, half: p.half || undefined, halfOf: p.half ? p.halfOf : undefined, doc: p.doc || undefined };
 }
 
 /** The prototype's leave count line: how many days the leave type counts, and the weekly offs and holidays inside. */
@@ -750,8 +765,10 @@ export function NewRequest({ wf, title, onClose, onDone }: { wf: string; title?:
   const sep = useLoad(() => (wf === 'resign' ? api(`/me/separation${who !== myId ? `?employeeId=${who}` : ''}`) : Promise.resolve(null)), [wf, who]);
   // Leave types and balances come from the employee's leave plan.
   const bal = useLoad(() => (wf === 'leave' ? api(`/leave/balances/${who === myId ? 'me' : who}`).catch(() => null) : Promise.resolve(null)), [wf, who]);
-  const ltypes: any[] = bal.data?.types ?? [];
+  // A short leave (part of a day) is offered as the type "Short leave" when the employee's leave plan allows it.
+  const ltypes: any[] = [...(bal.data?.types ?? []), ...(bal.data?.short ? [{ type: SHORT, short: true }] : [])];
   const lt = ltypes.find((t) => t.type === p.ltype) ?? ltypes[0];
+  const isShort = !!lt?.short;
   // The system record for the day being corrected.
   const ym = String(p.date || '').slice(0, 7);
   const recOk = wf === 'regularize' && !!ym && (who === myId || can('att.records'));
@@ -769,7 +786,8 @@ export function NewRequest({ wf, title, onClose, onDone }: { wf: string; title?:
   const body = () => {
     let x: Record<string, any> = {};
     // scoreOverride: HR's reason for letting this one request through a low discipline score (audited).
-    if (wf === 'leave') x = { ltype: lt?.type ?? p.ltype, from: p.from, to: p.to || p.from, note: p.note, doc: p.doc, scoreOverride: p.scoreOverride?.trim() || undefined };
+    if (wf === 'leave') x = { ...leavePayload(lt, { ...p, halfOf: p.halfOf || 'first' }, p.half ? p.from : p.to || p.from), note: p.note, doc: isShort ? undefined : p.doc,
+      scoreOverride: p.scoreOverride?.trim() || undefined };
     if (wf === 'regularize') x = { date: p.date, rtype, reason: p.reason, in: p.in, out: p.out, note: p.note };
     if (wf === 'transfer') x = { toLocation: p.toLocation || cityLocs[0]?.id, toDepartment: p.toDepartment, toDesignation: p.toDesignation, toManager: p.toManager, effective: p.effective, note: p.note };
     if (wf === 'resign') {
@@ -817,10 +835,14 @@ export function NewRequest({ wf, title, onClose, onDone }: { wf: string; title?:
         {wf === 'leave' && !(noLeave && solo) && <div className="form">
           {empSel}
           <Field label="Leave type"><select value={lt?.type ?? ''} onChange={(e) => set('ltype', e.target.value)}>{ltypes.map((t) => <option key={t.type}>{t.type}</option>)}</select></Field>
-          <Field label="From"><input type="date" value={p.from || ''} onChange={(e) => set('from', e.target.value)} /></Field>
-          <Field label="To"><input type="date" value={p.to || p.from || ''} onChange={(e) => set('to', e.target.value)} /></Field>
+          <Field label={isShort ? 'Date' : 'From'}><input type="date" value={p.from || ''} onChange={(e) => set('from', e.target.value)} /></Field>
+          {isShort ? <><Field label="From time"><input type="time" value={p.fromTime || ''} onChange={(e) => set('fromTime', e.target.value)} /></Field>
+            <Field label="To time"><input type="time" value={p.toTime || ''} onChange={(e) => set('toTime', e.target.value)} /></Field></>
+            : !p.half && <Field label="To"><input type="date" value={p.to || p.from || ''} onChange={(e) => set('to', e.target.value)} /></Field>}
+          {bal.data?.half && !isShort && <Field label="Half day"><select value={p.half ? p.halfOf || 'first' : ''} onChange={(e) => setP({ ...p, half: !!e.target.value, halfOf: e.target.value || undefined })}>
+            <option value="">No, full days</option><option value="first">First half on leave</option><option value="second">Second half on leave</option></select></Field>}
           <label className="field full"><span>Reason</span><input type="text" value={p.note || ''} onChange={(e) => set('note', e.target.value)} /></label>
-          {lt?.docAfter > 0 && <label className="field full"><span>{lt.docLabel || 'Document'} (needed when more than {lt.docAfter} day{lt.docAfter > 1 ? 's' : ''})</span>
+          {!isShort && lt?.docAfter > 0 && <label className="field full"><span>{lt.docLabel || 'Document'} (needed when more than {lt.docAfter} day{lt.docAfter > 1 ? 's' : ''})</span>
             <input type="file" accept="application/pdf,image/png,image/jpeg" onChange={async (e) => {
               const f = e.target.files?.[0]; if (!f) return;
               try { const d = await uploadDoc('employee', who, `leave-${Date.now()}`, f); setP({ ...p, doc: d.id }); setDocName(f.name); } catch (x: any) { toast(x.message); }
@@ -865,9 +887,10 @@ export function NewRequest({ wf, title, onClose, onDone }: { wf: string; title?:
         </>}
       </div>
       <div className="card" style={{ marginTop: 14 }}>
-        {wf === 'leave' && lt && p.from && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>{lt.type} balance on {fmtD(p.from)}: <b>{lt.balance?.on ? lt.balance.bal : 'not applicable'}</b>{lt.balance?.on ? ` (credited ${lt.balance.credit}, used ${lt.balance.used}, waiting ${lt.balance.pending})` : ''}</p>}
+        {wf === 'leave' && isShort && bal.data?.short && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>Short leave: up to {bal.data.short.maxHours} hours, {bal.data.short.perMonth} a month. No balance is used.</p>}
+        {wf === 'leave' && lt && !isShort && p.from && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>{lt.type} balance on {fmtD(p.from)}: <b>{lt.balance?.on ? lt.balance.bal : 'not applicable'}</b>{lt.balance?.on ? ` (credited ${lt.balance.credit}, used ${lt.balance.used}, waiting ${lt.balance.pending})` : ''}</p>}
         {noLeave && !solo && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>No leave in this employee's plan.</p>}
-        {wf === 'leave' && preview?.days != null && lt && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>{leaveCountLine(lt.type, preview.days, preview.offs ?? 0, preview.range ?? 0)}</p>}
+        {wf === 'leave' && preview?.days != null && lt && !isShort && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>{leaveCountLine(lt.type, preview.days, preview.offs ?? 0, preview.range ?? 0)}</p>}
         {wf === 'leave' && preview?.team != null && p.from && <div style={{ marginBottom: 12 }}><TeamCover from={p.from} to={p.to || p.from} teamOff={preview.teamOff} team={preview.team} location={preview.location} dept={preview.department} /></div>}
         {wf === 'regularize' && p.date && month.data && <><h3>System record for {fmtD(p.date)}</h3>
           <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>In <b>{rec?.in || '—'}</b> · Out <b>{rec?.out || '—'}</b> · {rec?.src || 'No data'} {rec?.status && <Pill k={rec.tone || 'n'}>{rec.status}</Pill>}</p></>}

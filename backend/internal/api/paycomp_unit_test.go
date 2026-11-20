@@ -1,6 +1,7 @@
 package api
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/saltstayz/hrms/internal/calc"
@@ -58,5 +59,20 @@ func TestCompSlipLinesFoot(t *testing.T) {
 	}
 	if len(regColsFor([]*regRow{{o: &PayRowOut{}}})) != len(regCols) {
 		t.Fatal("a converted structure's register changed")
+	}
+}
+
+// The Reimbursement must fit in what Basic and HRA leave of the gross (owner, 20 Nov 2026): on Version 1 and a gross
+// of ₹30,000 that is ₹7,500.
+func TestReimbRoom(t *testing.T) {
+	st := calc.DefaultStructure
+	if err := checkReimb(st, "Version 1", "Permanent", 30000, 7500); err != nil {
+		t.Fatalf("7,500 refused: %v", err)
+	}
+	if err := checkReimb(st, "Version 1", "Permanent", 30000, 7600); err == nil || !strings.Contains(err.Error(), "₹7500") {
+		t.Fatalf("7,600 allowed or wrong message: %v", err)
+	}
+	if err := checkReimb(st, "Version 1", "Retainer", 30000, 1000); err == nil {
+		t.Fatal("a retainer got a Reimbursement")
 	}
 }

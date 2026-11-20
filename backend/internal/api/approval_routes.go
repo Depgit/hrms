@@ -59,6 +59,10 @@ type requestPayload struct {
 	ToDesignation string   `json:"toDesignation,omitempty"`
 	Effective     string   `json:"effective,omitempty"`
 	Half          bool     `json:"half,omitempty"`          // leave: a half day
+	HalfOf        string   `json:"halfOf,omitempty"`        // leave: which half is leave, "first" or "second"
+	Short         bool     `json:"short,omitempty"`         // leave: a short leave (part of one day, short_leave.go)
+	FromTime      string   `json:"fromTime,omitempty"`      // short leave: from HH:MM
+	ToTime        string   `json:"toTime,omitempty"`        // short leave: to HH:MM
 	ScoreOverride string   `json:"scoreOverride,omitempty"` // leave: HR's reason for allowing it below the discipline score
 	Doc           string   `json:"doc,omitempty"`           // leave: supporting document id
 	Cov           []string `json:"cov,omitempty"`           // leave: the dates that count, set by the server

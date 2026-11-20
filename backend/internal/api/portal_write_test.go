@@ -66,7 +66,7 @@ func TestPortalAutoCreate(t *testing.T) {
 	}
 	defer app.StopJobs(ctx)
 	jobsOf := func(id string) int {
-		n, _ := st.DB.Database().Collection(jobs.CollectionJobs).CountDocuments(ctx, bson.M{"kind": "portal_write", "args.employeeId": id})
+		n, _ := st.DB.Database().Collection(jobs.CollectionJobs).CountDocuments(ctx, bson.M{"kind": "portal_write", "args": bson.M{"$regex": `"employeeId":"` + id + `"`}})
 		return int(n)
 	}
 
@@ -84,7 +84,8 @@ func TestPortalAutoCreate(t *testing.T) {
 			if kind == "shift" {
 				ref = fmt.Sprint(r["code"])
 			}
-			if _, err := st.DB.C("portal_map").Insert(ctx, bson.M{"kind": kind, "ref": ref, "value": fmt.Sprint(r["name"])}); err != nil {
+			val := map[string]string{"dept": "Front Office", "desig": "GSA", "branch": "SaltStayz Saket", "shift": "GEN"}[kind] // the fake portal's lists
+			if _, err := st.DB.C("portal_map").Insert(ctx, bson.M{"kind": kind, "ref": ref, "value": val}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -92,7 +93,7 @@ func TestPortalAutoCreate(t *testing.T) {
 	if n, err := app.PortalSweep(ctx); err != nil || n != 1 {
 		t.Fatalf("sweep queued %d: %v", n, err)
 	}
-	ptWait(t, "the create", func() bool { t.Logf("%v", ptSync(st, a)); return ptSync(st, a)["state"] == "on" })
+	ptWait(t, "the create", func() bool { return ptSync(st, a)["state"] == "on" })
 	if e := apiDoc(st, "employee", bson.M{"_id": a}); fp.PostCount() != 1 || e["attendance_code"] == nil || fp.Emps[fmt.Sprint(e["attendance_code"])] == nil {
 		t.Fatalf("created: %d posts, code %v", fp.PostCount(), e["attendance_code"])
 	}

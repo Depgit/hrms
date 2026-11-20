@@ -71,6 +71,7 @@ type slipLine struct {
 type payFigures struct {
 	Basic, Hra, Sa, Bonus, VarPay, Add, OE, TotE              float64
 	Fee                                                       float64 // Retainer: the retainer fee in place of Basic, HRA and Special allowance
+	Reimb                                                     float64 // the Reimbursement in the fixed pay (reimb.go)
 	PF, ESI, LWF, MealAcc, Tds, Tds194, Tds192, Rec, OD, TotD float64
 	Net, RoundOff, LOP, Outside                               float64
 	CompDed                                                   float64 // deductions of a designed structure's components
@@ -88,8 +89,11 @@ func figuresOf(o *PayRowOut) payFigures {
 	}
 	f := payFigures{Basic: r2(c.Basic), Hra: r2(c.Hra), Bonus: r2(c.Bonus), VarPay: r2(c.VarPay), Add: sum(o.Add), OE: r2(o.OE), TotE: r2(o.TotalEarn),
 		PF: r2(c.EePF), ESI: r2(c.EeESI), LWF: r2(c.LwfEe), MealAcc: r2(c.Meal + c.Accom), Tds194: r2(c.Tds), Tds192: r2(o.STds), Rec: sum(o.Ded), OD: r2(o.OD),
-		TotD: r2(o.TotalDed), Net: r2(o.Net), CompDed: r2(c.CompDed)}
+		TotD: r2(o.TotalDed), Net: r2(o.Net), CompDed: r2(c.CompDed), Reimb: r2(c.Reimb)}
 	f.Sa = r2(f.TotE - f.Basic - f.Hra - f.Bonus - f.VarPay - f.Add - f.OE)
+	if f.Reimb != 0 { // r2(x − 0) is x: a row without one is unchanged to the paisa
+		f.Sa = r2(f.Sa - f.Reimb)
+	}
 	if c.Sa == 0 && math.Abs(f.Sa) < 0.05 { // no special allowance: a paisa or two of rounding is not shown as one
 		f.Sa = 0
 	}
@@ -146,6 +150,7 @@ func slipSnap(ctx context.Context, q store.Q, ym string, o *PayRowOut, co compan
 	} else {
 		nz(&E, "Basic", f.Basic, "")
 		nz(&E, "House rent allowance", f.Hra, "")
+		nz(&E, "Reimbursement", f.Reimb, "")
 		nz(&E, "Special allowance", f.Sa, "")
 		nz(&E, "Bonus", f.Bonus, "")
 		nz(&E, "Variable pay", f.VarPay, "")
@@ -433,7 +438,7 @@ func compSlipLines(o *PayRowOut, f payFigures) (fixed, variable, ded []slipLine)
 	if other != 0 {
 		fixed = append(fixed, slipLine{Label: "Other allowances", Amount: other})
 	}
-	if diff := r2(f.Basic + f.Hra + f.Sa - shown - other); diff != 0 && rem >= 0 {
+	if diff := r2(f.Basic + f.Hra + f.Sa + f.Reimb - shown - other); diff != 0 && rem >= 0 {
 		fixed[rem].Amount = r2(fixed[rem].Amount + diff)
 	}
 	paid := 0.0

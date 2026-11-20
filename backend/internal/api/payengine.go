@@ -357,7 +357,7 @@ func loadPayCtxOpt(ctx context.Context, q store.Q, ym string, attendance bool, b
 		id := str(r["employee_id"])
 		pc.pay[id] = payOptions{VarPct: payengineFloatPtr(r["var_pct"]), VarCycle: payengineIntPtr(r["var_cycle"]),
 			Meal: payengineFloat(r["meal"]), Accom: payengineFloat(r["accommodation"]), Medical: payengineFloatPtr(r["medical"]), PfExempt: r["pf_exempt"] == true, VarStart: str(r["var_start"]),
-			AllBasic: r["all_basic"] == true, AllBasicFrom: str(r["all_basic_from"])}
+			AllBasic: r["all_basic"] == true, AllBasicFrom: str(r["all_basic_from"]), CompAmts: byCompOf(r["comp_amts"])}
 		pc.tdsPct[id] = payengineFloatPtr(r["tds_pct"])
 		if f := str(r["var_from"]); f != "" {
 			pc.varFrom[id] = varFrom{From: f, Prev: payengineFloatPtr(r["var_prev_pct"])}
@@ -639,7 +639,8 @@ func (pc *payCtx) row(e *emp) *PayRowOut {
 			eg := gross
 			in := calc.Input{Type: calc.EmploymentType(e.Type), Gross: earned, EligGross: &eg, Month: month, JoinMonth: joinMonth,
 				VarPct: pc.varPctOpt(e.ID, ym), VarCycle: pay.VarCycle, VarTotal: tot, Meal: pay.Meal, Accom: pay.Accom, TdsPct: pc.tdsPct[e.ID],
-				EsiKeep: esiKeep, Structure: withMedical(s, pay.Medical), Lwf: lwf, PfExempt: pay.PfExempt, AllBasic: pay.allBasicIn(ym), Classic: pc.classic}
+				EsiKeep: esiKeep, Structure: withMedical(s, pay.Medical), Lwf: lwf, PfExempt: pay.PfExempt, AllBasic: pay.allBasicIn(ym), Classic: pc.classic,
+				EmpAmts: pay.CompAmts}
 			if !pc.classic && s.Designed {
 				pc.varInputs(e.ID, ym, &in)
 			}

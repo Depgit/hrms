@@ -38,6 +38,7 @@ func (s *Server) salaryPreview(r *http.Request, c *Ctx) (any, error) {
 		Inc         float64  `json:"inc"`
 		VarAmt      *float64 `json:"varAmt"`  // variable pay as a target: ₹ a month (varMode "amount")
 		VarMode     string   `json:"varMode"` // "pct": the target is varPct % of the fixed gross
+		Reimb       float64  `json:"reimb"`   // the Reimbursement in the fixed pay, ₹ a month (reimb.go)
 	}
 	if err := decode(r, &b); err != nil {
 		return nil, err
@@ -68,7 +69,11 @@ func (s *Server) salaryPreview(r *http.Request, c *Ctx) (any, error) {
 	if b.LocationID != "" {
 		lwf = lwfFor(ctx, s.st.DB, b.LocationID, today())
 	}
-	in := calc.Input{Type: t, Gross: b.Gross, Structure: &st, Lwf: lwf, Month: b.Month, JoinMonth: b.JoinMonth, VarPct: b.VarPct, VarCycle: b.VarCycle, Meal: b.Meal, Accom: b.Accom, Inc: b.Inc}
+	if err := checkReimb(st, "", string(t), b.Gross, b.Reimb); err != nil {
+		return nil, err
+	}
+	in := calc.Input{Type: t, Gross: b.Gross, Structure: &st, Lwf: lwf, Month: b.Month, JoinMonth: b.JoinMonth, VarPct: b.VarPct, VarCycle: b.VarCycle, Meal: b.Meal, Accom: b.Accom, Inc: b.Inc,
+		EmpAmts: reimbAmts(b.Reimb)}
 	switch {
 	case st.Designed && b.VarMode == "pct" && b.VarPct != nil:
 		in.VarTargetPct = b.VarPct

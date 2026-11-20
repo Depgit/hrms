@@ -210,6 +210,9 @@ type Input struct {
 	// VarTarget is nil): the target "in %" mode (17 Nov 2026).
 	VarTargetPct *float64
 	VarPaid      map[string]float64
+	// EmpAmts are the person's own ₹ a month for the per-employee components (calc.MPerEmp), by component code:
+	// employee_pay.comp_amts, e.g. {"reimb": 3000} for the Reimbursement (owner, 20 Nov 2026).
+	EmpAmts map[string]float64
 }
 
 type Result struct {
@@ -217,7 +220,8 @@ type Result struct {
 	Basic        float64 `json:"basic"`
 	Hra          float64 `json:"hra"`
 	Sa           float64 `json:"sa"`
-	Fee          float64 `json:"fee,omitempty"` // Retainer: the retainer fee, the whole fixed pay (no Basic, HRA or Special allowance)
+	Reimb        float64 `json:"reimb,omitempty"` // per-employee fixed amounts (the Reimbursement component), part of the gross
+	Fee          float64 `json:"fee,omitempty"`   // Retainer: the retainer fee, the whole fixed pay (no Basic, HRA or Special allowance)
 	PfBase       float64 `json:"pfBase"`
 	Variable     float64 `json:"variable"`
 	VarPay       float64 `json:"varPay"`
@@ -397,7 +401,7 @@ func Calc(p Input) Result {
 	employerCost := erPF + admin + edli + erESI + lwfEr + med + grat
 
 	res := Result{
-		Gross: gross, Basic: basic, Hra: hra, Sa: sa, PfBase: pfBase,
+		Gross: gross, Basic: basic, Hra: hra, Sa: sa, Reimb: h.reimb, PfBase: pfBase,
 		Variable: variable, VarPay: varPay, VarCycle: cyc,
 		EePF: eePF, ErPF: erPF, Eps: eps, ErEpf: erPF - eps, Admin: admin, Edli: edli, PfExempt: p.PfExempt && T.Statutory,
 		EsiOn: esiOn, EeESI: eeESI, ErESI: erESI, MedOn: medOn, Med: med, Bonus: bonus,
@@ -418,7 +422,7 @@ func Calc(p Input) Result {
 // CTC are worked out exactly as before.
 func retainerOnly(r *Result) {
 	r.Fee = r.Gross
-	r.Basic, r.Hra, r.Sa, r.PfBase = 0, 0, 0, 0
+	r.Basic, r.Hra, r.Sa, r.Reimb, r.PfBase = 0, 0, 0, 0, 0
 	if len(r.Comps) == 0 {
 		return
 	}

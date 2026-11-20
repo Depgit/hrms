@@ -312,7 +312,11 @@ func (s *Server) PortalAutoRun(ctx context.Context, a PortalWriteArgs) (string, 
 	}
 	fail := func(msg string) (string, error) {
 		ptBell(ctx, q, x, action, fmt.Sprintf("Realtime portal: %s for %s (%s) failed: %s. Press Retry on the employee file once it is fixed.", strings.ToLower(ptVerb[action]), x.Name, x.ID, msg))
-		return "failed", ptSaveSync(ctx, q, x, ptPhase(action, ptPhaseFailed, msg))
+		set := ptPhase(action, ptPhaseFailed, msg)
+		if action == "create" && str(x.Sync["state"]) == "" {
+			set["code"] = nil // the reserved code was not used
+		}
+		return "failed", ptSaveSync(ctx, q, x, set)
 	}
 	cl, err := ptClient(cfg)
 	if err != nil {

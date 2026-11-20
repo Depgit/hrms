@@ -781,9 +781,14 @@ function PlanOne({ pl: saved, sh, emps, onBack, onOpen }: { pl: any; sh: Shared;
     <div className="card" style={{ marginBottom: 14 }}><h3>Leave year</h3><div className="form">
       <Fld f={['lv.year', 'Leave year', 'sel', [['cal', 'January to December'], ['fin', 'April to March'], ['anniv', 'Joining anniversary']]]} v={pl.lv.year} set={(v) => setLv('year', v)} />
       <Fld f={['lv.prorate', 'Pro-rate for joiners and leavers', 'yn', null]} v={pl.lv.prorate} set={(v) => setLv('prorate', v)} />
-      <Fld f={['lv.half', 'Half-day leave allowed', 'yn', null, '', 1]} v={pl.lv.half} set={(v) => setLv('half', v)} />
+      <Fld f={['lv.half', 'Half-day leave allowed', 'yn', null, 'First or second half of one day: 0.5 of the balance; the other half follows the shift\'s half-day hours.']} v={pl.lv.half} set={(v) => setLv('half', v)} />
       <Fld f={['lv.neg', 'Negative balance allowed (days)', 'num', null, '0 means not allowed.']} v={pl.lv.neg} set={(v) => setLv('neg', v)} />
     </div></div>
+    <div className="card" style={{ marginBottom: 14 }}><h3>Short leave</h3><div className="form">
+      <Fld f={['lv.shortOff', 'Short leave allowed', 'yn', null, 'Part of one day, from a time to a time, through the leave approval. No balance is used.']} v={!pl.lv.shortOff} set={(v) => setLv('shortOff', !v)} />
+      {!pl.lv.shortOff && <><Fld f={['lv.shortN', 'Short leaves allowed in a month', 'num', null, 'Blank or 0 means 2.']} v={pl.lv.shortN || 2} set={(v) => setLv('shortN', Math.max(0, Math.floor(+v || 0)))} />
+        <Fld f={['lv.shortH', 'Most hours in one short leave', 'num', null, 'Blank or 0 means 2.']} v={pl.lv.shortH || 2} set={(v) => setLv('shortH', Math.max(0, +v || 0))} /></>}
+    </div><p className="mute" style={{ fontSize: 12, margin: '8px 0 0' }}>An approved short leave excuses that time: no late mark, early going or short-hours penalty, and the day stays Present.</p></div>
     <p className="mute" style={{ fontSize: 12.5, margin: '0 0 8px' }}>Open a leave type to set who it applies to, notice, documents, resignation and who applies. A ◦ marks a setting that is saved with the plan and applied in the full build.</p>
     {types.map((i) => {
       const c = pl.types[i.name], setT_ = (k: string, v: any) => setPl({ ...pl, types: { ...pl.types, [i.name]: { ...c, [k]: v } } });
@@ -819,7 +824,7 @@ function PlanOne({ pl: saved, sh, emps, onBack, onOpen }: { pl: any; sh: Shared;
 
 /** A leave plan history field (server path such as types.Casual leave.days) as the setting's label. */
 const LP_LAB: Record<string, string> = { name: 'Plan name', description: 'Description', 'lv.year': 'Leave year', 'lv.prorate': 'Pro-rate for joiners and leavers', 'lv.half': 'Half-day leave allowed',
-  'lv.neg': 'Negative balance allowed (days)', 'lrx.staffOn': 'Limit people on leave on one day', 'lrx.staffPct': 'Most of a department at a location on leave (%)', 'lrx.club': 'Casual leave joined to privilege leave', status: 'Status' };
+  'lv.neg': 'Negative balance allowed (days)', 'lv.shortOff': 'Short leave switched off', 'lv.shortN': 'Short leaves allowed in a month', 'lv.shortH': 'Most hours in one short leave', 'lrx.staffOn': 'Limit people on leave on one day', 'lrx.staffPct': 'Most of a department at a location on leave (%)', 'lrx.club': 'Casual leave joined to privilege leave', status: 'Status' };
 const lpLabel = (f: string, types: any[]) => {
   if (LP_LAB[f]) return LP_LAB[f];
   const m = /^types\.(.+)\.([^.]+)$/.exec(f);

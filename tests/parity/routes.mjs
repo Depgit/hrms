@@ -328,6 +328,9 @@ export const ROUTES = [
   ['GET /api/hst/attention', () => ['/api/hst/attention']],
   ['GET /api/hst/board', (c) => ['/api/hst/board', `/api/hst/board?ym=${c.ym}`]],
   ['GET /api/hst/board.xlsx', (c) => [`/api/hst/board.xlsx?ym=${c.ym}&format=csv`]],
+  // Waiting for a bed and the offer form's accommodation clusters (hst_auto.go, 19 Nov 2026). Tested in hst_auto_test.go.
+  ['GET /api/hst/waiting', () => ['/api/hst/waiting']],
+  ['GET /api/hst/clusters', () => ['/api/hst/clusters']],
   ['GET /api/hst/split', (c) => ['/api/hst/split', `/api/hst/split?ym=${c.ym}`]],
   // Cost and budget console (cost.go, 17 Nov 2026; no Postgres counterpart: 404 there): the month's cost tree, the
   // people of a node, the six-month trend, the headcount plan and the Excel file. Tested in cost_test.go.

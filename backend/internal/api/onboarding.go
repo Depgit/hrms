@@ -732,7 +732,8 @@ func offerProblems(ctx context.Context, q store.Q, d map[string]string, docs map
 	}
 	checkFormat(d, &errs)
 	j := resolveJob(ctx, q, d, &errs)
-	jobMasterRequired(d, &errs) // Role and Skill, always, like the department (hirefix.go)
+	jobMasterRequired(d, &errs)                             // Role and Skill, always, like the department (hirefix.go)
+	offerReimbProblems(ctx, q, j, d, &errs)                 // the Reimbursement must fit in what Basic and HRA leave (reimb.go)
 	if err := accomProblems(ctx, q, d, &errs); err != nil { // Company accommodation: Yes needs a cluster with units (hst_auto.go)
 		return offerJob{}, nil, err
 	}
@@ -785,7 +786,7 @@ func offerPay(ctx context.Context, q store.Q, j offerJob, d map[string]string) c
 		st = calc.Structure{}
 		_ = onboardingDecodeJSON(x["rates"], &st)
 	}
-	in := calc.Input{Type: calc.EmploymentType(j.Type), Gross: j.Gross, Structure: &st}
+	in := calc.Input{Type: calc.EmploymentType(j.Type), Gross: j.Gross, Structure: &st, EmpAmts: reimbAmts(offerReimb(d))}
 	t := calc.RulesFor(calc.EmploymentType(j.Type))
 	if t.Variable && !st.Designed {
 		in.VarPct, in.VarCycle = numOr(d["varPct"]), intOr(d["varCycle"])
@@ -1591,7 +1592,11 @@ func offerBreakup(res calc.Result) string {
 			}
 		}
 	} else {
-		l = append(l, "Basic + DA: "+rupees(res.Basic)+" a month", "HRA: "+rupees(res.Hra)+" a month", "Special allowance: "+rupees(res.Sa)+" a month")
+		l = append(l, "Basic + DA: "+rupees(res.Basic)+" a month", "HRA: "+rupees(res.Hra)+" a month")
+		if res.Reimb > 0 {
+			l = append(l, "Reimbursement: "+rupees(res.Reimb)+" a month")
+		}
+		l = append(l, "Special allowance: "+rupees(res.Sa)+" a month")
 		if res.Variable > 0 {
 			l = append(l, "Variable pay: "+rupees(res.Variable)+" a month")
 		}
@@ -2169,8 +2174,11 @@ func employeeFromOfferWith(ctx context.Context, tx store.Q, o store.Row, doj, by
 	if t.Ded == "tds" {
 		pay[4] = numOr(d["tdsPct"])
 	}
-	if _, err := tx.C("employee_pay").Upsert(ctx, bson.D{{Key: "employee_id", Value: code}},
-		bson.M{"var_pct": pay[0], "var_cycle": pay[1], "meal": pay[2], "accommodation": pay[3], "tds_pct": pay[4]}, nil); err != nil {
+	paySet := bson.M{"var_pct": pay[0], "var_cycle": pay[1], "meal": pay[2], "accommodation": pay[3], "tds_pct": pay[4], "comp_amts": nil}
+	if r := offerReimb(d); r > 0 && calc.EmploymentType(typ) != calc.Retainer { // the offer's Reimbursement (reimb.go)
+		paySet["comp_amts"] = bson.M{calc.ReimbCode: calc.Round2(r)}
+	}
+	if _, err := tx.C("employee_pay").Upsert(ctx, bson.D{{Key: "employee_id", Value: code}}, paySet, nil); err != nil {
 		return "", false, err
 	}
 	if err := applyPersonal(ctx, tx, code, doj, d, by); err != nil {

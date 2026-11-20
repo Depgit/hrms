@@ -149,7 +149,7 @@ func taxFigureWith(e *emp, gross float64, st *calc.Structure, city string, d *ta
 // taxFigureExtra is taxFigureWith with extra taxable salary in the year on top of the monthly gross (the year's
 // incentives, bulk_incentive.go). allBasic: the person chose no PF and is paid the whole fixed gross as Basic
 // (pfuan.go): the projection uses that split (HRA 0, so no HRA exemption; no employee PF), as the payroll pays it.
-func taxFigureExtra(e *emp, gross float64, st *calc.Structure, city string, d *taxDecl, appr map[string]float64, fy string, list []calc.TaxItem, extra float64, allBasic bool) *taxFig {
+func taxFigureExtra(e *emp, gross float64, st *calc.Structure, city string, d *taxDecl, appr map[string]float64, fy string, list []calc.TaxItem, extra float64, allBasic bool, amts ...map[string]float64) *taxFig {
 	ms := calc.FYMonths(fy)
 	a, b := ms[0], ms[11]
 	if e.DOJ[:7] > a {
@@ -164,7 +164,11 @@ func taxFigureExtra(e *emp, gross float64, st *calc.Structure, city string, d *t
 	}
 	// One month's breakup times the months employed: the PF ceiling applies month by month, so a part year is not
 	// worked out on an averaged gross (SET-111). For a full year it is the same as before.
-	r := calc.Calc(calc.Input{Type: calc.EmploymentType(e.Type), Gross: gross, Structure: st, PfExempt: allBasic, AllBasic: allBasic})
+	in := calc.Input{Type: calc.EmploymentType(e.Type), Gross: gross, Structure: st, PfExempt: allBasic, AllBasic: allBasic}
+	if len(amts) > 0 { // the per-employee amounts (the Reimbursement may be set as not taxable, reimb.go)
+		in.EmpAmts = amts[0]
+	}
+	r := calc.Calc(in)
 	k := float64(n)
 	est := func(items map[string]float64) (calc.TaxResult, map[string]float64) {
 		groups, rent := calc.GroupDeductionsWith(items, list)
@@ -228,7 +232,7 @@ func (pc *payCtx) loadSalaryTds(ctx context.Context, q store.Q, list []*emp) err
 		}
 		d := td.declOf(e.ID)
 		f := taxFigureExtra(e, pc.grossAt(e.ID, pc.ym), pc.structure(pc.structureOn(e.ID, pc.ym+"-01")), pc.cities[e.CityID], d, td.appr[e.ID], fy, td.items,
-			td.extra[e.ID], pc.pay[e.ID].allBasicIn(pc.ym))
+			td.extra[e.ID], pc.pay[e.ID].allBasicIn(pc.ym), pc.pay[e.ID].CompAmts)
 		pc.salaryTds[e.ID] = monthTds(f, d, td.hist[e.ID], pc.ym)
 	}
 	return nil
@@ -240,7 +244,7 @@ func (pc *payCtx) figureFor(e *emp, fy string) *taxFig {
 		return nil
 	}
 	return taxFigureExtra(e, pc.grossAt(e.ID, pc.ym), pc.structure(pc.structureOn(e.ID, pc.ym+"-01")), pc.cities[e.CityID], pc.tax.declOf(e.ID), pc.tax.appr[e.ID], fy, pc.tax.items,
-		pc.tax.extra[e.ID], pc.pay[e.ID].allBasicIn(pc.ym))
+		pc.tax.extra[e.ID], pc.pay[e.ID].allBasicIn(pc.ym), pc.pay[e.ID].CompAmts)
 }
 
 // taxReadiness is the employee file's tax line.

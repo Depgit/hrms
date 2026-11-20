@@ -9,6 +9,7 @@ import { Statement, VC, bandMid } from './Compensation';
 import { typeNames } from './Dashboard';
 import { DocWindowSetting } from './DocCollection';
 import { PortalCard } from '../components/PortalCard';
+import { SkipApprovalButton } from '../components/SkipApproval';
 import { BgvPanel, EarlyExit, HireSettings, JoiningOutcomes, OfferVersions, Timeline, WaitingPanel } from './Hiring';
 
 /* Onboarding in stages (owner's process, 11 Nov 2026; hiring lifecycle 16 Nov 2026): every new hire starts as a
@@ -189,13 +190,13 @@ function ShortlistForm({ rejoin, onSent }: { rejoin: string; onSent: (id: string
   }, [body]);
   const errs: string[] = res?.errors ?? [];
   const miss = (...words: string[]) => show && errs.some((e) => words.some((w) => e.startsWith(w)));
-  const send = async () => {
+  const send = async (skip = '') => {
     setShow(true);
     setBusy(true);
     try {
       const now = await check();
       if (now.errors?.length) { toast(`${now.errors.length} thing${now.errors.length > 1 ? 's' : ''} to fix`); window.scrollTo(0, 0); return; }
-      const r = await api('/candidates', { body: { data: d, experience: exp } });
+      const r = await api('/candidates' + skip, { body: { data: d, experience: exp } });
       if (resume) {
         try { await uploadDoc('candidate', r.id, 'resume', resume); } catch (x: any) { toast(`${r.id} sent for approval. The résumé did not upload: ${x.message}`); onSent(r.id); return; }
       }
@@ -265,7 +266,7 @@ function ShortlistForm({ rejoin, onSent }: { rejoin: string; onSent: (id: string
           <p className="mute" style={{ fontSize: 12 }}>Then the interview with the hiring manager: Selected or Not selected.</p></>
           : <p className="mute" style={{ fontSize: 12.5, margin: 0 }}>Choose the location, department and hiring manager to see who approves. The route is set in Approvals › Approval flow (Shortlist approval).</p>}
         {show && errs.length > 0 && <div className="note bad" style={{ marginTop: 12 }}><b>Fix before sending</b><ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>{errs.map((x) => <li key={x}>{x}</li>)}</ul></div>}
-        <div className="row" style={{ marginTop: 16 }}><button className="btn primary" disabled={!canCreate || busy} onClick={send}>Send for approval</button></div>
+        <div className="row" style={{ marginTop: 16 }}><button className="btn primary" disabled={!canCreate || busy} onClick={() => send()}>Send for approval</button><SkipApprovalButton wf="shortlist" disabled={!canCreate || busy} onSkip={(q) => send(q)} /></div>
       </div>
     </div>
   );
@@ -346,6 +347,7 @@ function CandidateModal({ id, onClose, onOffer }: { id: string; onClose: () => v
       <div className="row" style={{ gap: 6 }}><Pill k={stageTone(x.bucket)}>{STAGE_LABEL[x.bucket] ?? x.bucket}</Pill><button className="btn sm" onClick={onClose}>Close</button></div>
     </div>
     <div style={{ margin: '14px 0 10px' }}><Trail x={x} /></div>
+    {x.accommodation && <div className="note" style={{ marginBottom: 10 }}>Company accommodation: <b>Yes</b>, in {x.accommodation.cluster}. {x.accommodation.status}.</div>}
     <div className={`note ${x.stage === 'Closed' ? 'bad' : verified ? 'ok' : ''}`}>{x.status}{x.waiting ? <> · waiting on <b>{x.waiting}</b></> : null}</div>
 
     <div className="grid g2" style={{ marginTop: 14 }}>
@@ -402,7 +404,8 @@ function CandidateModal({ id, onClose, onOffer }: { id: string; onClose: () => v
       <div className="row" style={{ marginTop: 10 }}>
         <button className="btn" onClick={() => setView('join')}>{edit && !verified && x.verify_status !== 'Pending' ? 'Joining details and documents' : 'View joining details'}</button>
         {!x.newFlow && edit && !x.employee_id && jn && (x.employeeIdAt === 'joining' || jn.done >= jn.total) && <button className="btn" disabled={busy} onClick={() => act(() => api(`/candidates/${x.id}/employee-id`, { method: 'POST' }), (r) => `Employee ID ${r.employeeId} created`)}>Create Employee ID</button>}
-        {edit && x.employee_id && jn && jn.done >= jn.total && !verified && x.verify_status !== 'Pending' && x.stage !== 'Closed' && <button className="btn primary" disabled={busy} onClick={() => act(() => api(`/offers/${x.offer_id}/send`, { method: 'POST' }), (r) => `Sent to ${r.plan?.chain?.[0] ?? 'Payroll'}`)}>{x.verify_status === 'Rejected' ? 'Resend to Payroll' : 'Send to Payroll'}</button>}
+        {edit && x.employee_id && jn && jn.done >= jn.total && !verified && x.verify_status !== 'Pending' && x.stage !== 'Closed' && <><button className="btn primary" disabled={busy} onClick={() => act(() => api(`/offers/${x.offer_id}/send`, { method: 'POST' }), (r) => `Sent to ${r.plan?.chain?.[0] ?? 'Payroll'}`)}>{x.verify_status === 'Rejected' ? 'Resend to Payroll' : 'Send to Payroll'}</button>
+          <SkipApprovalButton wf="verify" subject={x.employee_id} disabled={busy} onSkip={(q) => act(() => api(`/offers/${x.offer_id}/send${q}`, { method: 'POST' }), () => 'Verification approved (approval skipped)')} /></>}
       </div>
       {!x.newFlow && x.employeeIdAt !== 'joining' && !x.employee_id && <p className="mute" style={{ fontSize: 12 }}>Until the Employee ID exists, {x.name} is not in attendance, roster or payroll. Pay still counts from the joining date; earlier days can be added with Attendance upload or regularization.</p>}
       {x.newFlow && <EarlyExit x={x} act={act} />}
@@ -475,13 +478,13 @@ function OfferForm({ cand, onBack, onSent }: { cand: any; onBack: () => void; on
     try { const r = await uploadDoc('candidate', owner, key, file); setDocs((x) => ({ ...x, [key]: r })); setUploads((n) => n + 1); toast('Attached ' + file.name); } catch (x: any) { toast(x.message); }
   };
   // Send checks again first, so a list from before the last upload or keystroke never blocks it.
-  const send = async () => {
+  const send = async (skip = '') => {
     setShow(true);
     setBusy(true);
     try {
       const now = await check();
       if (now.errors?.length) { toast(`${now.errors.length} thing${now.errors.length > 1 ? 's' : ''} to fix`); window.scrollTo(0, 0); return; }
-      const r = await api('/offers', { body: { data: d, candidate: owner } }); toast(`Offer v${r.version ?? 1} for ${cand.id} sent for approval`); onSent();
+      const r = await api('/offers' + skip, { body: { data: d, candidate: owner } }); toast(`Offer v${r.version ?? 1} for ${cand.id} sent for approval`); onSent();
     } catch (x: any) { toast(x.message); } finally { setBusy(false); }
   };
   const band = res?.band, gross = +d.gross || 0;
@@ -501,8 +504,12 @@ function OfferForm({ cand, onBack, onSent }: { cand: any; onBack: () => void; on
               : <label key={f.key} className={`field ${missing(f) ? 'err' : ''}`}><span>{f.label}{f.offer === 2 && f.kind !== 'flow' && f.kind !== 'policy' && <Req />}</span>
                 <Control f={f} d={d} set={set} opts={L.opts} corporate={corporate} policy={policy} /></label>)}
           </div>
+          {sec === 'Compensation' && d.type !== 'Retainer' && <div className="form" style={{ marginTop: 10 }}><label className="field"><span>Reimbursement, ₹ a month (inside the gross)</span>
+            <input type="number" min={0} value={d.reimb ?? ''} onChange={(e) => set('reimb', e.target.value)} />
+            <small className="mute">Basic and HRA first, then the Reimbursement; the special allowance takes the rest. Goes to the employee at joining.</small></label></div>}
           {sec === 'Compensation' && <OfferCtcEntry d={d} set={set} variable={variable} />}</div> : null;
         })}
+        <AccomCard d={d} set={set} show={show} />
         <div className="card"><h3>Documents for offer release</h3>
           <p className="mute" style={{ marginTop: -6, fontSize: 12 }}>Documents needed before the offer goes out. The rest are collected at joining. They are kept with {cand.id}.</p>
           <DocTable list={docList} stage="offer" docs={docs} onUpload={upload} asked={asked} onAsk={ask} empty="No documents are needed at this stage." />
@@ -528,7 +535,7 @@ function OfferForm({ cand, onBack, onSent }: { cand: any; onBack: () => void; on
         {res?.later > 0 && <p className="mute" style={{ fontSize: 12 }}>{res.later} more mandatory item{res.later > 1 ? 's' : ''} (details and documents) will be collected at joining.</p>}
         <p className="mute" style={{ fontSize: 12 }}>No Employee ID is used at offer approval. {cand.name} works on a Joining ID from the joining day; the Employee ID comes once every step is approved.</p>
         {show && res?.errors?.length > 0 && <div className="note bad" style={{ marginTop: 12 }}><b>Fix before sending</b><ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>{res.errors.map((x: string) => <li key={x}>{x}</li>)}</ul></div>}
-        <div className="row" style={{ marginTop: 16 }}><button className="btn" onClick={onBack}>Back</button><button className="btn primary" disabled={!canCreate || busy} onClick={send}>Send offer for approval</button></div>
+        <div className="row" style={{ marginTop: 16 }}><button className="btn" onClick={onBack}>Back</button><button className="btn primary" disabled={!canCreate || busy} onClick={() => send()}>Send offer for approval</button><SkipApprovalButton wf="joining" subject={owner} disabled={!canCreate || busy} onSkip={(q) => send(q)} /></div>
       </div>
     </div>
   );
@@ -611,8 +618,10 @@ function OfferModal({ id, onClose }: { id: string; onClose: () => void }) {
   const [why, setWhy] = useState('');
   const [declining, setDeclining] = useState(false);
   const canRel = can('onb.raise', 2) || can('comp.approve', 2);
+  const [acc, setAcc] = useState<Data | null>(null);
+  const accom = acc ?? { accom: String(o?.data?.accom || 'No'), accomCluster: String(o?.data?.accomCluster || '') };
   const step = async (s: 'release' | 'decline') => {
-    try { await api(`/offers/${id}/${s}`, { body: s === 'decline' ? { reason: why } : {} }); toast(s === 'release' ? 'Offer released' : 'Marked declined'); if (s === 'release') onClose(); else { reload(); setDeclining(false); } } catch (x: any) { toast(x.message); }
+    try { await api(`/offers/${id}/${s}`, { body: s === 'decline' ? { reason: why } : o?.candidate_id ? accom : {} }); toast(s === 'release' ? 'Offer released' : 'Marked declined'); if (s === 'release') onClose(); else { reload(); setDeclining(false); } } catch (x: any) { toast(x.message); }
   };
   return <Modal wide onClose={onClose}>
     <div className="row sp"><h2>Offer letter{o ? `: ${o.candidate_name}` : ''} {o && <span className="mono mute" style={{ fontSize: 13 }}>{o.candidate_id ? (o.offer_no || `${o.candidate_id} offer v${o.version || 1}`) : o.id}</span>}</h2><button className="btn sm" onClick={onClose}>Close</button></div>
@@ -622,6 +631,8 @@ function OfferModal({ id, onClose }: { id: string; onClose: () => void }) {
       {o.letterHeld
         ? <div className="mute" style={{ border: '1px dashed var(--line)', borderRadius: 10, padding: 14, margin: '12px 0', fontSize: 13 }}>The offer letter is held until joining. It is generated when the candidate is marked joined.</div>
         : <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.6, border: '1px solid var(--line)', borderRadius: 10, padding: 14, margin: '12px 0' }}>{o.letter}</div>}
+      {o.accommodation && <p style={{ fontSize: 13 }}>{o.accommodation}</p>}
+      {o.status === 'Approved' && canRel && o.candidate_id && <AccomCard d={accom} set={(k, v) => setAcc({ ...accom, [k]: v, ...(k === 'accom' && v === 'No' ? { accomCluster: '' } : {}) })} show plain />}
       {declining && <Field label="Why did the candidate decline?"><input value={why} onChange={(e) => setWhy(e.target.value)} /></Field>}
       <div className="row" style={{ justifyContent: 'flex-end' }}>
         <button className="btn" onClick={onClose}>Close</button>
@@ -988,4 +999,21 @@ function OfferCtcEntry({ d, set, variable }: { d: Data; set: (k: string, v: stri
       <PayEntryFields p={p} set={setP} variable={variable} /></div>
       <button className="btn sm" style={{ marginTop: 8 }} disabled={!s} onClick={use}>Use this: gross {s ? inr(s.fixed) : '—'}{variable && s?.variable ? `, variable ${inr(s.variable)}` : ''}</button></div></details>
   </>;
+}
+
+/** "Company accommodation: Yes / No" on the offer (backend hst_auto.go): Yes needs a cluster with accommodation units;
+ *  the joiner gets a bed there automatically when marked joined. No pay effect. */
+function AccomCard({ d, set, show, plain }: { d: Data; set: (k: string, v: string) => void; show?: boolean; plain?: boolean }) {
+  const cl = useLoad(() => api('/hst/clusters'), []);
+  const list: any[] = cl.data?.clusters ?? [];
+  const yes = d.accom === 'Yes';
+  const body = <div className="form">
+    <label className="field"><span>Company accommodation</span>
+      <select value={yes ? 'Yes' : 'No'} onChange={(e) => set('accom', e.target.value)}><option>No</option><option disabled={!list.length}>Yes</option></select></label>
+    {yes && <label className={`field ${show && !d.accomCluster ? 'err' : ''}`}><span>Cluster<Req /></span>
+      <select value={d.accomCluster ?? ''} onChange={(e) => set('accomCluster', e.target.value)}><option value="">Select</option>
+        {list.map((c) => <option key={c.id} value={c.id}>{c.name}{c.city ? ` (${c.city})` : ''}: {c.free} of {c.beds} beds free</option>)}</select></label>}
+  </div>;
+  const note = <p className="mute" style={{ fontSize: 12, margin: '4px 0 0' }}>{list.length ? 'When they are marked joined, the nearest free bed in the cluster is allocated by itself from the joining date (a waiting list when none is free). Accommodation is outside payroll.' : 'No cluster has accommodation units yet (Accommodation › Units).'}</p>;
+  return plain ? <div style={{ margin: '10px 0' }}>{body}{note}</div> : <div className="card"><h3>Company accommodation</h3>{body}{note}</div>;
 }

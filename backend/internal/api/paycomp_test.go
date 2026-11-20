@@ -83,7 +83,8 @@ func TestPayCompareLegacyUnchanged(t *testing.T) {
 	}
 	x, _ := q.C("salary_structure").FindOne(ctx, bson.M{"_id": sid})
 	comps, _ := x["rates"].(map[string]any)["comps"].([]any)
-	if len(comps) != 4 || comps[0].(map[string]any)["method"] != "pct_gross" || comps[3].(map[string]any)["method"] != "legacy_var" {
+	// Basic, HRA, Reimbursement (per employee, 20 Nov 2026), Special allowance, variable.
+	if len(comps) != 5 || comps[0].(map[string]any)["method"] != "pct_gross" || comps[2].(map[string]any)["method"] != "per_emp" || comps[4].(map[string]any)["method"] != "legacy_var" {
 		t.Fatalf("stored template: %v", comps)
 	}
 	check("stored template")
@@ -131,7 +132,7 @@ func TestPayComponentsDesigned(t *testing.T) {
 		}
 	}
 	_, conv := c.do("GET", "/api/comp/structures/"+defID+"/components", "EMP-1002", "HR Admin", nil)
-	if conv["converted"] != true || len(conv["comps"].([]any)) != 4 || conv["wage"].(map[string]any)["ok"] != true {
+	if conv["converted"] != true || len(conv["comps"].([]any)) != 5 || conv["wage"].(map[string]any)["ok"] != true {
 		t.Fatalf("converted template: %v", conv)
 	}
 

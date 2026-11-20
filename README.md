@@ -1033,33 +1033,53 @@ Two payroll downloads next to the bank advice and the register, which are unchan
   has no machine column). Tests `TestMachinePlan`, `TestMachinePool`, `internal/realtime` `TestParseMachines`,
   `TestClientMachineList`.
 
-### Sending employees to the Realtime portal (17 Nov 2026)
+### Sending employees to the Realtime portal (automatic since 19 Nov 2026)
 
-- **What.** The HRMS creates new employees on the Realtime India portal, sends their changed details and marks them
-  left, but only when HR presses **Send to portal** (employee file › Overview › Realtime portal card, the joiner's
-  card in Onboarding after Mark joined, JI- records included, or Attendance › Punch machine setup › **Realtime portal:
-  waiting to send**), sees the preview and confirms. No job or hook sends anything. Code: `internal/realtime/empwrite.go`
-  (form fill, `Preview`, `CreateEmployee`, `UpdateEmployee`, `MarkLeft`), `empform.go` (form parser), `discover.go`,
-  `api/portal_write.go`, `store/schema_portalwrite.go` (migration `016_portal_write`), `PortalCard.tsx`,
-  `PortalSend.tsx`. Right `att.portal` (View: statuses and list; Edit: map and send). HR Admin has it.
-- **How a send works.** The client opens the portal's employee form (GET), keeps its view state, sets the HRMS's
-  details on the controls that take them (found by label and name), leaves everything else as the form has it and
-  presses only the save button. The preview shows every control and value; the send re-opens the form and posts only
-  if it is identical (hash), once, never retried. The portal's own message is shown, audited with the exact fields,
-  and kept in `portal_send`. Unclear reply: status "Check on the portal" until HR says whether it is there.
-- **Details.** Code and card number (Attendance code; for a new person the next free number, editable; card padded to
-  8 digits), name, father's name, birth and joining dates, gender, phone, email, and the portal's department,
-  designation, branch and shift as mapped once under "Mapping and code rule" ("Read the lists from the portal" fills
-  the choices; a property defaults to the portal branch of its mapped machine). An unmapped value blocks the send.
-  A person "Match portal codes" proposes a portal record for is blocked from being created twice unless HR ticks
-  "someone else". After a create the code becomes the Attendance code and the machine enrol to-do is ticked when the
-  branch is in the target cluster; a mark-left ticks the remove to-do. The portal's device step ("Upload Name in
-  Device") is never pressed.
+- **What.** The HRMS writes to the Realtime India portal by itself: **Mark joined** creates the employee (the next
+  free code, which becomes the Attendance code); a change of the details the portal gets (name, department,
+  designation, property/branch, shift, phone, email…) of someone the HRMS put on the portal updates them; an exit
+  (inactive, or the last working day reached) marks them left. There is no "Send to portal" button and no preview
+  any more. Code: `api/portal_auto.go` (jobs, sweep, Retry, backlog), `api/portal_write.go` (details, mapping,
+  status, waiting list), `internal/realtime/empwrite.go` (`Post`; form fill), `store/schema_joinauto.go` (migration
+  `022_join_auto`), `PortalCard.tsx`, `PortalSend.tsx`. Right `att.portal` (View: statuses and list; Edit: map,
+  Retry, Send waiting).
+- **How.** Each write is a Mongo job (`portal_write`), inserted in Mark joined's transaction or by the every-minute
+  `portal_sweep` that notices changes and exits; never inside a request. The job opens the portal's form afresh,
+  stops on any problem before the post, and posts **once**: a job is never retried (one attempt), and a failed write
+  stays failed until HR presses **Retry** (employee card or the waiting list). A refusal or error, a missing mapping
+  (held, "Map the department … first") and an unclear reply ("Check on the portal", settled by HR) go to Attendance ›
+  Punch machine setup › **Realtime portal: automatic sending** with the portal's message, and HR (HR Admin and
+  `att.portal` Edit) gets a bell. Every write is audited with the fields sent and the reply, and logged in
+  `portal_send` (by "HRMS (automatic)", or the HR name on Retry). State in `employee.portal_sync` (`want`, `phase`
+  waiting/sending/failed/blocked, `phase_msg`).
+- **Which people.** Created: joiners marked joined, and active people without an Attendance code who joined on or
+  after `company_setting.portal_write.auto_since` (the day of migration 022). Marked left: people the HRMS sent, and
+  people with a code whose last working day is on or after `auto_since`. Updated: only people the HRMS sent (their
+  last details are known). A person "Match portal codes" proposes a portal record for is held, not created twice;
+  "Retry: they are someone else" creates them.
+- **Details sent.** Code and card number (card padded to 8 digits), name, father's name, birth and joining dates,
+  gender, phone, email, and the portal's department, designation, branch and shift as mapped once under "Mapping and
+  code rule" (a property defaults to the portal branch of its mapped machine). After a create the machine enrol to-do
+  is ticked when the branch is in the target cluster; a mark-left ticks the remove to-do. The portal's device step
+  ("Upload Name in Device") is never pressed.
 - **Switching it on.** `realtime.Spec` (the form's page, the edit page with `{code}`, save caption) must be confirmed
-  on the live portal first: run `hrms realtime-forms` (sign-in plus GETs only; prints the employee list's buttons, the
-  linked employee pages and each form's controls), set `Spec`, rebuild. Until then every preview and send answers
-  "Sending is not switched on yet". Test `TestPortalWrite`, `internal/realtime` `TestEmployeeWrites` (fake portal
+  on the live portal first: run `hrms realtime-forms` (sign-in plus GETs only), set `Spec`, rebuild. Until then
+  every write due waits ("Sending is not switched on yet"); once on, HR presses **Send waiting** once to send the
+  backlog. Tests `TestPortalAutoCreate`, `internal/realtime` `TestEmployeeWrites` (fake portal
   `internal/realtime/rtfake`).
+
+### Company accommodation from the offer (19 Nov 2026)
+
+- The offer form and the release ask **Company accommodation: Yes / No**; Yes needs a cluster that has accommodation
+  units (`offer.data.accom`, `accomCluster`; `GET /api/hst/clusters` lists them with free beds). The tag shows on the
+  candidate and the offer (`{{accommodation}}` in the letter template); it has no pay effect.
+- At **Mark joined** the HRMS allocates a bed by itself in the same transaction: the cluster's active units matching
+  the joiner's gender, in the suggestion order (the unit serving their property first, then the most free beds),
+  check-in on the actual joining date, note and timeline "Allocated automatically from the offer", audited.
+- No free bed: the joiner goes on Accommodation › **Waiting for a bed** (`employee.hst_wait`, `GET /api/hst/waiting`)
+  and HR (`hst.allot`) gets a bell; the maintenance sweep (every 5 minutes) gives them the next bed freed in that
+  cluster (check-in that day). A check-in by hand takes them off the list; "No longer needed" drops them (reason,
+  audited). Code `api/hst_auto.go`; test `TestJoinAccommodation`.
 
 ### Staff accommodation: flats, leases, beds and the true cost (workforce plan module 4, 17 Nov 2026)
 
@@ -1308,6 +1328,44 @@ Two payroll downloads next to the bank advice and the register, which are unchan
   (`offer.letter_at`, `letter_released_at`); the offer screen shows the rule. Settings: `hiring.letterJoinDepts`,
   `hiring.letterJoinTypes` on `PUT /api/onboarding/settings`.
 - The old "Mark not joined" (`POST /api/candidates/{id}/not-joined`) stays on the server but no button reaches it.
+
+### Half-day leave, short leave and the Reimbursement in fixed pay (owner, 20 Nov 2026)
+
+- **Half-day leave end to end.** When the leave plan has "Half-day leave allowed", the employee (My leave) and HR on
+  their behalf (Approvals › New leave request, "Half day": first or second half on leave) apply for half a day on any
+  type the plan offers them; `payload.half` + `payload.halfOf`, one date, `facts.days` 0.5, so the balance falls by 0.5.
+  Attendance shows "Casual leave (half day, first half) + Present": the other half is present when its hours reach the
+  half-day hours of the day's shift (the work policy's "Half-day hours" without shift rules), else "+ Absent" with 0.5
+  loss of pay; no punch follows the no-punch rule at half weight, one punch counts as present (as before). Only an
+  unpaid type adds 0.5 LOP for the leave half. Opening balances (Bulk update and Import employees) already take .5.
+- **Short leave (part of a day).** New option "Short leave" in the same dialogs: a date, from-time and to-time, reason.
+  It is a leave request (`wf` leave, `payload.short`, `ltype` "Short leave", `fromTime`/`toTime`, `facts.days` 0, group
+  C), so the leave approval flow, the approval hierarchy tick and HR's "Skip approval" apply; no balance moves. Leave
+  plan settings (Policies › leave plan › Short leave): allowed (default on), how many a month (`lv.shortN`, default 2)
+  and the most hours each (`lv.shortH`, default 2); beyond either, or on a weekly off / holiday, after the regularization
+  window, the leave closure or a paid month, it is refused. Once approved the window is excused on the day
+  (`attend.Plan.Short`): arriving after a window at the start is not late, leaving for one at the end is no early exit,
+  its hours count as worked (no short-hours or half-day penalty), and the late / not-in alerts wait for its end. The day
+  stays Present and shows "Short leave 2h". It is never a day of leave: month leave counts, the staffing limit and
+  full-day overlap checks leave it out (a full-day leave over a short one is refused until it is cancelled). Report:
+  Attendance and roster › Short leave.
+- **Reimbursement in the fixed pay.** Every salary structure has a fixed earning **Reimbursement** (`calc.ReimbComponent`,
+  method "Amount set on each employee", `per_emp`): ₹ a month entered on the employee (Employees › Edit pay options,
+  Bulk update › Salary breakup column **Reimbursement (₹)**, Payroll › Salary calculator and the pay preview), stored
+  in `employee_pay.comp_amts.reimb`. It is part of the fixed gross: Basic and HRA as the structure says, then the
+  Reimbursement, and Special allowance takes the rest, so gross and CTC stay as entered (prorated by paid days like the
+  rest). Flags: taxable, not PF, ESI or bonus wage (changeable in the component designer). An amount above what Basic
+  and HRA leave is refused ("Reimbursement ₹… is more than what is left after Basic and HRA…"); a retainer has none.
+  Shown on the breakups, payslip, payroll sheet (column only in a month with one), salary register ("Reimbursement
+  (fixed pay)"; the old "Reimbursements" column is still the claims) and the employee file. Migration
+  `024_reimbursement` adds it to the component library and to every structure before its balancing component, with
+  nobody holding an amount: `hrms pay-compare -month 2026-10,2026-11 -dump` before and `-against` after on a copy of
+  the live data gave **0 differences** (13 and 15 rows). The offer's Compensation card has "Reimbursement, ₹ a month"
+  (`offer.data.reimb`, same refusal on check and raise, shown in the offer breakup and letter `{{breakup}}`), carried to
+  `employee_pay.comp_amts.reimb` at Mark joined.
+- Tests: `calc.TestReimbursementInFixedPay`, `api.TestReimbRoom`, `api.TestOfferReimbursementToEmployee`, `leave.TestShortLeaveRules`,
+  `attend.TestShortLeaveExcusesLate`, `api.TestShortLeave`, `api.TestLeaveHalfDayBalanceAndLop`. Manual steps: Part AB
+  of [docs/manual_test.md](docs/manual_test.md).
 
 ## Built so far (spec 22.1)
 

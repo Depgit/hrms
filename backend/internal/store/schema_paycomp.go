@@ -71,7 +71,7 @@ var payComponentTable = &Table{
 	Checks: []Check{
 		{Name: "pay_component_kind_check", Conds: []Cond{{Col: "kind", Op: "in", Val: []any{"fixed", "variable"}}}},
 		{Name: "pay_component_side_check", Conds: []Cond{{Col: "side", Op: "in", Val: []any{"earn", "ded"}}}},
-		{Name: "pay_component_method_check", Conds: []Cond{{Col: "method", Op: "in", Val: []any{"amount", "pct_ctc", "pct_gross", "pct_basic", "pct_of", "remainder"}}}},
+		{Name: "pay_component_method_check", Conds: []Cond{{Col: "method", Op: "in", Val: []any{"amount", "pct_ctc", "pct_gross", "pct_basic", "pct_of", "remainder", "per_emp"}}}},
 		{Name: "pay_component_status_check", Conds: []Cond{{Col: "status", Op: "in", Val: []any{"Active", "Inactive"}}}},
 		{Name: "pay_component_value_check", Conds: []Cond{{Col: "value", Op: ">=", Val: float64(0)}}},
 	},
@@ -227,6 +227,7 @@ var StartingComponents = []calc.Component{
 	{Code: "da", Name: "Dearness allowance", Kind: calc.CompFixed, Side: calc.SideEarn, Role: calc.RoleDA, Method: calc.MPctBasic, Value: 0, Taxable: true, PF: true, ESI: true, Bonus: true, Payslip: true},
 	{Code: "hra", Name: "HRA", Kind: calc.CompFixed, Side: calc.SideEarn, Role: calc.RoleHRA, Method: calc.MPctBasic, Value: 40, Taxable: true, ESI: true, Payslip: true},
 	{Code: "sa", Name: "Special allowance", Kind: calc.CompFixed, Side: calc.SideEarn, Method: calc.MRemainder, Taxable: true, ESI: true, Payslip: true},
+	calc.ReimbComponent, // the per-employee Reimbursement (migration 024)
 	{Code: "perf", Name: "Performance pay", Kind: calc.CompVariable, Side: calc.SideEarn, Method: calc.MRemainder, Cycle: 3, Taxable: true, Payslip: true},
 }
 

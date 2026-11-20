@@ -433,6 +433,9 @@ func (s *Server) attSweep(ctx context.Context, q store.Q, set attAlertSet, now t
 			}
 		}
 		grace := int(p.S.Grace)
+		if t.hasStart && len(t.plan.Short) > 0 { // an approved short leave at the start: late and not-in count from its end
+			t.start = t.plan.ExcusedStart(t.start, grace)
+		}
 		if t.rec != nil && t.rec.In != "" {
 			if in, ok := attend.Min(t.rec.In); ok && t.hasStart {
 				if late := attLateBy(in, t.start); late > grace {
@@ -450,7 +453,7 @@ func (s *Server) attSweep(ctx context.Context, q store.Q, set attAlertSet, now t
 		if m.regs[e.ID][d] != "" {
 			continue
 		}
-		t.due = t.plan.Shift.Start + grace + set.NotInAfter
+		t.due = t.plan.ExcusedStart(t.plan.Shift.Start, grace) + grace + set.NotInAfter
 		end := t.plan.Shift.End
 		if end <= t.plan.Shift.Start {
 			end += 1440 // ends next day

@@ -626,7 +626,7 @@ func apprUIColleagueLeaves(ctx context.Context, q store.Q, empID, exclude, from,
 	if len(ids) == 0 {
 		return out, nil
 	}
-	reqs, err := q.C("approval_request").Find(ctx, bson.M{"wf": "leave", "status": bson.M{"$in": []string{"Pending", "Approved"}}, "_id": bson.M{"$ne": exclude},
+	reqs, err := q.C("approval_request").Find(ctx, bson.M{"wf": "leave", "status": bson.M{"$in": []string{"Pending", "Approved"}}, "_id": bson.M{"$ne": exclude}, "payload.short": bson.M{"$ne": true},
 		"employee_id": bson.M{"$in": ids}, "payload.from": bson.M{"$lte": to}, "payload.to": bson.M{"$gte": from}})
 	if err != nil {
 		return nil, err

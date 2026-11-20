@@ -167,6 +167,77 @@ type Plan struct {
 	Code  string // shift code, WO, PH or L (paid leave)
 	Shift *Shift // the planned shift when Code is a shift (the version in effect on the date)
 	Rules *Rules // that shift version's attendance rules; nil = the work policy decides
+	// Short are the approved short leaves of the day (owner, 20 Nov 2026): each window is excused, so arriving after
+	// it, leaving at its start or working fewer hours by it is no late mark, early exit or short-hours day.
+	Short []Window
+}
+
+// Window is a time window of a day, in minutes after midnight (To after From).
+type Window struct{ From, To int }
+
+// ShortMins is the minutes of short leave on the day.
+func (pl Plan) ShortMins() int {
+	n := 0
+	for _, w := range pl.Short {
+		if w.To > w.From {
+			n += w.To - w.From
+		}
+	}
+	return n
+}
+
+// ExcusedStart is the time the late mark is measured from with the day's short leave: a window that starts by the
+// start (within tol minutes) moves it to the window's end, and a window starting by that end moves it on again.
+func (pl Plan) ExcusedStart(start, tol int) int {
+	for moved := true; moved; {
+		moved = false
+		for _, w := range pl.Short {
+			if w.To > start && w.From <= start+tol {
+				start, moved = w.To, true
+			}
+		}
+	}
+	return start
+}
+
+// excusedEnd is the shift end with the day's short leave: a window that reaches the end (within tol minutes) moves it
+// back to the window's start.
+func (pl Plan) excusedEnd(end, tol int) int {
+	for moved := true; moved; {
+		moved = false
+		for _, w := range pl.Short {
+			if w.From < end && w.To >= end-tol {
+				end, moved = w.From, true
+			}
+		}
+	}
+	return end
+}
+
+// shortCredit is the hours of short leave inside the shift that were not worked (the worked span a–b, b after a):
+// they count as worked.
+func (pl Plan) shortCredit(a, b int) float64 {
+	if pl.Shift == nil || len(pl.Short) == 0 {
+		return 0
+	}
+	s, e := pl.Shift.Start, pl.Shift.End
+	if e <= s {
+		e += 1440
+	}
+	ov := func(x1, x2, y1, y2 int) int { return max(0, min(x2, y2)-max(x1, y1)) }
+	m := 0
+	for _, w := range pl.Short {
+		f, t := w.From, w.To
+		if t <= f {
+			continue
+		}
+		if f < s && f+1440 < e { // a night shift: the window is after midnight
+			f, t = f+1440, t+1440
+		}
+		in := ov(f, t, s, e)
+		m += in - min(in, ov(max(f, s), min(t, e), a, b))
+	}
+	return float64(m) / 60
 }
 
 // Status is the daily status (attStatus). With override, lateStart replaces the planned start
@@ -270,12 +341,19 @@ func Deviate(p policy.Settings, plan Plan, rec *Rec, date, loc string, shifts []
 	}
 	v := &Deviation{Planned: plan.Code, Actual: plan.Code, In: rec.In, Out: rec.Out, Hours: math.Round(float64(b-a)/60*10) / 10, PlanH: ps.Hours()}
 	sg := ((a-ps.Start+2160)%1440+1440)%1440 - 720
+	if sg > 0 && len(plan.Short) > 0 { // arriving after an approved short leave at the start is on time (owner, 20 Nov 2026)
+		sg = max(0, ((a-plan.ExcusedStart(ps.Start, p.RS.DevTol)+2160)%1440+1440)%1440-720)
+	}
 	if p.RS.DevStart && (sg < -p.RS.EarlyIn || sg > p.RS.DevTol) {
 		v.Kinds = append(v.Kinds, "Shift")
 		v.Actual = Nearest(shifts, loc, a, p.RS.DevTol)
 	}
 	if p.RS.OutTol > 0 && !contains(v.Kinds, "Shift") {
-		so := ((b%1440-ps.End+2160)%1440+1440)%1440 - 720
+		end := ps.End
+		if len(plan.Short) > 0 { // leaving for an approved short leave at the end is no early exit
+			end = plan.excusedEnd(ps.End, p.RS.OutTol)
+		}
+		so := ((b%1440-end+2160)%1440+1440)%1440 - 720
 		if so < -p.RS.OutTol && so > -720 {
 			v.Kinds = append(v.Kinds, "Early exit")
 		}
@@ -319,6 +397,7 @@ type DayIn struct {
 	Leave    string // approved leave type on this day
 	Unpaid   bool   // the leave type is unpaid
 	Half     bool   // a half-day leave: the other half is worked (Rec), or follows the no-punch rule at half weight
+	HalfOf   string // which half is leave: "first" or "second" ("" for a request made before the choice)
 	Before   bool   // before joining
 	After    bool   // after the last working day
 	Future   bool
@@ -383,14 +462,29 @@ func FinalMonth(p policy.Settings, days []DayIn) Month {
 				o.Tone, o.Code = "info", "L"
 				m.Counts["Paid leave"]++
 			}
-			if d.Half { // spec 11.4: half a day of leave; the other half was worked if anything is punched
-				o.Status += " (half day)"
+			if d.Half { // spec 11.4: half a day of leave; the other half is worked when punched (the shift's half-day rule)
+				o.Status += " (half day" + map[string]string{"first": ", first half", "second": ", second half"}[d.HalfOf] + ")"
 				if d.Unpaid {
 					o.LOP = 0.5
 				}
-				if (d.Rec == nil || d.Rec.Empty()) && !d.Future && (p.Att.Absent == "lopnow" || (p.Att.Absent == "lop" && d.AgeDays > p.RR.Back)) {
+				switch {
+				case (d.Rec == nil || d.Rec.Empty()) && !d.Future && (p.Att.Absent == "lopnow" || (p.Att.Absent == "lop" && d.AgeDays > p.RR.Back)):
 					o.LOP += 0.5
 					o.Note = "No punch for the other half"
+				case d.Rec != nil && !d.Rec.Empty():
+					// The other half is present when its hours reach the half-day hours of the day's shift (the
+					// work policy's without shift rules); a single punch counts as present, as before (RUN-15).
+					e := Effective(&p, d.Plan.Rules)
+					if h, ok := e.Counted(d.Plan, d.Rec); ok && h < e.AbsentH && !d.Future {
+						o.LOP += 0.5
+						o.Status += " + Absent"
+						o.Note = "Other half: worked " + HoursText(h) + ", under the half-day hours (" + HoursText(e.AbsentH) + ")"
+					} else {
+						o.Status += " + Present"
+						if ok {
+							o.Note = "Other half worked " + HoursText(h)
+						}
+					}
 				}
 			}
 		case d.Future:
@@ -421,6 +515,10 @@ func FinalMonth(p policy.Settings, days []DayIn) Month {
 				if x.normal > 0 || x.kind != "" {
 					extras = append(extras, x)
 				}
+			}
+			if sm := d.Plan.ShortMins(); sm > 0 && d.Plan.Code != "WO" && d.Plan.Code != "PH" { // shown as "Short leave 2h"
+				o.Leave = "Short leave " + shortHours(sm)
+				m.Counts["Short leave"]++
 			}
 			switch {
 			case o.Status == "Present":
@@ -504,6 +602,18 @@ func FinalMonth(p policy.Settings, days []DayIn) Month {
 	}
 	m.PaidDays = float64(m.DaysN-m.Outside) - m.LOP
 	return m
+}
+
+// shortHours is "2h", "1h 30m" or "45m".
+func shortHours(m int) string {
+	switch h, mm := m/60, m%60; {
+	case mm == 0:
+		return fmt.Sprintf("%dh", h)
+	case h == 0:
+		return fmt.Sprintf("%dm", mm)
+	default:
+		return fmt.Sprintf("%dh %dm", h, mm)
+	}
 }
 
 // StartScore is where a month's discipline score starts (spec 11.5): 100 for someone employed the whole

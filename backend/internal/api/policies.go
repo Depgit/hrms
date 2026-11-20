@@ -627,6 +627,9 @@ func (s *Server) leavePlanSave(r *http.Request, c *Ctx) (any, error) {
 	if !containsStr([]string{"cal", "fin", "anniv"}, b.LV.Year) {
 		return nil, bad("Choose the leave year")
 	}
+	if b.LV.ShortN < 0 || b.LV.ShortN > 31 || b.LV.ShortH < 0 || b.LV.ShortH > 8 {
+		return nil, bad("Short leave: up to 31 a month and up to 8 hours each")
+	}
 	for n, t := range b.Types {
 		if t.Days < 0 || t.Days > 366 || t.Adv < 0 || t.Back < 0 || t.MaxReq < 0 {
 			return nil, bad("%s: days and windows cannot be negative", n)

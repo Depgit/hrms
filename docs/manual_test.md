@@ -1511,25 +1511,44 @@ Work on a copy of the data. Sign in as HR Admin (EMP-1002).
 11. **Scope.** Map a Property Manager to one property and give the role `cost.view` View: they see only that property
     (no "Not tied to a property" row), no People button, and cannot change budgets.
 
-## Part V. Sending employees to the Realtime portal (17 Nov)
+## Part V. Automatic sending to the Realtime portal (19 Nov; replaces the 17 Nov Send button)
 
-Work on a copy of the data. Sign in as HR Admin (EMP-1002). Never test sends against the live portal: HR's first live
-send is a real joiner (README, "Sending employees to the portal").
+Work on a copy of the data. Sign in as HR Admin (EMP-1002). Never test against the live portal: the first live write
+is a real joiner (README, "Sending employees to the Realtime portal").
 
-1. **Not switched on.** With `realtime.Spec` empty, the employee file's Realtime portal card shows the status and
-   "Sending is not switched on yet"; the Send buttons are disabled.
-2. **Rights.** Roles and rights lists "Realtime portal: send employees". An Employee sees no card; a role with View
-   sees the card and the list, without buttons.
-3. **Statuses.** An active employee without an Attendance code: "Not on portal". With a code: "On portal" ("never
-   sent from the HRMS"). An inactive one with a code (exit after the start date): listed as "Mark left".
-4. **Mapping.** Attendance › Punch machine setup › Realtime portal › Mapping and code rule: departments,
-   designations, properties and shifts that active people have; a property with a mapped machine shows its portal
-   branch. Leave a department unmapped: the person's card says "Map the department … first" and Send is disabled.
-5. **Send (fake or trial portal only).** Map everything, Send to portal: the dialog suggests the next free code, the
-   preview lists every portal field and value; Confirm: "Saved on the portal", the code is now the Attendance code,
-   the audit log has the fields and the reply. Change the person's designation: "Changed since last send"; send the
-   changes. Mark the person inactive: "Mark left on portal" sends the leaving date.
-6. **Refusal.** A portal refusal shows the portal's own words and changes nothing in the HRMS.
+1. **Not switched on.** With `realtime.Spec` empty: mark a candidate joined. Their Realtime portal card says "Waiting
+   to send" and "Sending is not switched on yet"; Attendance › Punch machine setup › Realtime portal lists them under
+   Waiting. There is no Send button anywhere.
+2. **Rights.** An Employee sees no card; a role with `att.portal` View sees the card and the list, without Retry.
+3. **Mapping hold (fake or trial portal only).** Leave the joiner's department unmapped and mark them joined: the
+   card shows "Held: mapping needed" with "Map the department … first"; you get a bell. Map it: within a minute the
+   card shows "On portal" with the new code, which is now the Attendance code; the audit log has the fields and reply.
+4. **Changes and exits.** Change that person's designation: within a minute the portal is updated ("Writes" lists an
+   update). Make them inactive: they are marked left with the leaving date.
+5. **Failure.** Make the (fake) portal refuse: the card shows "Failed" and the portal's words, you get a bell, and
+   nothing is sent again by itself (wait two minutes; "Writes" still lists one). Press **Retry**: one more write.
+6. **Backlog.** With items Waiting, switch sending on (trial build): press **Send waiting (n)** once; each goes out.
+
+## Part Z. Company accommodation from the offer (19 Nov)
+
+1. **Offer form.** Raise an offer: the card **Company accommodation** has No / Yes. Yes without a cluster: "Choose the
+   cluster…". The cluster list shows only clusters with accommodation units, with free beds.
+- [ ] Release the offer: the release asks the same question (prefilled); the offer shows "Company accommodation:
+      Yes, in <cluster>"; the salary breakup does not change.
+2. **Mark joined.** The candidate shows "Company accommodation: Yes, in <cluster>". Mark joined: Accommodation ›
+   Check-in and check-out shows a stay from the joining date, note "Allocated automatically from the offer"; the
+   employee timeline has the same line; nothing was added by hand.
+3. **No bed.** Fill the cluster's beds and mark another tagged joiner joined: no stay; Accommodation › **Waiting for a
+   bed** lists them; HR gets a bell. Check someone out of that cluster: within 5 minutes the waiting joiner has the
+   bed (check-in that day) and leaves the list. "No longer needed" (with a reason) removes someone from the list.
+4. **Payroll.** Payslip, register and CTC of the joiner are unchanged by the accommodation.
+
+## Part AA. Skip approval on onboarding raises (19 Nov)
+
+1. With the Shortlist, Joining (offer) or Payroll verification flow's "Approval hierarchy required" unticked, as HR
+   Admin: the shortlist, offer and "Send to Payroll" show **Skip approval** next to the send button; it asks a reason
+   and the request is approved at once (history "Approval skipped by …"). With the box ticked, or as a non-HR role,
+   the button is not shown and the server refuses `?skipApproval=`.
 
 ## Part W. New joiners for insurer, EPF and ESIC; which report each role sees (18 Nov)
 
@@ -1597,6 +1616,39 @@ send is a real joiner (README, "Sending employees to the portal").
 - [ ] Payroll dry run: the payroll sheet, register and full salary register have a "Retainer fee" column (only when a
       retainer is paid); Basic/HRA/Special allowance are 0 for the retainer; the net is the same as before.
 - [ ] Employee file › Salary: "Retainer fee" line, TDS (194J), net pay unchanged.
+
+## Part AB. Half-day leave, short leave, Reimbursement in fixed pay (20 Nov)
+
+1. **Half day.** Policies › a leave plan: "Half-day leave allowed" Yes.
+- [ ] My leave › Apply: tick Half day, choose "Second half on leave": the To date goes, the preview says "Half a day";
+      after sending, the request shows "(second half)" and the balance shows 0.5 waiting.
+- [ ] Approvals › New leave request as HR for someone else: "Half day" list (first / second half) does the same.
+- [ ] Approve a half-day Casual leave on a past day with punches 14:00–18:00 (G shift): attendance "Casual leave (half
+      day, …) + Present", no LOP. With 14:00–15:30 (under the half-day hours): "+ Absent", 0.5 LOP.
+- [ ] A half-day Loss of pay with the other half worked: 0.5 LOP in the month and in the payroll dry run.
+- [ ] Bulk update › Opening leave balances with 4.5: accepted and shown as 4.5.
+2. **Short leave.** Policies › leave plan › Short leave: allowed, 2 a month, 2 hours (defaults).
+- [ ] My leave › Apply › Leave type "Short leave": date, from-time, to-time; 09:00–11:30 is refused ("at most 2
+      hours"); 09:00–11:00 goes to the leave approvers (same route as casual leave); no balance changes.
+- [ ] A second one in the month is accepted, a third is refused ("2 times a month"). On a weekly off: refused.
+- [ ] HR raises one for an employee with "Skip approval" and a reason: approved at once, history says skipped.
+- [ ] After approval, punches 11:00–18:00 on a 09:00–18:00 shift: the day is Present, note "Short leave 2h", no late
+      mark, no deviation; without the short leave the same punches are a half day / late.
+- [ ] A short leave 16:00–18:00 and an out punch at 16:00: no early exit.
+- [ ] Reports › Attendance and roster › Short leave lists it with the hours and status. My leave shows date and times.
+3. **Reimbursement.** On a test copy, Employees › someone permanent on Version 1, gross ₹30,000 › Edit pay options.
+- [ ] Reimbursement 3,000: the preview shows Basic 15,000, HRA 7,500, Reimbursement 3,000, Special allowance 4,500,
+      gross 30,000; employee PF on Basic only. Save, then the pay section shows "₹3,000 a month, inside the gross".
+- [ ] Reimbursement 7,600 is refused ("more than what is left after Basic and HRA (₹7500 …)").
+- [ ] Payroll dry run: payslip has a "Reimbursement" line, the payroll sheet a "Reimbursement" column, the full
+      salary register "Reimbursement (fixed pay)"; net pay and gross unchanged, Special allowance lower by the amount.
+- [ ] Bulk update › Salary breakup: download shows the Reimbursement (₹) column; change it and upload with a reason and
+      Effective From; a value above the room is refused on Check.
+- [ ] Compensation › Pay components: "Reimbursement" is in the library, method "Amount set on each employee", flags
+      taxable only; every structure lists it before Special allowance.
+- [ ] Payroll › Salary calculator: "Reimbursement, ₹ a month" input changes the breakup the same way.
+- [ ] Offer form › Compensation: Reimbursement 3,000 on gross 26,000 shows in the offer breakup and letter; 7,000 is
+      refused before raising. After acceptance and Mark joined, the employee's pay section shows ₹3,000.
 
 ## Part H. Known, deliberate differences from the prototype (not bugs)
 

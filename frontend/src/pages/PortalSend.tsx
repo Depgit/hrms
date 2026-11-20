@@ -1,52 +1,54 @@
 import { useState } from 'react';
 import { api, fmtD } from '../api';
 import { Field, Loading, Pill, toast, useLoad } from '../components/ui';
-import { PortalSendDialog } from '../components/PortalCard';
 
-/** Attendance › Punch machine setup › Realtime portal: sending employees (backend portal_write.go). The list of
- *  people waiting to be sent (new joiners, changes, exits, unclear sends) and the one-time mapping of HRMS
- *  departments, designations, properties and shifts to the portal's lists. Every send is previewed and confirmed. */
+/** Attendance › Punch machine setup › Realtime portal (backend portal_write.go, portal_auto.go). The HRMS writes to
+ *  the portal by itself (19 Nov 2026): joiners are created at Mark joined, changed details updated, exits marked
+ *  left, one job each, never retried by itself. This is the waiting list of what did not go out (sending off,
+ *  held by a mapping, failed, unclear) with Retry, "Send waiting" for the backlog, and the one-time mapping. */
 
 const KINDS: [string, string][] = [['dept', 'Departments'], ['desig', 'Designations'], ['branch', 'Properties → portal branch'], ['shift', 'Shifts']];
-const WK: Record<string, [string, 'ok' | 'warn' | 'bad' | 'info' | 'n']> = { New: ['Not on portal', 'warn'], Changed: ['Changed', 'info'], Leave: ['Mark left', 'bad'], Check: ['Check', 'bad'] };
-const ACTION: Record<string, string> = { New: 'create', Changed: 'update', Leave: 'left' };
+const WK: Record<string, [string, 'ok' | 'warn' | 'bad' | 'info' | 'n']> = { Waiting: ['Waiting (sending off)', 'warn'], Held: ['Held: mapping', 'warn'], Failed: ['Failed', 'bad'], Sending: ['Sending', 'info'], Check: ['Check on the portal', 'bad'] };
+const VERB: Record<string, string> = { create: 'Create', update: 'Update', left: 'Mark left' };
 
 export default function PortalSend() {
   const w = useLoad(() => api('/attendance/portal'), []);
   const [kind, setKind] = useState('All');
   const [showMap, setShowMap] = useState(false);
-  const [send, setSend] = useState<any>(null);
+  const [busy, setBusy] = useState('');
   const d = w.data;
   const rows = (d?.rows ?? []).filter((r: any) => kind === 'All' || r.kind === kind);
+  const run = async (key: string, path: string, body: any, ok: (r: any) => string) => {
+    setBusy(key);
+    try { const r = await api(path, { body }); toast(ok(r)); w.reload(); } catch (e: any) { toast(e.message); } finally { setBusy(''); }
+  };
   return <div className="card" style={{ marginBottom: 14 }}>
-    <div className="row sp"><h3 style={{ margin: 0 }}>Realtime portal: waiting to send</h3>
-      {d && <Pill k={d.rows.length ? 'warn' : 'ok'}>{d.rows.length} waiting</Pill>}</div>
+    <div className="row sp"><h3 style={{ margin: 0 }}>Realtime portal: automatic sending</h3>
+      {d && <Pill k={d.rows.length ? 'warn' : 'ok'}>{d.rows.length ? `${d.rows.length} not sent` : 'All sent'}</Pill>}</div>
     {!d ? <Loading error={w.error} /> : <>
-      <p className="mute" style={{ fontSize: 12.5 }}>New joiners, changed details and exits are sent to the Realtime portal only when you press Send and confirm the preview. People already on the portal without an Attendance code should get their code from “Match portal codes” first, or the portal gets a second record.</p>
-      {d.notReady && <div className="note warn">{d.notReady}</div>}
+      <p className="mute" style={{ fontSize: 12.5 }}>New joiners are created on the portal when marked joined, changed details are updated and exits are marked left, by the HRMS itself. A write is made once and never repeated by itself: what failed or was held waits here with the portal’s message until you press Retry. People already on the portal without an Attendance code should get their code from “Match portal codes”.</p>
+      {d.notReady && <div className="note warn">{d.notReady}. Writes due wait here; once sending is on, press “Send waiting”.</div>}
       <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-        {['All', 'New', 'Changed', 'Leave', 'Check'].map((k) => <button key={k} className={`btn sm ${kind === k ? 'primary' : ''}`} onClick={() => setKind(k)}>{k === 'All' ? 'All' : WK[k][0]}{k !== 'All' ? ` (${d.counts[k] ?? 0})` : ''}</button>)}
+        {['All', 'Waiting', 'Held', 'Failed', 'Sending', 'Check'].map((k) => <button key={k} className={`btn sm ${kind === k ? 'primary' : ''}`} onClick={() => setKind(k)}>{k === 'All' ? 'All' : WK[k][0]}{k !== 'All' ? ` (${d.counts[k] ?? 0})` : ''}</button>)}
+        {d.canSend && !d.notReady && (d.counts.Waiting ?? 0) > 0 && <button className="btn sm primary" disabled={!!busy} onClick={() => window.confirm(`Send the ${d.counts.Waiting} waiting write(s) to the portal now?`) && run('backlog', '/attendance/portal/backlog', {}, (r) => `${r.queued} queued`)}>Send waiting ({d.counts.Waiting})</button>}
         <button className="btn sm" onClick={() => setShowMap(!showMap)}>{showMap ? 'Hide mapping' : 'Mapping and code rule'}</button>
       </div>
-      {rows.length > 0 && <div className="tw" style={{ marginTop: 10, maxHeight: 420, overflow: 'auto' }}><table><thead><tr><th>Employee</th><th>To do</th><th>Property</th><th>Joined / left</th><th>Code</th><th>Note</th><th></th></tr></thead><tbody>
-        {rows.map((r: any) => <tr key={r.employeeId + r.kind}>
+      {rows.length > 0 && <div className="tw" style={{ marginTop: 10, maxHeight: 420, overflow: 'auto' }}><table><thead><tr><th>Employee</th><th>Status</th><th>Write</th><th>Property</th><th>Joined / left</th><th>Code</th><th>Message</th><th></th></tr></thead><tbody>
+        {rows.map((r: any) => <tr key={r.employeeId}>
           <td><b>{r.name}</b><div className="mute mono" style={{ fontSize: 12 }}>{r.employeeId}</div></td>
-          <td><Pill k={WK[r.kind][1]}>{WK[r.kind][0]}</Pill></td>
+          <td><Pill k={WK[r.kind]?.[1] ?? 'n'}>{WK[r.kind]?.[0] ?? r.kind}</Pill></td>
+          <td>{VERB[r.action] ?? r.action}</td>
           <td>{r.location}<div className="mute" style={{ fontSize: 12 }}>{r.dept}{r.desig ? ` · ${r.desig}` : ''}</div></td>
-          <td>{r.kind === 'Leave' ? (r.lwd ? fmtD(r.lwd) : '') : fmtD(r.doj)}</td>
+          <td>{r.action === 'left' ? (r.lwd ? fmtD(r.lwd) : '') : fmtD(r.doj)}</td>
           <td className="mono">{r.code}</td>
-          <td style={{ fontSize: 12 }}>{r.blocked?.length > 0 && r.kind !== 'Leave' ? <span style={{ color: 'var(--bad)' }}>{r.blocked.join('; ')}</span> : r.changed?.length > 0 ? `Changed: ${r.changed.join(', ')}` : r.matches?.length > 0 ? `Portal may have: ${r.matches.join('; ')}` : ''}</td>
-          <td>{d.canSend && !d.notReady && ACTION[r.kind] && !(r.blocked?.length > 0 && r.kind !== 'Leave') && <button className="btn sm" onClick={async () => {
-            let code = r.code;
-            if (r.kind === 'New') { try { code = (await api(`/employees/${r.employeeId}/portal`)).suggestCode ?? ''; } catch { code = ''; } }
-            setSend({ ...r, action: ACTION[r.kind], code });
-          }}>{r.kind === 'Leave' ? 'Mark left' : 'Send'}</button>}</td>
+          <td style={{ fontSize: 12 }}>{r.message}{r.at ? <div className="mute">{fmtD(String(r.at).slice(0, 10))}</div> : null}</td>
+          <td>{d.canSend && !d.notReady && (r.kind === 'Failed' || r.kind === 'Held') && <button className="btn sm" disabled={!!busy} onClick={() => run(r.employeeId, `/employees/${r.employeeId}/portal/retry`, {}, () => 'Queued')}>Retry</button>}
+            {r.kind === 'Check' && <a className="btn sm" href={`/file?id=${encodeURIComponent(r.employeeId)}`}>Settle</a>}</td>
         </tr>)}
       </tbody></table></div>}
       {rows.length === 0 && <p className="mute" style={{ fontSize: 12.5 }}>Nothing waiting.</p>}
       {showMap && <PortalMapping />}
     </>}
-    {send && <PortalSendDialog id={send.employeeId} name={send.name} action={send.action} code={send.code} onClose={() => setSend(null)} onDone={() => { setSend(null); w.reload(); }} />}
   </div>;
 }
 

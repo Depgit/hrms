@@ -395,11 +395,14 @@ func (s *Server) employeeGet(r *http.Request, c *Ctx) (any, error) {
 		gross, ok := grossFor(ctx, s.st.DB, id, today()[:7])
 		name, st := structureFor(ctx, s.st.DB, id, today())
 		p := payFor(ctx, s.st.DB, id, e["type"].(string))
-		sal := map[string]any{"structure": name, "gross": nil, "ctc": nil, "net": nil, "pay": p,
+		pv := p
+		pv.CompAmts = nil // the Reimbursement is shown below, under the salary mask
+		sal := map[string]any{"structure": name, "gross": nil, "ctc": nil, "net": nil, "pay": pv, "reimb": c.Show("salary", reimbOf(p), id),
 			"varPayout": varPayoutInfo(ctx, s.st.DB, id, e["type"].(string), str(e["doj"]), p, st)} // the person's own cycle (varpay.go)
 		if ok {
 			in := calc.Input{Type: calc.EmploymentType(e["type"].(string)), Gross: gross, Structure: withMedical(&st, p.Medical), VarPct: p.VarPct, VarCycle: p.VarCycle,
-				Meal: p.Meal, Accom: p.Accom, Lwf: lwfFor(ctx, s.st.DB, e["location_id"].(string), today()), PfExempt: p.PfExempt, AllBasic: p.allBasicIn(today()[:7])}
+				Meal: p.Meal, Accom: p.Accom, Lwf: lwfFor(ctx, s.st.DB, e["location_id"].(string), today()), PfExempt: p.PfExempt, AllBasic: p.allBasicIn(today()[:7]),
+				EmpAmts: p.CompAmts}
 			hasTarget := varTargetInput(ctx, s.st.DB, id, today()[:7], st, &in) // variable pay as a target (paycomp.go)
 			res := calc.Calc(in)
 			if st.Designed {

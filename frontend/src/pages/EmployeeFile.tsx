@@ -98,7 +98,7 @@ function useReqs(ids: string[]) {
 const nowWith = (r: any) => (r && r.status === 'Pending' ? `${r.chain?.[r.step] ?? ''}${r.people?.[r.step]?.person ? ' · ' + r.people[r.step].person : ''}` : '—');
 /** A request's title and detail line, as the prototype lists them ("Casual leave, 2 days" / "30 Oct 2026 to 31 Oct 2026"). */
 const title = (wf: string, p: any) => {
-  if (wf === 'leave') { const n = p.half ? 0.5 : p.cov?.length ?? 0; return `${p.ltype || 'Leave'}${n ? `, ${n} day${n === 1 ? '' : 's'}` : ''}`; }
+  if (wf === 'leave') { if (p.short) return `Short leave, ${p.fromTime} to ${p.toTime}`; const n = p.half ? 0.5 : p.cov?.length ?? 0; return `${p.ltype || 'Leave'}${n ? `, ${n} day${n === 1 ? '' : 's'}` : ''}${p.half && p.halfOf ? ` (${p.halfOf} half)` : ''}`; }
   return wf === 'regularize' ? `Regularization, ${(p.rtype || '').toLowerCase()}` : WF[wf] ?? wf;
 };
 const meta = (wf: string, p: any) => wf === 'leave' ? `${fmtD(p.from)} to ${fmtD(p.to)}` : wf === 'regularize' ? `${fmtD(p.date)}${p.reason ? ' · ' + p.reason : ''}`
@@ -382,7 +382,7 @@ function PayTab({ x, e }: { x: any; e: any }) {
     {!own ? <div className="note">Your role cannot see salary details.</div> : <div className="grid g2" style={{ alignItems: 'start' }}>
       <div className="card"><div className="row sp"><h3 style={{ margin: 0 }}>{ymLabel(ym)} calculation</h3>{x.employee.Type === 'Permanent' && <button className="btn sm" onClick={() => setSlip(true)}>Payslip preview</button>}</div>
         {!r ? <p className="mute" style={{ margin: '8px 0 0' }}>Not in the {ymLabel(ym)} payroll.</p> : <div className="tw" style={{ marginTop: 8 }}><table><tbody>
-          {L('Retainer fee', r.r.fee, 'Section 194J')}{L('Basic', r.r.basic)}{L('House rent allowance', r.r.hra)}{L('Special allowance', r.r.sa)}{L('Bonus', r.r.bonus)}{L('Variable pay', r.r.varPay)}
+          {L('Retainer fee', r.r.fee, 'Section 194J')}{L('Basic', r.r.basic)}{L('House rent allowance', r.r.hra)}{L('Reimbursement', r.r.reimb)}{L('Special allowance', r.r.sa)}{L('Bonus', r.r.bonus)}{L('Variable pay', r.r.varPay)}
           {(r.add ?? []).map((a: any, i: number) => <tr key={'a' + i}><td>{a.label}{a.reason && <div className="mute" style={{ fontSize: 12 }}>{a.reason}</div>}</td><td className="num">{inr(a.amount)}</td></tr>)}
           {L('Other earning', r.oe, r.reason)}
           <tr><td><b>Total earnings</b></td><td className="num"><b>{inr(r.totalEarn)}</b></td></tr>

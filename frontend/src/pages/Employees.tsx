@@ -295,12 +295,13 @@ export function EmployeeDetail({ id, onClose }: { id: string; onClose?: () => vo
         {R.variable && e.salary?.designed && <><dt>Variable pay target</dt><dd>{e.salary.varTarget == null ? (e.salary.varMode ? 'Hidden' : 'None') : e.salary.varMode === 'pct' ? `${e.salary.varPct}% of fixed gross (${inr(e.salary.varTarget)} a month)` : `${inr(e.salary.varTarget)} a month`}, paid {VCT[e.salary.varCycle] || 'every month'} as HR enters it when due</dd></>}
         {R.variable && !e.salary?.designed && <><dt>Variable pay</dt><dd>{vPct != null ? `${vPct}% of gross` : 'Structure standard'}, paid {VCT[vCyc] || 'every month'}
           {e.salary?.varPayout && <div className="mute" style={{ fontSize: 12.5 }}>Own cycle from {fmtYm(e.salary.varPayout.from)}: next payout {fmtYm(e.salary.varPayout.next)}</div>}</dd></>}
+        {e.type !== 'Retainer' && <><dt>Reimbursement (fixed pay)</dt><dd>{e.salary?.reimb == null ? 'Hidden' : e.salary.reimb > 0 ? `${inr(e.salary.reimb)} a month, inside the gross` : 'None'}</dd></>}
         {e.type !== 'Retainer' && <><dt>Medical insurance</dt><dd>{!p ? 'Hidden' : p.medical != null ? `${inr(p.medical)} a month (set for this employee)` : 'Structure standard'}</dd></>}
         {R.ded === 'all' ? <><dt>Meal · accommodation deduction</dt><dd>{p ? `${inr(p.meal)} · ${inr(p.accommodation)}` : 'Hidden'}</dd></>
           : R.ded === 'tds' ? <><dt>TDS</dt><dd>{sd.tdsRate != null ? `${sd.tdsRate}% of gross` : 'A share of gross'} (set in the structure)</dd></> : <><dt>Deductions</dt><dd>None</dd></>}
       </dl>
       <div className="row" style={{ marginTop: 8 }}>
-        {can('emp.salary', 2) && e.status !== 'Inactive' && p && (R.variable || R.ded === 'all') && <button className="btn sm" onClick={() => setDlg('pay')}>Edit pay options</button>}
+        {can('emp.salary', 2) && e.status !== 'Inactive' && p && (R.variable || R.ded === 'all' || e.type !== 'Retainer') && <button className="btn sm" onClick={() => setDlg('pay')}>Edit pay options</button>}
         <button className="btn sm" disabled={!R.docs} onClick={() => setDlg('slip')}>Payslip</button>
         <button className="btn sm" disabled={!R.docs} onClick={() => setDlg('appt')}>Appointment letter</button>
       </div>
@@ -360,17 +361,18 @@ function PayModal({ e, std, structId, stdPct, reasons, onClose, onDone }: { e: a
   // Variable pay target (17 Nov 2026): % of the fixed gross or ₹ a month, chosen each time; from the open month.
   const tgt = e.salary.designed;
   const [v, setV] = useState({ varMode: (e.salary.varMode || 'pct') as VarMode, varVal: String(tgt ? (e.salary.varMode === 'pct' ? e.salary.varPct ?? '' : e.salary.varMode ? e.salary.varTarget ?? '' : '') : p.varPct ?? ''),
-    meal: p.meal || 0, accommodation: p.accommodation || 0, reason: '' });
+    meal: p.meal || 0, accommodation: p.accommodation || 0, reimb: String(e.salary.reimb ?? 0), reason: '' });
   const [err, setErr] = useState('');
   const vv = R.variable && v.varVal !== '' ? +v.varVal : undefined;
   const body = { type: e.type, locationId: e.location_id, grade: e.grade, gross: e.salary.gross, structureId: structId, joinMonth: +String(e.doj).slice(5, 7) || 1, month: new Date().getMonth() + 1,
-    varMode: v.varMode, varPct: v.varMode === 'pct' ? vv : undefined, varAmt: v.varMode === 'amount' ? vv : undefined, varCycle: !tgt ? p.varCycle ?? undefined : undefined, meal: R.ded === 'all' ? +v.meal || 0 : 0, accom: R.ded === 'all' ? +v.accommodation || 0 : 0 };
+    varMode: v.varMode, varPct: v.varMode === 'pct' ? vv : undefined, varAmt: v.varMode === 'amount' ? vv : undefined, varCycle: !tgt ? p.varCycle ?? undefined : undefined, meal: R.ded === 'all' ? +v.meal || 0 : 0, accom: R.ded === 'all' ? +v.accommodation || 0 : 0,
+    reimb: e.type !== 'Retainer' ? +v.reimb || 0 : 0 };
   const prev = useLoad(() => (e.salary.gross > 0 ? api('/salary/preview', { body }).catch(() => null) : Promise.resolve(null)), [JSON.stringify(body)]);
   const save = async () => {
     setErr('');
     try {
       await api(`/employees/${e.id}/pay`, { method: 'PUT', body: { varMode: v.varMode, varVal: vv ?? null, varPct: !tgt && v.varMode === 'pct' ? vv ?? null : undefined, varCycle: !tgt ? p.varCycle ?? null : undefined,
-        meal: R.ded === 'all' ? +v.meal : 0, accommodation: R.ded === 'all' ? +v.accommodation : 0, reason: v.reason } });
+        meal: R.ded === 'all' ? +v.meal : 0, accommodation: R.ded === 'all' ? +v.accommodation : 0, reimb: e.type !== 'Retainer' && e.salary.reimb != null ? +v.reimb || 0 : undefined, reason: v.reason } });
       toast('Pay options saved'); onDone();
     } catch (x: any) { setErr(x.message); }
   };
@@ -381,6 +383,8 @@ function PayModal({ e, std, structId, stdPct, reasons, onClose, onDone }: { e: a
       {R.variable && <VarTargetField mode={v.varMode} value={v.varVal} gross={+e.salary.gross || 0} onChange={(m, x) => setV({ ...v, varMode: m, varVal: x })} />}
       {R.ded === 'all' && <><label className="field"><span>Meal deduction, ₹ a month</span><input type="number" min={0} value={v.meal} onChange={(x) => setV({ ...v, meal: +x.target.value })} /></label>
         <label className="field"><span>Accommodation deduction, ₹ a month</span><input type="number" min={0} value={v.accommodation} onChange={(x) => setV({ ...v, accommodation: +x.target.value })} /></label></>}
+      {e.type !== 'Retainer' && e.salary.reimb != null && <label className="field"><span>Reimbursement, ₹ a month (inside the gross: Basic and HRA first, special allowance takes the rest)</span>
+        <input type="number" min={0} value={v.reimb} onChange={(x) => setV({ ...v, reimb: x.target.value })} /></label>}
       <label className="field"><span>Reason</span><select value={v.reason} onChange={(x) => setV({ ...v, reason: x.target.value })}><option value="">Choose</option>{reasons.map((r) => <option key={r}>{r}</option>)}</select></label>
     </div>
     {prev.data?.breakup && <div style={{ marginTop: 14 }}><Statement c={prev.data.breakup} type={e.type} std={std} rules={prev.data.rules ? { [e.type]: prev.data.rules } : undefined} lwf={prev.data.lwfNote ?? ''} month={body.month} /></div>}

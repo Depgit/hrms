@@ -445,6 +445,7 @@ var regCols = func() []regCol {
 		// Earnings
 		m("Basic", func(x *regRow) float64 { return x.f.Basic }),
 		m("HRA", func(x *regRow) float64 { return x.f.Hra }),
+		m("Reimbursement (fixed pay)", func(x *regRow) float64 { return x.f.Reimb }),
 		m("Special allowance", func(x *regRow) float64 { return x.f.Sa }),
 		m("Bonus", func(x *regRow) float64 { return x.f.Bonus }),
 		m("Variable pay", func(x *regRow) float64 { return x.f.VarPay }),
@@ -552,7 +553,7 @@ func (s *Server) regCTC(r *http.Request, ym string, rows []*PayRowOut) (map[stri
 			varPct = payengineFloatPtr(p["var_prev_pct"])
 		}
 		in := calc.Input{Type: calc.EmploymentType(o.Type), Gross: o.Gross, Structure: &st, VarPct: varPct, VarCycle: payengineIntPtr(p["var_cycle"]),
-			Meal: payengineFloat(p["meal"]), Accom: payengineFloat(p["accommodation"]), Lwf: lwf[state[o.EmployeeID]]}
+			Meal: payengineFloat(p["meal"]), Accom: payengineFloat(p["accommodation"]), Lwf: lwf[state[o.EmployeeID]], EmpAmts: byCompOf(p["comp_amts"])}
 		varTargetInput(ctx, q, o.EmployeeID, ym, st, &in) // a structure made from components (paycomp.go)
 		res := calc.Calc(in)
 		out[o.EmployeeID] = calc.Round2(res.CTC)

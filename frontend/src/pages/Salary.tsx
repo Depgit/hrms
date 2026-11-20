@@ -22,7 +22,7 @@ export default function Salary() {
   const grades = useLoad(() => api<any[]>('/masters/grade?status=Active').catch(() => []), []);
   const structs = useLoad(() => api<any[]>('/salary/structures').catch(() => []), []);
   const comp = useLoad(() => api('/comp').catch(() => null), []);
-  const [p, setP] = useState<Record<string, any>>({ type: 'Permanent', city: '', grade: 'G1', structureId: '', joinMonth: new Date().getMonth() + 1, month: new Date().getMonth() + 1, gross: 19900, inc: 0, uan: 'Yes', varPct: '', varCycle: '', varMode: 'pct', varVal: '', meal: 0, accom: 0 });
+  const [p, setP] = useState<Record<string, any>>({ type: 'Permanent', city: '', grade: 'G1', structureId: '', joinMonth: new Date().getMonth() + 1, month: new Date().getMonth() + 1, gross: 19900, inc: 0, uan: 'Yes', varPct: '', varCycle: '', varMode: 'pct', varVal: '', meal: 0, accom: 0, reimb: 0 });
   const set = (k: string, v: any) => setP({ ...p, [k]: v });
   // Pay entered by CTC (fixed + variable) instead of the gross: the split gives the gross and the variable part.
   const [pe, setPe] = useState<PayIn>({ ...PAY_IN, payBy: 'ctc', amount: '35000', var: '15000' });
@@ -43,7 +43,7 @@ export default function Salary() {
   const varAmt = vMode === 'amount' ? vVal : undefined;
   const body = { type: p.type, locationId: loc?.id ?? '', grade: p.grade, gross, inc: +p.inc || 0, structureId: sid || undefined, joinMonth: +p.joinMonth, month: +p.month,
     varMode: T.variable ? vMode : undefined, varPct: T.variable && varPct !== undefined ? varPct : undefined,
-    varAmt: T.variable ? varAmt : undefined, meal: T.ded === 'all' ? +p.meal || 0 : 0, accom: T.ded === 'all' ? +p.accom || 0 : 0 };
+    varAmt: T.variable ? varAmt : undefined, meal: T.ded === 'all' ? +p.meal || 0 : 0, accom: T.ded === 'all' ? +p.accom || 0 : 0, reimb: p.type !== 'Retainer' ? +p.reimb || 0 : 0 };
   const { data: r, error } = useLoad(() => (city && gross > 0 ? api('/salary/preview', { body }) : Promise.resolve(null)), [JSON.stringify(body)]);
   const c = r?.breakup;
   const lwfRule = comp.data?.lwf?.find((x: any) => x.state === loc?.state)?.rule;
@@ -70,6 +70,7 @@ export default function Salary() {
         <h3 style={{ marginTop: 18 }}>Options for this employee</h3><div className="form">
           {T.variable && !byCtc && <VarTargetField mode={p.varMode} value={p.varVal} gross={gross} onChange={(m, v) => setP({ ...p, varMode: m, varVal: v })} />}
           {T.ded === 'all' && <>{inp('meal', 'Meal deduction, ₹ a month')}{inp('accom', 'Accommodation deduction, ₹ a month')}</>}
+          {p.type !== 'Retainer' && inp('reimb', 'Reimbursement, ₹ a month (inside the gross)')}
         </div>
       </div>
       <div className="card"><h3>Salary breakup · {cityName}</h3>
@@ -77,7 +78,7 @@ export default function Salary() {
         {c && designed && <Statement c={c} type={p.type} std={S_} rules={comp.data?.types} lwf={lwfNote} month={+p.month} />}
         {c && !designed && <><div className="tw"><table className="stmt"><tbody>
           {p.type === 'Retainer' || c.fee > 0 ? <>{H('Retainer')}{R('Retainer fee', c.fee ?? c.gross, 'A month; TDS under section 194J')}</>
-            : <>{H('Fixed salary')}{R('Basic + DA', c.basic, `${S_.basicPct}% of gross`)}{R('HRA', c.hra, `${S_.hraPct}% of basic`)}{R('Special allowance', c.sa, 'Balancing figure')}
+            : <>{H('Fixed salary')}{R('Basic + DA', c.basic, `${S_.basicPct}% of gross`)}{R('HRA', c.hra, `${S_.hraPct}% of basic`)}{c.reimb > 0 && R('Reimbursement', c.reimb, 'Set on the employee')}{R('Special allowance', c.sa, 'Balancing figure')}
           {R('Gross salary', c.gross, '', true)}</>}{c.bonus > 0 && R('Bonus', c.bonus, `${S_.bonusPct}% of basic up to ${inr(S_.bonusCalc || 7000)}, for gross up to ${inr(S_.bonusCeil)}`)}
           {c.variable > 0 && <>{H('Variable pay, on top of fixed')}{R('Variable pay a month (provision)', c.variable, `${vp}% of gross, paid ${VCT[c.varCycle] || 'every month'}, counted from the joining month`)}
             {mo && R('Variable paid this month', c.varPay, c.varPay ? 'Payout month' : 'Not a payout month')}</>}

@@ -230,3 +230,45 @@ func TestHalfDayLeaveAndDayOffPunches(t *testing.T) {
 		t.Fatalf("day off codes %q %q", m.Days[3].Code, m.Days[4].Code)
 	}
 }
+
+// Short leave (owner, 20 Nov 2026): an approved 2-hour short leave at the start of a 09:00–18:00 shift makes an 11:00
+// arrival on time and the day Present (no late mark, no short hours); without it the same punches are Late. One at the
+// end makes leaving at 16:00 no early exit.
+func TestShortLeaveExcusesLate(t *testing.T) {
+	p := policy.Defaults()
+	p.RS.OutTol, p.RS.DevStart, p.RS.DevTol = 15, true, 30
+	g := Plan{Code: "G", Shift: &Shift{Code: "G", Start: 9 * 60, End: 18 * 60}}
+	rec := &Rec{In: "11:00", Out: "18:00"}
+	if st, _ := Status(p, g, rec, nil, false); st != "Half day" {
+		t.Fatalf("without short leave: %s", st)
+	}
+	if st, _ := Status(p, g, &Rec{In: "11:00", Out: "20:00"}, nil, false); st != "Late" {
+		t.Fatalf("without short leave, 9 hours: %s", st)
+	}
+	s := g
+	s.Short = []Window{{9 * 60, 11 * 60}}
+	for _, r := range []*Rec{rec, {In: "11:00", Out: "20:00"}} {
+		if st, _ := Status(p, s, r, nil, false); st != "Present" {
+			t.Fatalf("with short leave 09:00-11:00, %s-%s: %s", r.In, r.Out, st)
+		}
+	}
+	if v := Deviate(p, s, rec, "2026-11-18", "L1", []Shift{*s.Shift}); v != nil {
+		t.Fatalf("deviation with short leave: %+v", v)
+	}
+	m := FinalMonth(p, []DayIn{{Date: "2026-11-18", Plan: s, Rec: rec, AgeDays: 2}})
+	if d := m.Days[0]; d.Status != "Present" || d.LOP != 0 || d.Leave != "Short leave 2h" || m.Counts["Late"] != 0 {
+		t.Fatalf("month day %+v counts %v", d, m.Counts)
+	}
+	e := g
+	e.Short = []Window{{16 * 60, 18 * 60}}
+	early := &Rec{In: "09:00", Out: "16:00"}
+	if v := Deviate(p, g, early, "2026-11-18", "L1", []Shift{*g.Shift}); v == nil {
+		t.Fatal("leaving at 16:00 without short leave is an early exit")
+	}
+	if v := Deviate(p, e, early, "2026-11-18", "L1", []Shift{*e.Shift}); v != nil {
+		t.Fatalf("early exit with short leave: %+v", v)
+	}
+	if st, _ := Status(p, e, early, nil, false); st != "Present" {
+		t.Fatalf("7 hours worked + 2 excused: %s", st)
+	}
+}
