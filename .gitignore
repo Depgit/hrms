@@ -1,0 +1,13 @@
+node_modules
+dist
+.env
+*.log
+/backend/bin
+backend/data/
+tests/e2e/*-results.json
+backups/
+.regress/
+/backend/hrms
+.DS_Store
+*.local
+.vite/

@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workforce Plan</title>
+<style>
+:root {
+  --bg: #f7f7f5; --card: #ffffff; --ink: #1d1d1b; --quiet: #5f5f5a; --line: #e2e1dc;
+  --accent: #0f6e6e; --accent-tint: #e3f1f0; --done: #2f7d32; --done-tint: #e6f2e6;
+  --build: #9a6200; --build-tint: #fbf0dc; --plan: #5f5f5a; --plan-tint: #efefec;
+  --ask: #8a2d5c; --ask-tint: #f6e6ee;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161615; --card: #1f1f1d; --ink: #ecebe6; --quiet: #a3a29b; --line: #34332f;
+    --accent: #5cc4c0; --accent-tint: #1c3433; --done: #7fc782; --done-tint: #1f3320;
+    --build: #e3b04f; --build-tint: #3a2d14; --plan: #a3a29b; --plan-tint: #2a2a27;
+    --ask: #e88bb8; --ask-tint: #3a1f2c;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #161615; --card: #1f1f1d; --ink: #ecebe6; --quiet: #a3a29b; --line: #34332f;
+  --accent: #5cc4c0; --accent-tint: #1c3433; --done: #7fc782; --done-tint: #1f3320;
+  --build: #e3b04f; --build-tint: #3a2d14; --plan: #a3a29b; --plan-tint: #2a2a27;
+  --ask: #e88bb8; --ask-tint: #3a1f2c;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 920px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 26px; margin: 0 0 4px; }
+h2 { font-size: 20px; margin: 40px 0 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+h3 { font-size: 16px; margin: 22px 0 6px; }
+p { margin: 6px 0 10px; }
+ul, ol { margin: 6px 0 12px; padding-left: 22px; }
+li { margin: 3px 0; }
+.sub { color: var(--quiet); margin: 0 0 20px; }
+nav { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 16px 0 8px; font-size: 14px; }
+nav a { color: var(--accent); text-decoration: none; }
+nav a:hover { text-decoration: underline; }
+.tbl { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; font-size: 14px; margin: 8px 0 16px; }
+th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+th { color: var(--quiet); font-weight: 600; font-size: 13px; }
+tr:last-child td { border-bottom: 0; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.done { color: var(--done); background: var(--done-tint); }
+.build { color: var(--build); background: var(--build-tint); }
+.plan { color: var(--plan); background: var(--plan-tint); }
+.ask { color: var(--ask); background: var(--ask-tint); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin: 10px 0 16px; }
+.key { border-left: 4px solid var(--accent); }
+.flow { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; white-space: pre; overflow-x: auto; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 8px 0 16px; line-height: 1.6; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; background: var(--plan-tint); padding: 0 4px; border-radius: 4px; }
+.q { counter-increment: q; }
+</style>
+</head>
+<body>
+<main>
+<h1>Workforce plan: hiring to exit, accommodation and true cost</h1>
+<p class="sub">Saltstayz HRMS · plan for approval · 16 Nov 2026 · nothing in this plan is built yet</p>
+
+<nav>
+<a href="#goal">Goal</a><a href="#today">What exists today</a><a href="#m1">1 Hiring lifecycle</a><a href="#m2">2 Access</a><a href="#m3">3 Pay structure</a><a href="#m4">4 Accommodation</a><a href="#m5">5 Policy layering</a><a href="#m6">6 Cost and budget</a><a href="#m7">7 Machine enrolment</a><a href="#order">Build order</a><a href="#ask">Decisions needed</a>
+</nav>
+
+<h2 id="goal">Goal</h2>
+<div class="card key">
+<p>After go-live the HRMS is the <b>only system of record</b>. Every candidate, offer, joining, leave, transfer, bed allocation, salary change and exit is created here. The Realtime India portal is only the source of machine swipes.</p>
+<p>The management question it must answer at any moment: <b>"What does this property, this cluster, this city or the whole company cost us this month, and how does that compare with budget?"</b> That cost includes salary, employer contributions and the costs that never appear in anyone's CTC, such as accommodation.</p>
+</div>
+
+<h2 id="today">What exists today (from the code)</h2>
+<div class="tbl"><table>
+<tr><th>Area</th><th>Already there</th><th>Missing</th></tr>
+<tr><td>Structure</td><td>State › City › Cluster › Location. A location is a property, linked to the CMS property. Location has headcount and payroll budgets.</td><td>Nothing structural. The other modules will reuse this hierarchy.</td></tr>
+<tr><td>Hiring</td><td>Candidate stages Shortlisted › Interview › Offer › Joined › Closed. IDs SI-/OI-/JI- from one number. Offer letter and breakup (HR side). Decline with reason. "Not joined". Joiner self-fill link. Employee ID issued when mandatory forms and documents are done.</td><td>The OI- number is issued at "Selected", before the candidate accepts. The candidate can't see or answer the offer themselves. No "query on breakup", offer versions, offer expiry, joining-day no-show variants, background check, early exit before an Employee ID, or contract staff without an Employee ID.</td></tr>
+<tr><td>Employee status</td><td>Pre-boarding, Active, Inactive. Separation types: resignation, termination, absconding and others.</td><td>Probation/confirmed, on notice, suspended, long leave and absconding as real statuses, plus one timeline of every status change.</td></tr>
+<tr><td>Access</td><td>16 roles plus custom roles. Rights per role (No access, View, Edit). A person can hold several roles, scoped to all, chosen locations, team or self.</td><td>Rights for one individual person (grant or block a single right). Scope by cluster or city. Changing a role from the employee page.</td></tr>
+<tr><td>Policies</td><td>Work policy mapped at employee, location, cluster, city, state, department, designation, grade or type. <b>The first match wins</b>: an employee policy completely replaces the location policy.</td><td>Combining layers, so that one rule comes from the location and another from the employee's own policy, with a view showing where each rule came from. Company policy audiences by cluster, city or employee.</td></tr>
+<tr><td>Pay structure</td><td>HR enters a monthly gross. Basic, HRA and special allowance are fixed percentages in code. Variable = a % of gross with a payout cycle. Pay bands. Changes dated by month.</td><td>Components defined by the admin, each a fixed ₹ amount or a % of something, and a clear fixed versus variable split (e.g. ₹35k = ₹20k fixed + ₹15k variable). Rules for when variable pay is paid out.</td></tr>
+<tr><td>Accommodation</td><td>Only a monthly ₹ deduction on the employee.</td><td>Everything else: flats, leases, rent, beds, allocation, check-in/out, and the cost split per occupant.</td></tr>
+<tr><td>Cost reports</td><td>Payroll cost by city, location or department (gross plus employer contributions). Budgets per location (headcount, payroll) shown on the Compensation tab.</td><td>Costs outside CTC, cluster level, budget against actual, the month-end snapshot, drilling down from company to person.</td></tr>
+<tr><td>Punch machines</td><td>Device belongs to a location. Realtime portal pull. 40 T304F Mini machines.</td><td>Machine capacity, and which employees are enrolled on which machine.</td></tr>
+</table></div>
+
+<h2 id="m1">1 · Hiring lifecycle: candidate › Joining ID › Employee ID</h2>
+<p>Every state in the lifecycle is listed below. Each change is dated, has a reason and is kept on the person's timeline, so HR can always see where someone is and why.</p>
+<div class="flow">Candidate (SI-)  Shortlisted › Interview › Selected
+   │
+   ▼
+Offer proposed          no Offer ID yet; versions v1, v2… kept
+   ├─ Candidate asks about the breakup ── HR revises ── new version sent
+   ├─ Declined (reason)                ── Closed: Offer declined
+   ├─ No answer by expiry date         ── Closed: Offer lapsed
+   ▼
+Offer accepted          ← Offer ID (OI-) issued here, accepted version frozen
+   ├─ Withdrew before the joining date (reason)
+   ├─ Joining date moved (new date, reason)
+   ▼
+Joining day
+   ├─ Did not come / not answering the phone   ── Waiting (HR window, e.g. 7 days)
+   │      ├─ comes within the window ── Joined on the actual date, process resumes
+   │      └─ window ends            ── Closed: No-show
+   ├─ Came but declined on the day             ── Closed: Declined on joining day
+   ▼
+Joined                  ← Joining ID (JI-) issued; machine swipes and pay counted from day 1
+   │  forms › document check › background check › approvals
+   ├─ Quit in the first days (says so)            ── Closed: Early exit
+   ├─ Stopped coming in the first days            ── Waiting (same HR window)
+   │      ├─ comes back within the window ── process resumes
+   │      └─ window ends                ── Closed: Early exit
+   │     paid for days worked, no F&amp;F case, rehire flag set
+   ▼
+Approved                ← Employee ID (EMP-) issued; the person, punches and pay move to it
+   │
+   ▼
+Employee   Probation › Confirmed  (also: On notice, Suspended, Long leave, Absconding)
+   ▼
+Separated  (existing separation and F&amp;F flow)   ·   Rehire eligible yes/no</div>
+
+<h3>What gets built</h3>
+<ul>
+<li><b>Offer without an ID.</b> The OI- number is issued only on acceptance. Before that, the offer is a numbered version under the candidate (SI-0042 offer v2).</li>
+<li><b>HR records the candidate's answer</b> (no candidate link, decided 16 Nov): <b>Accepted</b>, <b>Question about the breakup</b> (what was asked; HR revises and sends a new version) or <b>Declined</b> (reason). Every answer is dated and kept on the timeline.</li>
+<li><b>Offer expiry</b>, with reminders before it lapses.</li>
+<li><b>No-show waiting window (HR decides).</b> When someone doesn't come on the joining date, the case goes to <b>"Waiting"</b>, not closed. HR sets the window in settings (default 7 days) and can extend it for one person, with a reason. The case shows "day 3 of 7". HR gets a reminder each day and can log call attempts. If the person comes within the window, HR marks them joined <b>on the actual date</b> and the process resumes from where it stopped: the same offer, documents and link, no re-entry. When the window ends, HR confirms and the case closes as No-show; HR can choose automatic close in settings.</li>
+<li><b>Joining-day outcomes:</b> joined, no-show, declined on the day, date moved. Each one closes or moves the case with a reason, which feeds a <b>drop-off report</b> (where candidates are lost, by recruiter, property and role).</li>
+<li><b>Joining ID record from day 1.</b> The person can swipe and be paid before getting an Employee ID. Their onboarding checklist adds a <b>background check</b> step (a vendor or manual result plus an uploaded report; it can block approval).</li>
+<li><b>Early exit.</b> If a person says they are quitting in the first days, the case closes as "Early exit" straight away. If they just <b>stop coming</b>, the case goes to <b>Waiting with the same HR window</b> as a no-show (same setting, can be extended per person, day counter, call log). If they come back within the window, the process resumes, and the missed days are marked absent. When the window ends, the case closes as "Early exit". They are paid for the days worked, with no full separation case.</li>
+<li><b>Employee ID after approval.</b> When every step is approved, the EMP- ID is issued. The Joining ID stays as an alias, so searches and old documents still work.</li>
+<li><b>Contract staff without an Employee ID.</b> Settings per employment type:
+  <ul><li>"issues an Employee ID: yes/no";</li><li>"leave: none / only some types / all";</li><li>its own ID series.</li></ul>
+  Contract staff keep their own series (e.g. CW-0001) for life. They are <b>paid by company payroll</b> like everyone else, with attendance and cost (decided 16 Nov).</li>
+<li><b>Status timeline</b> on every person: one list of every change (who, when, why). The statuses are the ones in the diagram above.</li>
+</ul>
+<div class="card"><b>Technical note:</b> today the Employee ID is the record's key everywhere (punches, payroll rows, leave). Switching from Joining ID to Employee ID needs a careful one-time "re-key" of that person's records in one transaction. In the first days that's only a handful of records, so it is safe. A Joining-ID person is a normal employee who simply isn't fully approved yet: they are paid through normal payroll (decided 16 Nov). The background check is recorded by HR (result plus uploaded report). A setting decides whether a failed or pending check blocks the Employee ID; it is on by default.</div>
+
+<h2 id="m2">2 · Access: admin can give anyone anything</h2>
+<ul>
+<li><b>Admin has every right, always.</b> This is locked, and only another admin can remove it.</li>
+<li><b>Rights for one person</b> on top of their roles: grant a single right (e.g. "View salary") or block one, with an optional end date. These show on the Access page and on the employee page.</li>
+<li><b>Scope by state, city, cluster or property</b>, not only by a list of locations. A new property added to a cluster is covered automatically.</li>
+<li><b>Role change from the employee page</b> (admin, or anyone given the right), with an audit trail.</li>
+<li><b>"Who can see what" report:</b> for any person, their effective rights and where each came from (role or personal).</li>
+</ul>
+
+<h2 id="m3">3 · Pay structure: fixed and variable, by amount or percentage</h2>
+<ul>
+<li><b>Component designer</b> (admin). Each component is <i>Fixed</i> or <i>Variable</i>, earning or deduction, with a calculation method:
+  <ul><li>fixed ₹ amount;</li><li>% of CTC, of gross, of Basic, or of another component;</li><li>"the remainder" (balancing figure);</li><li>a formula with a min/max cap.</li></ul>
+  Also set per component: taxable, PF wage, ESI wage.</li>
+<li><b>Structures</b> are made of components. Example: CTC ₹35,000 = Fixed ₹20,000 (Basic 50% of fixed, HRA 40% of Basic, the rest special allowance) + Variable ₹15,000.</li>
+<li><b>Variable rules</b> per component: payout cycle (monthly, quarterly, half-yearly, yearly) and what it depends on: <b>a manual amount entered by HR</b> (decided 17 Nov; attendance %, manager rating, targets or a manual amount), plus whether it's paid pro-rata on exit.</li>
+<li><b>Enter by CTC or by gross.</b> The system works out the rest and shows the same breakup the candidate sees on the offer.</li>
+<li><b>Compliance check:</b> warns when the wage definition under the new labour codes (Basic + DA at least 50% of total pay) isn't met.</li>
+<li><b>No break for current employees:</b> today's percentage structures are converted into templates that give the same result. Payroll is compared before and after on a copy of your data before switching.</li>
+</ul>
+
+<h2 id="m4">4 · Accommodation: flats, leases, beds and the true cost</h2>
+<p>A new page, <b>Settings › Accommodation</b>:</p>
+<ul>
+<li><b>Units</b> (flat, house or PG). Fields: address, cluster, nearest properties, gender, beds, landlord and contact.</li>
+<li><b>Lease per unit:</b> start date, end date or "ongoing", notice period, monthly rent, deposit, maintenance, yearly increase, and documents (agreement, ID). Reminders before the lease ends or the rent increases.</li>
+<li><b>Monthly running cost:</b> rent + electricity + water + Wi-Fi + housekeeping (fixed or entered each month).</li>
+<li><b>Allocation:</b> when someone joins or transfers into a city, the system lists units in their cluster with free beds, nearest first, matching gender (and shift if wanted). HR clicks <b>Assign</b>. Check-in and check-out dates are kept for each person, with a history of every stay.</li>
+<li><b>Cost split (company cost, not in CTC), decided 17 Nov.</b> The unit's month cost is divided <b>equally</b> among the people who stayed there that month: ₹12,000 with 1 person = ₹12,000; 2 people = ₹6,000 each; 4 = ₹3,000 each. A day-by-day split is kept as an option for later, off by default. A month with nobody in the unit counts as empty-unit cost for its property.</li>
+<li><b>Not on the salary sheet (decided 17 Nov).</b> Company accommodation is <b>not part of payroll at all</b>. It never appears on the payslip or salary register and counts for nothing statutory. It is used only to calculate the company's cost.</li>
+<li><b>Minimum wage top-up stays as it is.</b> The meal/accommodation amount HR enters today (e.g. ₹18k salary topped up by ₹2k to meet a ₹20k state minimum wage, then deducted) keeps working. It is a separate line from the company accommodation above.</li>
+
+<li><b>Occupancy board:</b> beds free, filled and by gender, per cluster and city, plus leases ending soon.</li>
+</ul>
+
+<h2 id="m5">5 · Policy conflict check (decided 16 Nov)</h2>
+<p>Today the system accepts two overlapping policies silently. Example: a 6-day policy is already on a department, and a 5.5-day policy is then put on a location. Both are saved, and the employees caught in both get whichever one ranks higher, without anyone being told.</p>
+<ul>
+<li>When a policy is assigned, the system first checks who it would cover. If any of those people already get a different policy, it <b>stops and shows</b>: "6-day policy is already applied here (through the Operations department) to 42 people."</li>
+<li>HR then chooses:
+  <ul><li><b>Replace</b> for those 42 (they move to the new policy from a chosen date);</li><li><b>Keep</b> the existing one for them (the new policy covers only the rest);</li><li><b>Pick people</b> one by one;</li><li><b>Cancel</b>.</li></ul></li>
+<li>The choice is saved as explicit exceptions, so the result never depends on a hidden ranking.</li>
+<li><b>Effective policy view</b> on each employee: which policy they get and why.</li>
+<li><b>Overlap report:</b> lists every person currently covered by two or more policies today, so the existing overlaps can be cleaned up before go-live.</li>
+<li><b>Company policies to acknowledge</b> can also target a cluster, city or named employees.</li>
+</ul>
+
+<h2 id="m6">6 · Cost and budget console</h2>
+<p>One page that answers "what do we spend", for the whole company or any state, city, cluster or property, with a drill-down to each person.</p>
+<div class="tbl"><table>
+<tr><th>Line</th><th>Source</th></tr>
+<tr><td>Salary paid (fixed + variable + incentives), <b>minus the minimum-wage meal/accommodation top-ups</b> (decided 17 Nov: those are not company cost or budget)</td><td>Payroll run (actual), or salary structures (projection for the current month)</td></tr>
+<tr><td>Employer contributions (PF, ESI, LWF, gratuity, bonus provision, medical)</td><td>Payroll run</td></tr>
+<tr><td>Accommodation cost (allocated) and vacancy cost</td><td>Module 4</td></tr>
+<tr><td>Other costs outside CTC: <b>every kind</b> (decided 17 Nov), e.g. food, transport, uniforms, recruitment and agency fees, training, travel; the admin can add any category</td><td>New <b>expense ledger</b>: each entry is charged to one person, to a property (split by headcount) or to a cluster</td></tr>
+<tr><td>Recoveries (accommodation and meal deductions, etc.)</td><td>Payroll run</td></tr>
+<tr><td><b>Total true cost</b>, per head, and against <b>budget</b></td><td>Budgets per property and cluster, by month; red when over</td></tr>
+</table></div>
+<ul>
+<li><b>Month-end snapshot</b> is frozen when payroll is published, so last month's numbers never shift.</li>
+<li><b>Headcount plan:</b> budgeted seats per property and role against people in post and offers in flight. The offer budget check already exists and will use these numbers.</li>
+<li>Export to Excel, plus a monthly email to management (optional).</li>
+</ul>
+
+<h2 id="m7">7 · Punch machines: the cluster is one pool (decided 16 Nov)</h2>
+<p>Each machine holds about 1,000 people. The machines of one cluster work as <b>one shared store</b>: a cluster with 10 properties (10 machines) holds about 10,000 people. An employee can punch at any machine in their cluster, and the record is collected later. That is why moving someone between properties <b>inside a cluster needs no re-enrolment</b>. Moving them to <b>another cluster</b> does.</p>
+<ul>
+<li>A <b>capacity</b> per machine. A cluster's capacity is the total of its machines, and the board shows people against capacity for each cluster. It warns before a cluster is full, so that joiners can't be onboarded into a full cluster without a warning.</li>
+<li><b>Where each record is stored:</b> the employee's own property's machine first. If that machine is full, the next machine in the cluster with free space.</li>
+<li><b>Transfers:</b> a move inside the cluster needs no machine task. A move to another cluster creates a to-do: "Enrol on cluster B, remove from cluster A".</li>
+<li>Joiners and exits create the same kind of to-do (enrol, remove).</li>
+<li>Punches from any machine in the employee's cluster count. A punch from a machine in another cluster is flagged for HR.</li>
+<li>The HRMS <b>does not press Add/Delete on the portal</b> (that stays a manual step for the portal operator). It produces the to-do list and checks the result in the portal's employee list.</li>
+</ul>
+
+<h2 id="order">Build order</h2>
+<p>Each step is built, tested (full regression), trialled on a copy of your data, then handed over as a new binary. Steps that touch different files are built in parallel.</p>
+<div class="tbl"><table>
+<tr><th>#</th><th>Step</th><th>Why this order</th><th>Size</th></tr>
+<tr><td>1</td><td>Hiring lifecycle and status timeline (module 1) <span class="pill build">first</span></td><td>Needed at go-live, and every later module uses the statuses</td><td>Large</td></tr>
+<tr><td>1</td><td>Access: personal rights and cluster scope (module 2), in parallel</td><td>Small and separate; admin needs it from day 1</td><td>Small</td></tr>
+<tr><td>2</td><td>Accommodation (module 4)</td><td>Separate module; brings in the costs outside CTC</td><td>Large</td></tr>
+<tr><td>2</td><td>Machine enrolment (module 7), in parallel</td><td>Small; builds on the existing portal connector</td><td>Small</td></tr>
+<tr><td>3</td><td>Pay structure designer (module 3)</td><td>Touches payroll, the riskiest change; needs a before/after payroll comparison</td><td>Large</td></tr>
+<tr><td>1</td><td>Policy conflict check (module 5), with access</td><td>Small; stops overlapping policies being saved without a warning</td><td>Small</td></tr>
+<tr><td>5</td><td>Cost and budget console (module 6)</td><td>Needs modules 3 and 4 to be in place</td><td>Medium</td></tr>
+</table></div>
+<p>Later candidates (not in this plan): transfers between properties with dated history, probation reviews, an org chart, document expiry reminders, and rehire checks at the candidate stage.</p>
+
+<h2 id="ask">Decisions needed before building</h2>
+<ol>
+<li class="q"><span class="pill done">Decided</span> The 1K limit is the punch machine's; a cluster's machines are one pool (module 7).</li>
+<li class="q"><span class="pill done">Decided</span> HR records the offer answer; there is no candidate link.</li>
+<li class="q"><span class="pill done">Decided</span> A Joining-ID person is a normal employee, paid through normal payroll.</li>
+<li class="q"><span class="pill done">Decided</span> Contract staff are paid by the company and have no Employee ID; leave eligibility is set per employment type.</li>
+<li class="q"><span class="pill done">Decided</span> Policies: warn about overlaps on assignment and let HR choose (module 5).</li>
+<li class="q"><span class="pill done">Decided</span> HR does the background check manually: they record the result and upload the report. It blocks the Employee ID by default.</li>
+<li class="q"><span class="pill done">Decided</span> Accommodation: equal split per person staying in the month (day-by-day later if needed).</li>
+<li class="q"><span class="pill done">Decided</span> Variable pay: a manual amount entered by HR.</li>
+<li class="q"><span class="pill done">Decided</span> Company accommodation is not on the salary sheet and not in any statutory calculation; only the minimum-wage meal/accommodation deductions show there.</li>
+<li class="q"><span class="pill done">Decided</span> No other costs today besides salary and accommodation. The cost page shows salary + company contributions + accommodation; an expense ledger can be added later if needed.</li>
+</ol>
+</main>
+</body>
+</html>

@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HRMS Master Data Integration</title>
+<style>
+:root {
+  --bg: #f7f7f5; --card: #ffffff; --ink: #1d1d1b; --quiet: #5f5f5a; --line: #e2e1dc;
+  --accent: #0f6e6e; --accent-tint: #e3f1f0; --done: #2f7d32; --done-tint: #e6f2e6;
+  --build: #9a6200; --build-tint: #fbf0dc; --plan: #5f5f5a; --plan-tint: #efefec;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161615; --card: #1f1f1d; --ink: #ecebe6; --quiet: #a3a29b; --line: #34332f;
+    --accent: #5cc4c0; --accent-tint: #1c3433; --done: #7fc782; --done-tint: #1f3320;
+    --build: #e3b04f; --build-tint: #3a2d14; --plan: #a3a29b; --plan-tint: #2a2a27;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #161615; --card: #1f1f1d; --ink: #ecebe6; --quiet: #a3a29b; --line: #34332f;
+  --accent: #5cc4c0; --accent-tint: #1c3433; --done: #7fc782; --done-tint: #1f3320;
+  --build: #e3b04f; --build-tint: #3a2d14; --plan: #a3a29b; --plan-tint: #2a2a27;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 920px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 26px; margin: 0 0 4px; }
+h2 { font-size: 20px; margin: 40px 0 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+h3 { font-size: 16px; margin: 24px 0 6px; }
+p { margin: 6px 0 10px; }
+.sub { color: var(--quiet); margin: 0 0 20px; }
+nav { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 16px 0 8px; font-size: 14px; }
+nav a { color: var(--accent); text-decoration: none; }
+nav a:hover { text-decoration: underline; }
+table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; font-size: 14px; margin: 8px 0 16px; }
+th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+th { color: var(--quiet); font-weight: 600; font-size: 13px; }
+tr:last-child td { border-bottom: 0; }
+.tbl { overflow-x: auto; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.done { color: var(--done); background: var(--done-tint); }
+.build { color: var(--build); background: var(--build-tint); }
+.plan { color: var(--plan); background: var(--plan-tint); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin: 10px 0; }
+.card h3 { margin-top: 4px; }
+ul { margin: 4px 0 10px; padding-left: 20px; }
+li { margin: 3px 0; }
+code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--plan-tint); padding: 1px 5px; border-radius: 4px; }
+pre { font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; overflow-x: auto; margin: 8px 0 14px; }
+pre code { background: none; padding: 0; }
+.flow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 14px; font-size: 13px; }
+.flow span { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; }
+.flow span.key { border-color: var(--accent); background: var(--accent-tint); font-weight: 600; }
+.flow i { color: var(--quiet); font-style: normal; }
+.note { border-left: 3px solid var(--accent); padding: 4px 12px; color: var(--quiet); margin: 10px 0; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 20px; }
+@media (max-width: 680px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+<h1>Saltstayz HRMS – Master Data Integration</h1>
+<p class="sub">How HRMS follows the Cross-Product Master Data SOP (SOP-ARCH-MDM-01, approved 10 Nov 2026). For the PMS, Purchase Desk and Moneyball teams (employee events) and the CMS team (property events). Last updated 11 November 2026.</p>
+
+<nav>
+  <a href="#overview">Overview</a><a href="#employee">Employee event contract v1</a><a href="#push">Push (webhooks)</a>
+  <a href="#pull">Pull feed</a><a href="#nightly">Nightly reconciliation</a><a href="#versioning">Versioning</a>
+  <a href="#cms">For the CMS team</a><a href="#ops">Setting it up</a>
+</nav>
+
+<h2 id="overview">Who owns what</h2>
+<div class="tbl"><table>
+<tr><th>Identifier</th><th>Source of truth</th><th>Consumers</th><th>What HRMS does</th></tr>
+<tr><td><code>employee_code</code></td><td>HRMS</td><td>PMS (audit footprints), Purchase Desk (manager approvals on purchase orders), Moneyball (tips and payroll tracking)</td><td>Publishes employee events and the current snapshot list</td></tr>
+<tr><td><code>property_id</code></td><td>CMS</td><td>HRMS (as “location”), others</td><td>Accepts property events, keeps a read-only copy, links locations to it</td></tr>
+<tr><td><code>guest_id</code>, <code>sku</code>, <code>charge_id</code></td><td colspan="3">Not involving HRMS.</td></tr>
+</table></div>
+<div class="flow"><span class="key">HRMS commit</span><i>→</i><span>change-stream watcher</span><i>→</i><span class="key">outbox (mdm_outbox)</span><i>→</i><span>signed webhook per system</span><i>or</i><span>pull feed</span></div>
+<p>Changes are captured by a transactional database hook (a MongoDB change stream on employees and the designation, department, location and grade names). For each affected employee HRMS computes the published snapshot; only when it differs from the last one published does it write, in one transaction, an outbox event and the new snapshot. Saving an employee without changing a published field sends nothing. One server at a time runs the watcher, so event positions follow commit order. After downtime it resumes where it stopped; if that is impossible it rescans every employee, and the nightly reconciliation catches anything missed.</p>
+<p>There is no message broker today. Both transports read the same outbox, and a Kafka or NATS publisher can be added later as a third reader with the same events.</p>
+
+<h2 id="employee">Employee event contract v1</h2>
+<h3>Envelope</h3>
+<div class="tbl"><table>
+<tr><th>Field</th><th>Type</th><th>Meaning</th></tr>
+<tr><td><code>event_id</code></td><td>uuid</td><td>Unique per event. Delivery is at least once: <b>drop an event whose event_id you already processed.</b></td></tr>
+<tr><td><code>event_type</code></td><td>string</td><td><code>EMPLOYEE_CREATED</code> · <code>EMPLOYEE_UPDATED</code> · <code>EMPLOYEE_SEPARATED</code> (status became Inactive) · <code>EMPLOYEE_REACTIVATED</code> (status left Inactive)</td></tr>
+<tr><td><code>schema_version</code></td><td>string</td><td><code>"v1"</code></td></tr>
+<tr><td><code>timestamp</code></td><td>string</td><td>When HRMS published it, UTC RFC 3339 with milliseconds, e.g. <code>2026-11-11T08:39:08.176Z</code></td></tr>
+<tr><td><code>source</code></td><td>string</td><td><code>"HRMS"</code></td></tr>
+<tr><td><code>sequence</code></td><td>integer</td><td>Per employee_code, 1, 2, 3 … with no gaps. Apply an event only if its sequence is greater than the one you hold for that employee.</td></tr>
+<tr><td><code>pos</code></td><td>integer</td><td>Global position in the outbox, increasing in commit order. Use it as the pull feed cursor.</td></tr>
+<tr><td><code>data</code></td><td>object</td><td>The full snapshot after the change (not a diff): replace your copy with it.</td></tr>
+</table></div>
+<h3>Snapshot (<code>data</code>)</h3>
+<p>Every value is a string or <code>null</code>. No personal contact data, salary, bank or government ids are ever published (data minimisation).</p>
+<div class="tbl"><table>
+<tr><th>Field</th><th>Meaning</th></tr>
+<tr><td><code>employee_code</code></td><td>The identifier, e.g. <code>EMP-1016</code>. It never changes once assigned.</td></tr>
+<tr><td><code>name</code></td><td>Full name</td></tr>
+<tr><td><code>status</code></td><td><code>Pre-boarding</code> · <code>Active</code> · <code>Inactive</code></td></tr>
+<tr><td><code>exit_status</code></td><td>The separation's state, or null</td></tr>
+<tr><td><code>employment_type</code></td><td><code>Permanent</code> · <code>Retainer</code> · <code>Contractual</code></td></tr>
+<tr><td><code>designation</code>, <code>department</code>, <code>grade</code></td><td>Names as HRMS shows them (null when not set)</td></tr>
+<tr><td><code>location</code></td><td>HRMS location name, or null</td></tr>
+<tr><td><code>property_id</code></td><td>The location's CMS property_id, or null while the location is not linked to a CMS property</td></tr>
+<tr><td><code>manager_code</code></td><td>The reporting manager's employee_code, or null</td></tr>
+<tr><td><code>doj</code>, <code>lwd</code></td><td>Date of joining and last working day, <code>YYYY-MM-DD</code> (lwd null until set)</td></tr>
+</table></div>
+<h3>JSON Schema</h3>
+<pre><code>{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hrms.saltstayz/schemas/employee-event/v1",
+  "type": "object",
+  "required": ["event_id", "event_type", "schema_version", "timestamp", "source", "sequence", "pos", "data"],
+  "properties": {
+    "event_id":       { "type": "string", "format": "uuid" },
+    "event_type":     { "enum": ["EMPLOYEE_CREATED", "EMPLOYEE_UPDATED", "EMPLOYEE_SEPARATED", "EMPLOYEE_REACTIVATED"] },
+    "schema_version": { "const": "v1" },
+    "timestamp":      { "type": "string", "format": "date-time" },
+    "source":         { "const": "HRMS" },
+    "sequence":       { "type": "integer", "minimum": 1 },
+    "pos":            { "type": "integer", "minimum": 1 },
+    "data": {
+      "type": "object",
+      "required": ["employee_code", "name", "status", "exit_status", "employment_type", "designation", "department",
+                   "grade", "location", "property_id", "manager_code", "doj", "lwd"],
+      "properties": {
+        "employee_code":   { "type": "string" },
+        "name":            { "type": "string" },
+        "status":          { "enum": ["Pre-boarding", "Active", "Inactive"] },
+        "exit_status":     { "type": ["string", "null"] },
+        "employment_type": { "type": ["string", "null"] },
+        "designation":     { "type": ["string", "null"] },
+        "department":      { "type": ["string", "null"] },
+        "grade":           { "type": ["string", "null"] },
+        "location":        { "type": ["string", "null"] },
+        "property_id":     { "type": ["string", "null"] },
+        "manager_code":    { "type": ["string", "null"] },
+        "doj":             { "type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "lwd":             { "type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }
+      },
+      "additionalProperties": true
+    }
+  }
+}</code></pre>
+<h3>Example</h3>
+<pre><code>{
+  "event_id": "bfa7151a-17f6-45b9-865f-6c53edd208e6",
+  "event_type": "EMPLOYEE_UPDATED",
+  "schema_version": "v1",
+  "timestamp": "2026-11-11T08:39:55.128Z",
+  "source": "HRMS",
+  "sequence": 2,
+  "pos": 61,
+  "data": {
+    "employee_code": "EMP-1001", "name": "Anjali Verma", "status": "Active", "exit_status": null,
+    "employment_type": "Permanent", "designation": "HR Executive", "department": "People Ops", "grade": "G6",
+    "location": "Gurugram Sector 29 Hub", "property_id": "PROP-77", "manager_code": null,
+    "doj": "2021-04-01", "lwd": null
+  }
+}</code></pre>
+<h3>Ordering and idempotency</h3>
+<ul>
+  <li><b>Per employee:</b> events of one employee_code arrive in sequence order on both transports. If you ever see a sequence lower than or equal to the one you hold, ignore it.</li>
+  <li><b>Overall:</b> <code>pos</code> increases in commit order. Webhooks are sent in pos order and never skip: a failed event blocks the ones after it for that system until it succeeds.</li>
+  <li><b>Repeats:</b> a delivery whose 2xx answer was lost is sent again. Keep the event_ids you processed (or compare sequence) and answer 2xx to a repeat.</li>
+  <li>Several changes made in one save produce one event. A rename of a designation, department, location or grade produces an <code>EMPLOYEE_UPDATED</code> for each employee who holds it.</li>
+</ul>
+
+<h2 id="push">Push: signed webhooks</h2>
+<p>An HR Admin adds your system in HRMS (Masters › Company › Integrations) with your HTTPS address and receives a signing secret once (<code>whsec_…</code>). HRMS then POSTs each event as the JSON body, with:</p>
+<div class="tbl"><table>
+<tr><th>Header</th><th>Value</th></tr>
+<tr><td><code>Content-Type</code></td><td><code>application/json</code></td></tr>
+<tr><td><code>X-HRMS-Event-Id</code></td><td>The event_id</td></tr>
+<tr><td><code>X-HRMS-Event-Type</code></td><td>The event_type (<code>TEST</code> for the Test button; ignore it after verifying)</td></tr>
+<tr><td><code>X-HRMS-Timestamp</code></td><td>Unix seconds of this attempt</td></tr>
+<tr><td><code>X-HRMS-Signature</code></td><td><code>sha256=</code> + hex HMAC-SHA256(secret, timestamp + "." + raw body)</td></tr>
+</table></div>
+<p>Answer any 2xx within 15 seconds once the event is stored on your side. Anything else, a redirect, or no answer counts as a failure: HRMS retries the <b>same</b> event after 10 s, 20 s, 40 s … up to once an hour, and sends nothing newer to you meanwhile. Pausing your system in HRMS keeps the events waiting; nothing is dropped. A system may ask for some event types only; the others are passed over.</p>
+<h3>Verifying the signature</h3>
+<div class="grid2">
+<pre><code>// Go
+func verify(secret string, r *http.Request, body []byte) bool {
+  ts := r.Header.Get("X-HRMS-Timestamp")
+  n, err := strconv.ParseInt(ts, 10, 64)
+  if err != nil || math.Abs(float64(time.Now().Unix()-n)) &gt; 300 {
+    return false // stale or replayed
+  }
+  m := hmac.New(sha256.New, []byte(secret))
+  m.Write([]byte(ts + "."))
+  m.Write(body)
+  want := "sha256=" + hex.EncodeToString(m.Sum(nil))
+  return hmac.Equal([]byte(want),
+    []byte(r.Header.Get("X-HRMS-Signature")))
+}</code></pre>
+<pre><code># Python
+import hmac, hashlib, time
+
+def verify(secret: str, headers, body: bytes) -&gt; bool:
+    ts = headers["X-HRMS-Timestamp"]
+    if abs(time.time() - int(ts)) &gt; 300:
+        return False  # stale or replayed
+    want = "sha256=" + hmac.new(
+        secret.encode(), ts.encode() + b"." + body,
+        hashlib.sha256).hexdigest()
+    return hmac.compare_digest(
+        want, headers["X-HRMS-Signature"])</code></pre>
+</div>
+<p class="note">Verify over the raw body bytes exactly as received, before parsing the JSON. When the secret is rotated in HRMS, deliveries are signed with the new one at once.</p>
+
+<h2 id="pull">Pull feed</h2>
+<p>Instead of (or as well as) webhooks, a system can read the outbox with an API key an HR Admin makes for it (<code>hrmsk_…</code>, shown once; HRMS stores only its SHA-256). Send it as <code>Authorization: Bearer &lt;key&gt;</code>. A missing, wrong or paused key gets <code>401</code>.</p>
+<pre><code>GET /api/mdm/events?after=&lt;pos&gt;&amp;limit=&lt;n&gt;        after ≥ 0 (default 0), limit 1–1000 (default 100)
+
+200 {
+  "events":     [ …events in pos order, pos &gt; after… ],
+  "next_after": 161,     // pass as after= next time (unchanged when the page is empty)
+  "has_more":   true,    // ask again at once
+  "head":       412      // the last pos written when the page was read
+}</code></pre>
+<p>Store <code>next_after</code> only after you have processed the page. Poll every few seconds to a minute when <code>has_more</code> is false.</p>
+
+<h2 id="nightly">Snapshots for the nightly reconciliation</h2>
+<p>Each consumer compares its copy with HRMS's once a night (SOP §6). Same API key.</p>
+<pre><code>GET /api/mdm/employees/summary
+200 { "schema_version": "v1", "count": 53,
+      "checksum": "5277b6d3…",            // see below
+      "algorithm": "sha256 of \"employee_code:sequence\\n\" per employee, in employee_code byte order",
+      "head": 412, "generated_at": "2026-11-11T20:30:00.000Z" }
+
+GET /api/mdm/employees?after=&lt;employee_code&gt;&amp;limit=&lt;n&gt;     limit 1–1000 (default 200)
+200 { "schema_version": "v1",
+      "employees": [ { "employee_code": "EMP-1001", "sequence": 2, "hash": "…", "pos": 61, "data": { …snapshot… } }, … ],
+      "next_after": "EMP-1200",   // null on the last page
+      "has_more": true }</code></pre>
+<ol>
+  <li>Compute the checksum over what you hold: for each employee in employee_code byte order, the line <code>employee_code:sequence\n</code>; SHA-256 of all lines, hex. If count and checksum match, you are in step.</li>
+  <li>Otherwise page through <code>/api/mdm/employees</code> and replace every employee whose sequence differs from yours. <code>hash</code> is the SHA-256 of the snapshot's canonical JSON (keys sorted), if you prefer to compare content.</li>
+</ol>
+<p>HRMS runs its own reconciliation every night after 02:00 (Asia/Kolkata): it recomputes every employee's snapshot and publishes an event for any difference the watcher missed, so the feed itself stays complete.</p>
+
+<h2 id="versioning">Versioning policy</h2>
+<ul>
+  <li>Adding a field to <code>data</code> is not a shape change: it stays <code>v1</code>. Ignore fields you do not know.</li>
+  <li>Removing, renaming or retyping a field is a shape change: the payload becomes <code>v2</code>, announced in advance. HRMS keeps sending each system the version it was set up for until it moves.</li>
+  <li>Consumers keep a translator for every version they have received, so old events in their stores stay readable (backward translation). HRMS does the same for the CMS's events.</li>
+  <li>Identifiers never change once assigned: an employee_code is never reused or renamed.</li>
+</ul>
+
+<h2 id="cms">For the CMS team: property events HRMS accepts</h2>
+<p>CMS is the source of truth for <code>property_id</code>. HRMS keeps a read-only copy and links each HRMS location to its property once (the link never changes). A linked location's name follows the CMS name, and when the CMS deactivates a property, HRMS retires the location from that day (reason “Deactivated in the CMS”). An HR Admin can switch on “Properties come from the CMS”; new locations can then only be added by picking a CMS property.</p>
+<h3>Request</h3>
+<pre><code>POST /api/mdm/cms/events
+Content-Type: application/json
+X-CMS-Timestamp: 1762850400                 // Unix seconds, within 5 minutes of HRMS's clock
+X-CMS-Signature: sha256=&lt;hex HMAC-SHA256(shared secret, timestamp + "." + raw body)&gt;
+
+{
+  "event_id": "5b0e0a5c-6f5e-4bb3-9b7a-2f8f0d6e1c11",   // unique; at most 100 characters
+  "event_type": "PROPERTY_UPDATED",                      // PROPERTY_CREATED | PROPERTY_UPDATED | PROPERTY_DEACTIVATED
+  "schema_version": "v1",
+  "timestamp": "2026-11-11T09:30:00Z",                   // RFC 3339; when the change happened in the CMS
+  "source": "CMS",
+  "sequence": 14,                                        // optional, per property_id, increasing
+  "data": { "property_id": "PROP-77", "name": "Gurugram 29 Hub", "city": "Gurugram", "state": "Haryana", "status": "Active" }
+}</code></pre>
+<div class="tbl"><table>
+<tr><th>data field</th><th>Rule</th></tr>
+<tr><td><code>property_id</code></td><td>Required, at most 64 characters</td></tr>
+<tr><td><code>name</code></td><td>Required except on PROPERTY_DEACTIVATED; at most 120 characters</td></tr>
+<tr><td><code>city</code>, <code>state</code></td><td>Optional</td></tr>
+<tr><td><code>status</code></td><td><code>Active</code> (default) or <code>Inactive</code>; PROPERTY_DEACTIVATED always means Inactive</td></tr>
+</table></div>
+<h3>Answers</h3>
+<div class="tbl"><table>
+<tr><th>Status</th><th>When</th><th>What to do</th></tr>
+<tr><td>200 <code>{"event_id", "status": "applied"}</code></td><td>Applied</td><td>Done</td></tr>
+<tr><td>200 <code>"status": "duplicate"</code></td><td>This event_id was already received</td><td>Done (safe to resend any event)</td></tr>
+<tr><td>200 <code>"status": "ignored"</code></td><td>Older than the last event applied for this property (by sequence when both carry one, else by timestamp)</td><td>Done</td></tr>
+<tr><td>401</td><td>Bad signature, or the timestamp is more than 5 minutes off (stale or replayed)</td><td>Fix the signing or clock; do not retry unchanged</td></tr>
+<tr><td>400</td><td>Not JSON, missing event_id, unknown event_type, bad timestamp</td><td>Fix the event</td></tr>
+<tr><td>422</td><td>Unknown schema_version, or data not valid for it. Kept in HRMS's inbox as rejected; the same event_id may be sent again once fixed</td><td>Send a supported version</td></tr>
+<tr><td>503</td><td>HRMS has no shared secret yet</td><td>Ask HR to make one</td></tr>
+<tr><td>500</td><td>HRMS could not store it</td><td>Retry with backoff</td></tr>
+</table></div>
+<h3>Property list for HRMS's nightly reconciliation</h3>
+<p>When an HR Admin sets the CMS address (and optionally an API key), HRMS calls every night:</p>
+<pre><code>GET {base}/properties?limit=500[&amp;cursor=&lt;next_cursor&gt;]
+Accept: application/json
+Authorization: Bearer &lt;CMS API key&gt;        // when one is set
+
+200 {
+  "properties": [
+    { "property_id": "PROP-77", "name": "Gurugram 29 Hub", "city": "Gurugram", "state": "Haryana",
+      "status": "Active", "updated_at": "2026-11-11T09:30:00Z" }
+  ],
+  "next_cursor": "opaque-or-null"            // null or "" on the last page
+}</code></pre>
+<p>Every property, active or not, should be listed (deactivate, never delete). HRMS fixes any drift in its copy and in the linked locations, skips a property whose newer event already arrived after <code>updated_at</code>, and reports (without changing) properties it holds that the list no longer contains.</p>
+
+<h2 id="ops">Setting it up in HRMS</h2>
+<p>HR Admin, Masters › Company › Integrations:</p>
+<ul>
+  <li><b>Add system</b> for PMS, Purchase Desk and Moneyball: name, webhook address, event types, and whether to start from every event so far (first sync) or new events only. Copy the signing secret shown once. Test sends a signed <code>TEST</code> event.</li>
+  <li><b>Add API key</b> for a system that pulls. Keys and secrets show their last four characters afterwards; New secret / New key replaces them at once.</li>
+  <li><b>CMS</b>: Make CMS secret (give it to the CMS team), set the CMS address and key, and switch “Properties come from the CMS” on when every location is linked. Masters › Locations shows each location's CMS property and links an existing one.</li>
+  <li><b>Reconcile now</b> runs the nightly check at once; the last runs are listed with what they fixed.</li>
+</ul>
+<p class="note">Secrets are stored sealed (AES-256-GCM) with the app's secret key, the same key that protects the Google Drive connection. Keep <code>APP_SECRET</code> (or the key file) safe and unchanged; if it changes, rotate every secret.</p>
+</main>
+</body>
+</html>

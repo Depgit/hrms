@@ -1,0 +1,29 @@
+services:
+  # The HRMS database: one MongoDB database ("hrms") for the whole company, never one per user or employee.
+  # It runs as a one-node replica set because transactions and change streams (the event outbox) need one.
+  mongo:
+    image: mongo:8.0
+    command: ["--replSet", "rs0", "--bind_ip_all", "--port", "27017"]
+    ports: ["27017:27017"]
+    volumes: [mongodata:/data/db]
+    healthcheck:
+      # Starts the replica set on first boot, then reports healthy once it has a primary.
+      test: ["CMD", "mongosh", "--quiet", "--eval", "try { rs.status().ok } catch (e) { rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'localhost:27017'}]}).ok }"]
+      interval: 3s
+      retries: 30
+  # PostgreSQL is kept only as the source for `hrms import-pg` (copying an existing installation into MongoDB).
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: hrms
+      POSTGRES_PASSWORD: hrms
+      POSTGRES_DB: hrms
+    ports: ["5433:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hrms"]
+      interval: 3s
+      retries: 20
+volumes:
+  mongodata:
+  pgdata:

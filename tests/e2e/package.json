@@ -1,0 +1,20 @@
+{
+  "name": "hrms-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "roles": "node roles.mjs",
+    "forms": "node forms.mjs",
+    "load": "node load.mjs",
+    "verify": "node verify.mjs",
+    "advances": "node advances.mjs",
+    "directory": "node directory.mjs",
+    "docs": "node docs.mjs",
+    "search": "node search.mjs",
+    "uniform": "node uniform.mjs",
+    "bulkopen": "node bulkopen.mjs"
+  },
+  "dependencies": {
+    "puppeteer-core": "^23.11.1"
+  }
+}

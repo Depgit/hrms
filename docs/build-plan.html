@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HRMS Build Plan</title>
+<style>
+:root {
+  --bg: #f7f7f5; --card: #ffffff; --ink: #1d1d1b; --quiet: #5f5f5a; --line: #e2e1dc;
+  --accent: #0f6e6e; --accent-tint: #e3f1f0; --done: #2f7d32; --done-tint: #e6f2e6;
+  --build: #9a6200; --build-tint: #fbf0dc; --plan: #5f5f5a; --plan-tint: #efefec;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161615; --card: #1f1f1d; --ink: #ecebe6; --quiet: #a3a29b; --line: #34332f;
+    --accent: #5cc4c0; --accent-tint: #1c3433; --done: #7fc782; --done-tint: #1f3320;
+    --build: #e3b04f; --build-tint: #3a2d14; --plan: #a3a29b; --plan-tint: #2a2a27;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #161615; --card: #1f1f1d; --ink: #ecebe6; --quiet: #a3a29b; --line: #34332f;
+  --accent: #5cc4c0; --accent-tint: #1c3433; --done: #7fc782; --done-tint: #1f3320;
+  --build: #e3b04f; --build-tint: #3a2d14; --plan: #a3a29b; --plan-tint: #2a2a27;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 920px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 26px; margin: 0 0 4px; }
+h2 { font-size: 20px; margin: 40px 0 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+h3 { font-size: 16px; margin: 24px 0 6px; }
+p { margin: 6px 0 10px; }
+.sub { color: var(--quiet); margin: 0 0 20px; }
+nav { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 16px 0 8px; font-size: 14px; }
+nav a { color: var(--accent); text-decoration: none; }
+nav a:hover { text-decoration: underline; }
+table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; font-size: 14px; margin: 8px 0 16px; }
+th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+th { color: var(--quiet); font-weight: 600; font-size: 13px; }
+tr:last-child td { border-bottom: 0; }
+.tbl { overflow-x: auto; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.done { color: var(--done); background: var(--done-tint); }
+.build { color: var(--build); background: var(--build-tint); }
+.plan { color: var(--plan); background: var(--plan-tint); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin: 10px 0; }
+.card h3 { margin-top: 4px; }
+ul { margin: 4px 0 10px; padding-left: 20px; }
+li { margin: 3px 0; }
+code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--plan-tint); padding: 1px 5px; border-radius: 4px; }
+.flow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 14px; font-size: 13px; }
+.flow span { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; }
+.flow span.key { border-color: var(--accent); background: var(--accent-tint); font-weight: 600; }
+.flow i { color: var(--quiet); font-style: normal; }
+.note { border-left: 3px solid var(--accent); padding: 4px 12px; color: var(--quiet); margin: 10px 0; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 20px; }
+@media (max-width: 680px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+<h1>Saltstayz HRMS – Build Plan</h1>
+<p class="sub">All eight sprints from the build spec (section 22.1). Last updated 1 November 2026.</p>
+
+<nav>
+  <a href="#status">Status</a><a href="#s5">Sprint 5 Payroll</a><a href="#s6">Sprint 6 Tax and statutory</a>
+  <a href="#s7">Sprint 7 Separation and dues</a><a href="#s8">Sprint 8 Reports and scale</a>
+  <a href="#tests">Acceptance tests</a><a href="#decisions">Decisions and questions</a><a href="#uniform">Uniform sizes</a><a href="#log">Progress log</a>
+</nav>
+
+<h2 id="status">Where the build stands</h2>
+<p>All eight sprints are built and tested. Every Go test passes, including end-to-end tests for each sprint against PostgreSQL, and every screen was checked in a browser.</p>
+<div class="tbl"><table>
+<tr><th>Sprint</th><th>What it covers</th><th>State</th></tr>
+<tr><td>1 Foundation</td><td>Sign-in with OTP, role mapping and data scope, masters (inactive, never deleted), employee records, audit log</td><td><span class="pill done">Done</span></td></tr>
+<tr><td>2 Approval engine</td><td>Approval matrices, chain builder, approver rules, time limits and escalation, inbox, simulator</td><td><span class="pill done">Done</span></td></tr>
+<tr><td>3 Onboarding</td><td>Offers, joining verification, employee codes, import, nominations, documents, bulk update from Excel</td><td><span class="pill done">Done</span></td></tr>
+<tr><td>4 Time and attendance</td><td>Work policies, leave plans, holiday calendars, rosters, attendance, regularization, deviations, discipline, consequences</td><td><span class="pill done">Done</span></td></tr>
+<tr><td>5 Payroll</td><td>Salary structure versions, month close, dry run, run checks, publish, payslips, advances, deductions, holds, arrears, claims</td><td><span class="pill done">Done</span></td></tr>
+<tr><td>6 Tax and statutory</td><td>Tax declarations and proofs, monthly TDS, deposits, 24Q/26Q, Form 16, PF/ESI/insurance files, ECR</td><td><span class="pill done">Done</span></td></tr>
+<tr><td>7 Separation and dues</td><td>Separation tracker, clearance, exit interview, full and final, letters, inventory, assets and uniform</td><td><span class="pill done">Done</span></td></tr>
+<tr><td>8 Reports and scale</td><td>All reports from spec 20, remaining dashboard tabs, large-data work, punch-machine connector</td><td><span class="pill done">Done</span></td></tr>
+</table></div>
+<p>Stack: Go API, React web app, PostgreSQL, River for background jobs (no Redis). Rules come from RULINGS.md first, then the prototype v81 code, then the spec text.</p>
+<p>To try each sprint as it lands: restart <code>make api</code> and <code>make web</code>, then run <code>make seed</code> once. Sign in as EMP-1002 (HR Admin) or EMP-1020 (employee) with <code>pass1234</code>. EMP-1011 is Payroll and EMP-1012 is Payroll Manager; they activate with OTP.</p>
+
+<h2 id="s5">Sprint 5 – Payroll <span class="pill done">Done</span></h2>
+<p>Payroll runs once a month for every eligible person, in five steps. Each step locks what came before it.</p>
+<div class="flow"><span>Open</span><i>→</i><span>Month close</span><i>→</i><span>Dry run</span><i>→</i><span>Verified</span><i>→</i><span>Approved</span><i>→</i><span class="key">Published</span></div>
+
+<div class="card">
+<h3>Compensation page</h3>
+<ul>
+<li>Salary structure versions (Version 1, Version 2 …) with every rate editable: basic %, HRA %, PF, ESI, medical, gratuity, bonus, variable pay, TDS rate.</li>
+<li>One default version. Payroll maps people to a version from a date. A version change in the middle of a month blends both calculations by days.</li>
+<li>Pay bands by city and grade, with copy from another city. Labour welfare fund rules by state. Headcount and payroll budgets by property.</li>
+</ul>
+</div>
+
+<div class="card">
+<h3>Month close</h3>
+<ul>
+<li>Lists pending leave and regularizations grouped by approver. Payroll can remind each approver or send everything to the attendance desk and all approvers.</li>
+<li>Attendance summary download.</li>
+<li><b>Lock attendance</b> stays disabled while anything is pending. <b>Reject pending and lock</b> closes each one with the note “Closed at payroll cut-off”.</li>
+<li>After the lock, regularizations for that month are refused unless Payroll Manager opens an exception. Late corrections are paid as arrears.</li>
+<li>Cut-off is the calendar month, or the 26th to the 25th when set.</li>
+</ul>
+</div>
+
+<div class="card">
+<h3>Payroll run</h3>
+<ul>
+<li><b>Pilot:</b> optionally run a small chosen group first.</li>
+<li><b>Dry run:</b> one row per eligible person: active, left in or after this month, or with pay lines waiting. The row shows paid days, earned gross, statutory items, ledger lines and net.
+  <ul>
+    <li>Flags: on hold, paid days edited, manual adjustment, missing punch, net change over 15%, zero or negative net, arrears or claims, recoveries, joined this month.</li>
+    <li>Filters and paging handle thousands of rows.</li>
+    <li>Paid days, other earning and other deduction can be edited on screen or in a downloaded sheet that is uploaded back. Every edit needs a reason.</li>
+  </ul></li>
+<li><b>Run checks:</b> total net against last month (within ±5%), people moving more than 15%, zero net, holds, ledger lines, manual changes, new joiners.</li>
+<li><b>Verify → Approve → Publish</b> by the roles that hold those rights. Publishing:
+  <ul>
+    <li>releases payslips and writes TDS history</li>
+    <li>carries a negative net into next month as a deduction</li>
+    <li>locks the month</li>
+  </ul></li>
+<li>Large runs are calculated in the background (River job), so the page never times out.</li>
+</ul>
+</div>
+
+<div class="grid2">
+<div class="card">
+<h3>Pay lines (ledger)</h3>
+<ul>
+<li><b>Salary advance:</b> Permanent only, 1 to 12 instalments. Skip next instalment, or recover the balance in one go.</li>
+<li><b>Salary deduction:</b> reason, instalments, employee heard (Payment of Wages Act).</li>
+<li><b>Arrear:</b> for past months, with payslip text; auto-raised by a back-dated salary change.</li>
+<li><b>Claim:</b> Travel, Mobile and internet, Other, with the bill; up to 15 days after the last working day.</li>
+<li><b>Salary hold:</b> a reason from the Hold master. Release pays every held month.</li>
+<li><b>Bank change:</b> holds salary until Payroll verifies it.</li>
+<li><b>Upcoming pay lines:</b> the next six months, with totals and a download.</li>
+</ul>
+</div>
+<div class="card">
+<h3>Payslips and outputs</h3>
+<ul>
+<li>Payslip setup: company name, address, logo (500 KB max), accent colour, CIN/PAN/TAN/PF/ESI codes, footer, and whether to show employer contributions.</li>
+<li>Payslip with the amount in words and a masked PAN. Viewed and printed or saved as PDF from the browser.</li>
+<li>Retainer and contractual staff get no payslip document.</li>
+<li>Payroll register, bank advice (Excel) and cost report by city, department, type and grade.</li>
+<li>My pay: payslips for every published month.</li>
+</ul>
+</div>
+</div>
+
+<div class="card">
+<h3>Employee file</h3>
+<p>One page per person: personal, bank, tax, attendance and pay. It shows readiness for the payroll month (missing bank details, PAN, UAN, pending changes) and open items, with who each is waiting on.</p>
+</div>
+
+<div class="card">
+<h3>Left over from sprint 4, done here</h3>
+<ul>
+<li>Overtime and comp-off credit from the work policy settings.</li>
+<li>Locking regularizations once the month is closed.</li>
+<li>Blocking casual and privilege leave taken back to back (the clubbing setting).</li>
+<li>Showing who else in the team is on leave on a leave request.</li>
+</ul>
+</div>
+<p class="note">Checked against the spec's golden values (Gurugram, Delhi, Mumbai) and the guide's month example: gross 30,000 with an advance, a cash shortage and an arrear nets 38,166 in November and 33,827 in December.</p>
+
+<h2 id="s6">Sprint 6 – Income tax and statutory files <span class="pill done">Done</span></h2>
+<div class="grid2">
+<div class="card">
+<h3>Income tax and Form 16</h3>
+<ul>
+<li>Declaration window and proof window set by Payroll: dates, or forced open or closed.</li>
+<li>Employee picks a regime (New is the default) and declares under 80C, 80CCD(1B), 80D, 80E, 80G, 80TTA, 24(b), LTA, and HRA with rent, landlord name and PAN. Employee PF counts under 80C automatically.</li>
+<li>Proof uploads with remarks. Payroll approves an amount per proof. Finalising, allowed only after the proof window closes, keeps approved amounts only. Any extra tax is spread over the months left.</li>
+<li>Monthly salary TDS (Section 192) recomputed each run and frozen once published. Retainers pay a flat TDS rate (194J). Contractual staff have none.</li>
+<li>TDS deposits per month (date, BSR code, challan) with the due date (7th, or 30 April for March) and an overdue flag.</li>
+<li>24Q and 26Q quarterly data download, with the receipt number recorded.</li>
+<li>Form 16: Part A (employer, PAN/TAN, quarterly receipts, challans) and Part B (computation). Provisional during the year, final after March; released by a payroll approver; downloadable as one printable file.</li>
+</ul>
+</div>
+<div class="card">
+<h3>Statutory and insurance files</h3>
+<ul>
+<li><b>Insurance enrolment and removal</b> (weekly, date range): people on employer medical cover only.</li>
+<li><b>PF enrolment and exit</b>: UAN status, exit reason, Aadhaar, PAN, bank, EPF wage.</li>
+<li><b>ESI enrolment and exit</b>: IP status, wages, dispensary city.</li>
+<li><b>ECR</b> PF contribution text file (fields joined by <code>#~#</code>): EPF, EPS and EDLI wages, NCP days, a “UAN missing” remark.</li>
+<li><b>ESI contribution</b> file: IP number, days paid, wages, reason codes.</li>
+<li>Range files can skip people already sent. Missing UAN or IP numbers are flagged. Downloads need the download right and respect data scope.</li>
+<li>Professional tax is not built (deferred in the spec), but the structure leaves room to add it.</li>
+</ul>
+</div>
+</div>
+
+<h2 id="s7">Sprint 7 – Separation, full and final, employee dues <span class="pill done">Done</span></h2>
+<p>One case tracker for every exit, run through one approval flow called Separation.</p>
+<div class="flow"><span>Show-cause (absconding)</span><i>→</i><span>Approval</span><i>→</i><span>Notice</span><i>→</i><span>Clearance</span><i>→</i><span>Full and final</span><i>→</i><span>Letters</span><i>→</i><span class="key">Closed</span></div>
+<div class="grid2">
+<div class="card">
+<h3>Separation cases</h3>
+<ul>
+<li>Types: Resignation, Termination, Absconding, Contract end, Retirement, Death. Employees start only a resignation; HR Admin, HRBP and HRBP Corporate start any type. One open case per person.</li>
+<li>Resignation LWD = date given + notice from the policy. The approver can bring it earlier, never later, and waive or recover the shortfall. Withdrawal is allowed within 7 days.</li>
+<li>Termination needs a note: pay in lieu, serve the notice, or none (misconduct).</li>
+<li>Absconding: 7 days absent in a row, then 2 show-cause letters 3 days apart, then approval. Salary is held automatically. “Reported back” cancels the case.</li>
+<li>Clearance by the reporting manager, the HRBP (assets and uniform checked against records, ID card, exit interview) and Finance (advances, claims). Items are configurable.</li>
+<li>Exit interview: main reason, 5 ratings, would recommend. Private to HR.</li>
+<li>Letters: termination, relieving, experience, no dues, show-cause. Closing makes the person inactive the day after LWD, with a rehire flag.</li>
+</ul>
+</div>
+<div class="card">
+<h3>Full and final</h3>
+<ul>
+<li>The final month's salary is paid in the normal run for the LWD month.</li>
+<li>Leave encashment: basic ÷ 26 × PL balance at LWD, floored to half a day.</li>
+<li>Gratuity: at least 4.75 years of service (any service on death), basic × 15 ÷ 26 × years, capped at Rs 20 lakh.</li>
+<li>Notice pay or recovery. Recoveries scheduled after LWD are brought forward, and so are approved earnings. Held salary is shown for information.</li>
+<li>Pay month within 45 days of LWD. Approved by net amount. Settlement lines go to the ledger.</li>
+</ul>
+<h3>Employee dues</h3>
+<ul>
+<li>Stores: a central store and one per HRBP. Additions, transfers, issues, returns and write-offs. Each HRBP sees opening, additions, issued, returns and closing per item.</li>
+<li>Assets with serial numbers: Available, Issued, Damaged or Lost; never deleted.</li>
+<li>Uniform: 50% recovered in the issue month and 50% the next, refunded 6 months after the last deduction.</li>
+<li>One place for advances, holds and deductions. Since 12 Nov: opening advances from Excel, and Payroll opens on Advances.</li>
+</ul>
+</div>
+</div>
+
+<h2 id="s8">Sprint 8 – Reports, dashboards and scale <span class="pill done">Done</span></h2>
+<div class="tbl"><table>
+<tr><th>Group</th><th>Reports</th></tr>
+<tr><td>Workforce</td><td>Employee master, headcount summary, new joiners, exits and attrition, on notice, probation due, birthdays and anniversaries, change history, nomination status, separations, exit interviews (HR only)</td></tr>
+<tr><td>Attendance and roster</td><td>Monthly attendance with LOP, late coming, leave balances, roster discipline, deviations, discipline score, manager planning score, warning letters and PIPs</td></tr>
+<tr><td>Payroll</td><td>Register, cost, bank advice, statutory summary (PF, ESI, LWF, TDS by city), arrears, recoveries and claims, manual deductions, holds, retainer and contractual payments, TDS on salary</td></tr>
+<tr><td>Approvals</td><td>Approval requests, approver workload</td></tr>
+<tr><td>Compliance</td><td>Activity log, master data and usage, missing details and IDs (PAN, Aadhaar, bank, UAN, ESIC, DOB, mobile)</td></tr>
+<tr><td>Inventory</td><td>Opening, additions, issues and closing; items issued with a salary deduction</td></tr>
+</table></div>
+<ul>
+<li>Every report respects data scope and the download right. Each has filters for month or range, city, department, type and status.</li>
+<li>Dashboard tabs: Payroll and Compliance get real figures.</li>
+<li>Scale (built for lakhs of employees):
+  <ul>
+    <li>monthly partitions for punches and payroll rows</li>
+    <li>payroll and big reports run in the background</li>
+    <li>paged lists everywhere</li>
+  </ul></li>
+<li>Punch-machine connector: a setup screen and a secure endpoint that machines or a vendor bridge can push punches to. The upload stays as the fallback.</li>
+</ul>
+
+<h2 id="tests">Acceptance tests</h2>
+<p>The prototype's 37 scenarios, automated: onboarding, approvals by role, attendance, leave, payroll, separation and statutory files. Each workflow is run with every role, covering these cases:</p>
+<ul>
+<li>the approver is inactive</li>
+<li>escalation</li>
+<li>HR Admin override</li>
+<li>approving your own request is blocked</li>
+<li>data leaking outside someone's scope</li>
+<li>download rights</li>
+</ul>
+<p>The calculation library is also unit-tested against the golden values in spec 22.3.</p>
+<p><b>Covered now</b> by the Go end-to-end tests, one per sprint, against PostgreSQL:</p>
+<ul>
+<li>approvals by role, approving your own request blocked, HR Admin override with a note, a departed approver skipped, escalation</li>
+<li>scope leakage on lists and every report</li>
+<li>the download right on files and reports</li>
+<li>onboarding, attendance and leave, the payroll cycle, tax and statutory files, separation and full and final, inventory, the punch connector</li>
+</ul>
+<p><b>Deep test pass (1 Nov 2026):</b> full results are in the <a href="test-report.html">test report</a>.</p>
+<ul>
+<li>56 automated test functions, 76% of the code run.</li>
+<li>14 roles opened every page and tab in a real browser.</li>
+<li>49 forms were filled in and submitted.</li>
+<li>A 5,053-employee load test was run.</li>
+<li>3 bugs were found and fixed.</li>
+</ul>
+<p>The browser and load scripts are in <code>tests/e2e</code>.</p>
+
+<h2 id="decisions">Decisions taken, and questions for you</h2>
+<h3>Decisions (tell me to change any)</h3>
+<ul>
+<li>Payslips and Form 16 are printable pages: download from the browser as PDF. No server PDF engine to run.</li>
+<li>Bank advice and register are Excel files. ECR is the text format EPFO expects; rows without a UAN are left out of the text file and flagged.</li>
+<li>Finalising tax does not add separate recovery lines: once only approved amounts count, the monthly TDS recalculation spreads any extra tax over the months left.</li>
+<li>Payroll cut-off defaults to the calendar month; 26th–25th is a setting.</li>
+<li>Nobody approves a request they raised, including HR Admin with the override (spec §7; your decision, 3 Nov). A step whose approver raised the request, is the person it is about, has left, or is not named moves to the next approver; at the last step it goes to the escalation role, then HR Admin, then the CHRO.</li>
+<li>Surcharge on income tax and professional tax are not built, as the spec says.</li>
+<li>Company TAN, PAN, CIN, PF and ESI codes are placeholders in Company details until you fill them in. Form 16 release is blocked until TAN and PAN are set.</li>
+<li>The open payroll month is the month after the last approved run. Before the first run it is last month; Payroll settings can set the first month.</li>
+<li>Approve and publish need the Payroll Manager (or CHRO, HR Admin). The Payroll executive prepares and verifies.</li>
+<li>Reminders at month close are recorded with the time and audited; no SMS or email is sent yet (no provider is connected).</li>
+<li>Overtime (when a work policy turns it on) and the night shift allowance are paid as earnings lines, outside PF and ESI wages, like arrears. With “needs approval”, only extra hours on deviations marked OK count. The quarterly cap uses earlier months' runs.</li>
+<li>Comp-off is credited when a weekly-off or holiday deviation is marked OK, and expires after 90 days unless the leave plan sets another period.</li>
+<li>Separation letters are generated from built-in wording with the company and employee details; HR can print or save them as PDF. Editing the letter wording in the app is not built yet.</li>
+<li>The punch connector takes a simple JSON push (employee ID, time, IN or OUT). Each vendor's own protocol needs a small bridge once the vendor is known.</li>
+<li>Reports preview the first 500 rows on screen; the Excel download has all rows.</li>
+<li>Leave clubbing blocks casual and privilege leave on back-to-back dates. A weekly off or holiday between them still counts as a gap, so they are allowed.</li>
+</ul>
+<h3>Questions (not blocking; defaults used until you answer)</h3>
+<ul>
+<li>Which bank do salaries go through? Each bank wants its own bank-advice layout. Until then the file is a generic Excel sheet.</li>
+<li>Which insurer handles medical cover? Their enrolment file layout may differ from the spec's columns.</li>
+<li>Which punch-machine vendor? The connector takes a standard push format until then.</li>
+<li>Should notice shortfall use gross ÷ days in the month (as coded) or gross ÷ 30? Spec 21 #12 says confirm with business.</li>
+<li>ECR: the spec caps EPS wages at the PF ceiling (₹25,000, per the ruling), so EPS is ₹2,083 at the cap. EPFO's own EPS ceiling is ₹15,000 (₹1,250). Built as the spec says; confirm before the first upload.</li>
+<li>Insurance file: there is no opt-out field yet, so everyone on employer medical cover is included. Cover type is “Employee and family” when a verified medical nomination lists family.</li>
+</ul>
+
+<h2 id="joiner">Joiner self-fill link</h2>
+<p>Owner's request of 11 Nov 2026: the new joiner fills their own joining details and uploads their documents, from a link HR sends to the email or mobile number already on the offer.</p>
+<ul>
+<li><b>Who fills what:</b> Onboarding › Form setup has a <i>Filled by</i> column (Joiner / HR) for every field and document. Personal, Identity and statutory, Bank and Benefits are the joiner's by default; Job, Location and reporting, Hiring and Compensation are HR's; every document is the joiner's. System fields, pay and fields that pick from the company's lists stay HR's. Store migration <code>006_joiner_link</code> sets the defaults.</li>
+<li><b>Sending:</b> the Joiner's link panel in the joining dialog, whose text follows the link and the offer: <i>Email the link</i> (then <i>Email it again</i>; company mailbox over SMTP, <code>SMTP_*</code> settings), <i>Copy link</i>, <i>Share on WhatsApp</i>; under them <i>Give a code by phone</i>, <i>Send a new link</i>, <i>Stop the link</i>; after a submit only <i>Send back to the joiner</i> with a note. A live link made in another tab is not shown, and replacing it says the joiner's link stops working. The pipeline row shows Link sent, Link opened or Joiner submitted, and waits on the joiner while they have the link.</li>
+<li><b>HR's joining dialog:</b> HR's own fields first (required empty ones highlighted), then the joiner's, marked <i>From joiner</i> (entered by the joiner on any link) or <i>Joiner fills</i> (still empty). HR's Save sends only what HR changed, so the joiner's newer values stay; Refresh brings in the joiner's latest and keeps what HR typed.</li>
+<li><b>The joiner's page</b> (<code>/join/…</code>, no sign-in, built for phones): a 6-digit code by email (without email, <i>Ask HR to call me</i>), then the form by section with plain hints, documents (camera photos or PDF), <i>Save and continue later</i> (keeps every good value and lists what to fix), <i>Submit to HR</i> (one list of everything to fix, field by field), a thank-you page with the joining date and the originals to bring. What the joiner typed survives a session that ends (kept in the tab until the next code).</li>
+<li><b>Security:</b> the link token (32 random bytes) and the code are stored only as hashes; one live link per offer, 7 days; the code lasts 10 minutes, 5 wrong tries lock it, 15 wrong codes on a link in all lock the link (a new code never gives tries back); every try and every code email is counted in one atomic update, so calls sent together cannot pass the limits; the session after the code covers that one link for 60 minutes and is not a sign-in; the link stops when the offer is declined, the candidate closed or Payroll verifies; the public pages return only the company, the joiner's name, offer number, type, joining date and the joiner's own fields and documents; rate limits per address (behind a proxy, the address its <code>X-Forwarded-For</code> names, <code>TRUSTED_PROXIES</code>), and made-up links never block a real one; the token is masked in the API log; every step in the audit log.</li>
+<li><b>Without email:</b> HR shares the link by Copy or WhatsApp and gives the code on the phone (shown once to HR). HR's bell says when the joiner opens the link or presses <i>Ask HR to call me</i> (at most once in 10 minutes).</li>
+<li><b>Unchanged:</b> HR can still correct every field and fills HR's fields; HR's Save creates the Employee ID when everything mandatory is in; Payroll verifies as before.</li>
+<li><b>Tests:</b> Go API tests <code>TestJoinerLink</code>, <code>TestJoinerLinkWithoutEmail</code>, <code>TestJoinerFormSetup</code>, and the review fixes <code>TestJoinerCodeGuessBurst</code>, <code>TestJoinerNewCodeKeepsLinkTries</code>, <code>TestJoinerCodeSendBurst</code>, <code>TestJoinerRateLimitBehindProxy</code>, <code>TestJoinerTokenNotLogged</code>, <code>TestJoinerLinkStopsWhenHireEnds</code>, <code>TestJoinerOpenedTellsHRWithoutEmail</code>; store <code>TestJoinerDefaults</code>, mail package tests (a local SMTP server); browser steps in <code>tests/e2e/forms.mjs</code> (HR emails the link, the joiner fills and submits at 390 px, HR saves).</li>
+</ul>
+
+<h2 id="advances">Salary advances: employee requests and opening balances</h2>
+<p>Owner's request of 12 Nov 2026: employees can ask for an advance themselves, Payroll can find advances easily, and advances given before go-live can be loaded.</p>
+<ul>
+<li><b>Employee request:</b> My pay and profile › <i>Salary advance</i> (active permanent staff): amount, 1 to 12 instalments and the reason, with the rules and the projected instalment shown before sending. Paid with the open payroll month (the next once Deduction closure is closed), recovered from the month after. It goes through the salary advance approval rules; the employee can cancel it while it waits.</li>
+<li><b>Limits</b> (Payroll › Pay schedule and components): most an employee can ask for = 1 × monthly gross (0 = no limit), and one advance open at a time. Stored on <code>company_setting</code> (<code>adv_max_multiple</code>, <code>adv_one_open</code>); empty means the defaults, so no migration.</li>
+<li><b>Payroll's step:</b> <i>Change recovery</i> on the request (pay month, instalments, first recovery month) before approving, in the history and the audit log.</li>
+<li><b>Findable:</b> for Payroll and Payroll Manager, Employee dues opens on Advances with a line pointing to Approvals.</li>
+<li><b>Opening advances:</b> template, upload, preview (will add or skipped with the reason), confirm. Each good row is an approved advance tagged Opening balance with recovery lines for the balance and no payment line; one transaction per row; the run is audited. Skip next, Recover balance and full and final treat them like any advance. Up to 2,000 rows, 5 MB, .xlsx.</li>
+<li><b>Tests:</b> Go <code>TestSelfAdvance</code>, <code>TestOpeningAdvances</code>; browser <code>tests/e2e/advances.mjs</code> (<code>npm run advances</code>).</li>
+</ul>
+
+<h2 id="directory">Employee directory: the whole company</h2>
+<p>Owner's request of 12 Nov 2026: the directory showed only the employee's own department; now it shows the whole company with each person's email, and tapping a department opens its chart.</p>
+<ul>
+<li><b>Everyone</b> (opens first): every active employee with name, designation, department, location and email (a mail link and a Copy button). Search by any of these, words in any order, part of a word, or with a small typo; filter by department and location; 50 a page, searched on the server, so it stays quick with thousands of people.</li>
+<li><b>Departments:</b> each department with its headcount, the employee's own first and highlighted. Tapping one opens its org chart (Around me or Team view, and Whole department), with a back link.</li>
+<li><b>Tapping a person</b> in Everyone opens their department's chart centred on them; the phone's back button steps back.</li>
+<li><b>Privacy:</b> active people only; never the employee code, mobile, pay, birth date or ID. The email is the one on file in personal details, which for some people may be a personal address.</li>
+<li><b>Tests:</b> Go <code>TestMyDirectoryPeople</code>, <code>TestMyDirectoryDepartmentsAndChart</code>, <code>TestMyDirectoryPeopleAtScale</code>, <code>TestDirMatch</code>; browser <code>tests/e2e/directory.mjs</code> (<code>npm run directory</code>).</li>
+</ul>
+
+<h2 id="doccollect">Documents from existing employees</h2>
+<p>Owner's request of 12 Nov 2026: an existing employee brought in without onboarding can upload their documents within 90 days, so every record is properly documented.</p>
+<ul>
+<li><b>Who:</b> active employees imported or added directly (not from an offer or candidate) with a mandatory document of Form setup's list missing. The window starts the day the feature first sees them: everyone on file at the first start, the import date for later imports. Settings in Onboarding › Form setup: on/off and days (default 90, on), stored on <code>onb_setting</code>.</li>
+<li><b>Employee:</b> My view › <i>My documents</i> (and a Dashboard card while open): Mandatory / Optional, missing, waiting for HR check, verified, or sent back with the reason; days left. Upload, view and replace own documents while open (not a verified one), with the joiner's file checks. After the window: "Ask HR to reopen".</li>
+<li><b>HR:</b> Employees › <i>Document collection</i>: "3 of 5", days left or "Overdue N days", status; filters Overdue, Due in 7 days, To check, Complete; Verify, Send back with a reason, Extend by N days (a closed window reopens from today), Send reminder, Upload on behalf ("Uploaded by HR"), Export to Excel. HR Admin and the HRBP in scope act; Payroll and other roles that see documents read only.</li>
+<li><b>Reminders</b> on the job queue every 15 minutes: bell (and email when set up) when the window opens and at 30, 15, 7 and 1 days left, each once; the HRBP is told once when it ends with documents missing.</li>
+<li><b>Data:</b> migration <code>007_doc_collection</code> only creates <code>doc_window</code> (one row per employee: start, extra days, reminders sent). New nullable fields <code>document.review_*</code> and <code>onb_setting.doc_window_*</code>; nothing existing is rewritten.</li>
+<li><b>Tests:</b> Go <code>TestDocCollectEligibility</code>, <code>TestDocCollectEmployeeAndHR</code>, <code>TestDocCollectReminders</code>; browser <code>tests/e2e/docs.mjs</code> (<code>npm run docs</code>).</li>
+</ul>
+
+<h2 id="picker">Type to find a person, everywhere</h2>
+<p>Owner's request of 12 Nov 2026: wherever someone picks an employee, the dropdown listed everyone with nothing to type into. Every such place now uses one people picker where you type a few letters and the closest matches show.</p>
+<ul>
+<li><b>Looks like a dropdown:</b> the box shows "Name · EMP-1023" with a clear (×) button; clicking or typing opens the matches (name, code, and designation · department · location). ↑/↓, Enter and Esc work. The best 20 show, with "Keep typing to narrow" when there are more. Pages that had "All employees" or "Keep current manager" keep it as the first option.</li>
+<li><b>Approximate:</b> words in any order; the start of any word of the name, code (with or without "EMP-"), designation, department, location or city (and the email for roles that see personal details); initials ("rk" → Rakesh Kumar); small typos (1 for words of 4 to 7 letters, 2 from 8). Exact first, then a word's start, then inside a word, then a typo.</li>
+<li><b>Where:</b> Attendance (records, calendar, regularization), Approvals (new request employee and receiving manager, manager has left, joining verification L1/L2, Check a flow), Access control (map a role, check a person), Onboarding (hiring manager, L1/L2), Separation, Employee file, Employee dues and Inventory (employee search), Work policies › Exceptions, Compensation › offer letter preview, My pay leave form.</li>
+<li><b>Server:</b> <code>GET /api/employees?q=</code> inside the caller's scope and filters, best match first; a word search first, then everyone in scope scored for typos and initials when that finds fewer than 20 (about 25 ms for 3,000 people). Same scoring in the browser for lists a page already has.</li>
+<li><b>Tests:</b> Go <code>TestPeopleMatch</code>, <code>TestPeopleSearch</code> (word order, partial, code without prefix, initials, typo, scope kept), <code>TestPeopleSearchScale</code>; browser <code>tests/e2e/search.mjs</code> (<code>npm run search</code>), and the other browser scripts type and pick.</li>
+</ul>
+
+<h2 id="uniform">Uniform sizes and the uniform refund policy</h2>
+<p>Owner's request of 13 Nov 2026: record each employee's uniform sizes (Shirt / T-shirt, trouser waist and length, shoes), track uniform by size, recover it from salary and refund it after some months of employment as per policy.</p>
+<ul>
+<li><b>Sizes on the employee:</b> a <i>Uniform sizes</i> block on the employee record and on the payroll file (Uniform tab). HR, the HRBP and Payroll (whoever edits employee details or manages dues) change them; every change is in the change history and the audit log. Lists (XS–4XL, waist 26–44, length 28–36, UK 4–12) are kept by HR Admin in Employee dues › Setup.</li>
+<li><b>New joiners:</b> Form setup has a Uniform section (four optional joining fields, filled by the joiner, switchable to HR); the sizes copy to the record on joining.</li>
+<li><b>Bulk:</b> Bulk update › Uniform sizes (current data, upload), optional size columns on Import employees, and a Uniform sizes group in Download all details.</li>
+<li><b>Issue by size:</b> each uniform item says what it is sized by (shirt, trouser, shoes, no size). Issuing shows the employee's sizes and pre-fills each item's size, which can be changed; the size is kept on each issued line and shown in the issue list, on the record and in My view.</li>
+<li><b>Uniform sizes summary</b> (Employee dues): active employees by size for each item, trousers by waist and length, by location and department, with who has no sizes, and an Excel download for ordering.</li>
+<li><b>Refund:</b> the split is unchanged (50% in the issue month by default, the rest the next month). The refund basis is either N months after the last deduction (as before, the default) or after N months of employment (the month they complete them, or the month after the last deduction if later). Paid only to someone still employed then: a leaver's refund is cancelled, the recovery stands, and the full and final shows the refund as not paid (it used to bring it forward). Undo inactive brings it back.</li>
+<li><b>Data:</b> migration 008 adds the <code>uniform_size</code> collection, the four Form setup fields and the size type of items named shirt, trouser or shoe. Existing issues and refund months do not change.</li>
+<li><b>Tests:</b> Go <code>TestUniformSizes</code>, <code>TestUniformJoining</code>, <code>TestUniformMigration</code>; browser <code>tests/e2e/uniform.mjs</code> (<code>npm run uniform</code>).</li>
+</ul>
+
+<h2 id="payfix">Payroll fixes after the deep payroll test</h2>
+<p>13 Nov 2026: every FAIL from the four payroll test packs (run, items, exit and access, real data) is fixed, along with the owner's decisions of the same day: a mid-month increment is split by days, a late arrival inside grace counts as on time, EPS and EDLI are capped at ₹15,000, and net pay is rounded to the rupee everywhere.</p>
+<ul>
+<li><b>Run:</b> Approve uses the verified rows and is refused while the run is stale. Maker-checker applies, and nobody can edit their own row. Paid months are closed to uploads, leave and regularization, so corrections are made as arrears. Bank holds are released once the account is verified. Payroll can mark absences as LOP at the cut-off. The checklist warns about set-up gaps.</li>
+<li><b>Statutory and tax:</b> EPS and EDLI ceiling, ESI and ECR wages, whole ESI days, NCP days, UAN and ESIC formats, audited downloads, opening TDS import, and reopening a tax finalisation.</li>
+<li><b>Full and final:</b> encashment on exit, PL carry-forward, gratuity on calendar years, pay within LWD + 45, receivables, excess salary recovery and no double recovery.</li>
+<li><b>Data:</b> no migration, new optional fields only. Data still to fix before go-live: test employees, company codes, UAN and ESIC.</li>
+</ul>
+
+<h2 id="log">Progress log</h2>
+<div class="tbl"><table>
+<tr><th>Date</th><th>What finished</th></tr>
+<tr><td>13 Nov 2026</td><td>Payroll fixes after the deep payroll test, plus the owner's four rounding, EPS, increment and grace decisions. See <a href="#payfix">Payroll fixes</a>.</td></tr>
+<tr><td>13 Nov 2026</td><td>Uniform sizes (owner&#39;s request): sizes on the employee record and the joining form, issue by size with pre-filled sizes, a sizes summary for ordering, and the uniform refund after months of employment or after the last deduction, with no refund for early leavers. See <a href="#uniform">Uniform sizes</a>.</td></tr>
+<tr><td>12 Nov 2026</td><td>Type to find a person everywhere (owner&#39;s request): one people picker with approximate search (typos, initials, any word order, code without prefix) replaces every employee, manager, user and candidate dropdown; the employee search on the server ranks the same way.</td></tr>
+<tr><td>12 Nov 2026</td><td>Documents from existing employees (owner&#39;s request): My documents with a 90-day window, HR&#39;s Document collection tracker (verify, send back, extend, remind, upload on behalf, Excel) and reminders on the job queue. See <a href="#doccollect">Documents from existing employees</a>.</td></tr>
+<tr><td>12 Nov 2026</td><td>Employee directory for the whole company (owner's request): Everyone with email, search with typos, department and location filters, departments with headcount, any department's chart on a tap. See <a href="#directory">Employee directory</a>.</td></tr>
+<tr><td>12 Nov 2026</td><td>Salary advances (owner's request): employees ask for their own advance with limits set in Payroll settings, Payroll changes the recovery at its step, Advances first on Employee dues for Payroll, and opening advances uploaded from Excel. See <a href="#advances">Salary advances</a>.</td></tr>
+<tr><td>11 Nov 2026</td><td>Joiner self-fill link (owner's request): Form setup <i>Filled by</i>, the joiner's link by email (SMTP), Copy or WhatsApp, the code, the joiner's phone-first page, submit to HR with a bell message, reopen. See <a href="#joiner">Joiner self-fill link</a>.</td></tr>
+<tr><td>6 Nov 2026</td><td>Set shift (client request): attendance rules per shift in Masters › Shifts, with the work policy as the default. Shift versions by effective date; night shifts built from the punches in the shift's window; absent, half and full day rules with a short-hours band; weekly and monthly hours adjustment; single punch, forced time out, maximum hours, early-in and late-out limits, OT rule. An empty rule behaves exactly as before. Migration 022. Three client fields wait for their meaning (Consider NA, Configurable attendance calculation, First entry in last entry out). Manual checklist in <code>docs/manual_test.md</code>.</td></tr>
+<tr><td>4 Nov 2026</td><td>UI matched to the prototype on every page, tab, dialog and role view. Done by taking the prototype's style sheet and markup, and closing the server gaps behind them: 35 reports and the statutory files with the prototype's columns, approval health and PIP flows, resignation change and withdraw, master order, and role rights as in the prototype. Also: one business time zone, punch machine pull, and four bugs fixed (a masking leak in the employee file among them). Migrations 011–021. See the <a href="test-report.html#ui">test report</a>.</td></tr>
+<tr><td>3 Nov 2026</td><td>Tester's fix list (13 items): 10 fixed, 3 checked. Leave plan save, roster week in India time, HR edits personal details (form and bulk template), approvals never wait on the requester, the person it is about, an empty role or the same person twice, loading signs and paging, joining form re-checks after uploads, separation wording, hold month in the employee file, pilot pay lines named in run checks. See the <a href="test-report.html#fixes">test report</a>.</td></tr>
+<tr><td>1 Nov 2026</td><td>Deep test pass: 3 bugs found and fixed (ESI kept with medical cover; two screens calling data a role may not see). All tests pass; see the <a href="test-report.html">test report</a>.</td></tr>
+<tr><td>1 Nov 2026</td><td>Sprint 8 done: 35 reports with scope, preview and audited download; dashboard Payroll tab and compliance follow-ups; yearly partitions for attendance, punches and payroll rows; punch-machine connector with device keys.</td></tr>
+<tr><td>1 Nov 2026</td><td>Sprint 7 done: separation cases for all six exit types, approval terms, withdrawal, absconding show-cause and hold, clearance by three parties, exit interview, letters, full and final with brought-forward lines, inventory with stores, transfers, assets, uniform recovery and refund.</td></tr>
+<tr><td>1 Nov 2026</td><td>Sprint 6 done: tax windows, declarations, proofs and review, finalisation, monthly salary TDS in the run, deposits, 24Q/26Q data, Form 16 release and print, insurance, PF and ESI enrolment and exit files, ECR and ESI contribution files.</td></tr>
+<tr><td>1 Nov 2026</td><td>Sprint 5 done: compensation page, month close, payroll run (pilot, dry run, edits, sheet upload, checks, verify, approve, publish), payslips, bank advice, register, cost, advances, deductions, arrears, claims with bills, holds, upcoming pay lines, employee file, overtime, night allowance, comp-off, clubbing, team cover. Tested against the guide's six-month example.</td></tr>
+<tr><td>1 Nov 2026</td><td>Sprint 4 done: work policies, leave plans, calendars, rosters, attendance, deviations, discipline, consequences.</td></tr>
+<tr><td>1 Nov 2026</td><td>Sprints 1–3 done earlier: foundation, approval engine, onboarding, bulk update, nominations, documents.</td></tr>
+</table></div>
+</main>
+</body>
+</html>

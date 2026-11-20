@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HRMS Test Report</title>
+<style>
+:root { --bg:#f7f7f5; --card:#fff; --ink:#1d1d1b; --quiet:#5f5f5a; --line:#e2e1dc; --accent:#0f6e6e; --accent-tint:#e3f1f0; --done:#2f7d32; --done-tint:#e6f2e6; --bad:#b3302a; --bad-tint:#fbe4e2; --plan:#5f5f5a; --plan-tint:#efefec; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#161615; --card:#1f1f1d; --ink:#ecebe6; --quiet:#a3a29b; --line:#34332f; --accent:#5cc4c0; --accent-tint:#1c3433; --done:#7fc782; --done-tint:#1f3320; --bad:#f2877f; --bad-tint:#3a1715; --plan:#a3a29b; --plan-tint:#2a2a27; } }
+:root[data-theme="dark"] { --bg:#161615; --card:#1f1f1d; --ink:#ecebe6; --quiet:#a3a29b; --line:#34332f; --accent:#5cc4c0; --accent-tint:#1c3433; --done:#7fc782; --done-tint:#1f3320; --bad:#f2877f; --bad-tint:#3a1715; --plan:#a3a29b; --plan-tint:#2a2a27; }
+* { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+main { max-width:960px; margin:0 auto; padding:32px 16px 64px; } h1 { font-size:26px; margin:0 0 4px; } h2 { font-size:20px; margin:40px 0 8px; padding-top:8px; border-top:1px solid var(--line); }
+h3 { font-size:16px; margin:22px 0 6px; } p { margin:6px 0 10px; } .sub { color:var(--quiet); margin:0 0 20px; } .mute { color:var(--quiet); font-size:13px; }
+nav { display:flex; flex-wrap:wrap; gap:6px 14px; margin:16px 0 8px; font-size:14px; } nav a { color:var(--accent); text-decoration:none; }
+.tbl { overflow-x:auto; } table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:8px; overflow:hidden; font-size:14px; margin:8px 0 16px; }
+th, td { text-align:left; vertical-align:top; padding:7px 10px; border-bottom:1px solid var(--line); } th { color:var(--quiet); font-weight:600; font-size:13px; } tr:last-child td { border-bottom:0; }
+.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.pill { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; font-weight:600; white-space:nowrap; } .done { color:var(--done); background:var(--done-tint); } .bad { color:var(--bad); background:var(--bad-tint); } .plan { color:var(--plan); background:var(--plan-tint); }
+.stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin:14px 0; } .stat { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 14px; }
+.stat b { display:block; font-size:24px; } .stat span { color:var(--quiet); font-size:12.5px; } @media (max-width:700px) { .stats { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+ul { margin:4px 0 10px; padding-left:20px; } li { margin:3px 0; } code { font:13px ui-monospace, Menlo, monospace; background:var(--plan-tint); padding:1px 5px; border-radius:4px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 16px; margin:10px 0; }
+</style>
+</head>
+<body>
+<main>
+<h1>Saltstayz HRMS – Test Report</h1>
+<p class="sub">All eight sprints, tested in three ways: automated tests against PostgreSQL, a real browser, and a 5,000-employee load. Run on 1 November 2026; the tester's fix list was fixed and retested on 3 November 2026; the UI was matched to the prototype and everything retested on 4 November 2026.</p>
+<nav><a href="#ui">UI matched to the prototype, 4 Nov</a><a href="#fixes">Fix list, 3 Nov</a><a href="#summary">Summary</a><a href="#bugs">Bugs found and fixed</a><a href="#auto">Automated tests</a><a href="#browser">Browser tests</a><a href="#load">Load test</a><a href="#gaps">Not covered</a><a href="#rerun">How to rerun</a></nav>
+
+<h2 id="ui">UI matched to the prototype, 4 November 2026</h2>
+<p>The owner reported that the app looked different from the prototype (<code>Saltstayz HRMS (1).html</code>). It did, on almost every page. Every page, tab, dialog and role view was compared side by side with the prototype in a headless browser and rebuilt until they match. Where a screen could not match because the server returned something else, the server was changed too.</p>
+<div class="stats">
+<div class="stat"><b>98 / 98</b><span>Go test functions pass, with 161 named sub-cases (59 before this work)</span></div>
+<div class="stat"><b>49 / 49</b><span>browser form flows pass on a freshly seeded database</span></div>
+<div class="stat"><b>14 roles</b><span>× every page and tab: 0 errors, 0 refused calls</span></div>
+<div class="stat"><b>35 / 35</b><span>reports return the prototype's columns, in its order</span></div>
+</div>
+
+<h3>Root cause</h3>
+<ul>
+<li><b>Styles:</b> the app's style sheet was a partial copy of the prototype's, so the same class names drew differently.</li>
+<li><b>Components:</b> many screens used parts written for the app (dialogs, switches, approval progress, tables, wording) instead of the prototype's markup. Each page drifted on its own.</li>
+<li><b>Server data:</b> the server returned different shapes from what the prototype shows: report and statutory file columns, approval health checks, list order, role rights. So even a screen copied exactly could not show the same thing.</li>
+</ul>
+
+<h3>What changed</h3>
+<ul>
+<li><b>Style sheet:</b> <code>frontend/src/styles.css</code> is now the prototype's own sheet, unchanged. It adds the styles the prototype injects at run time (stepper, sign-in, month calendar), in the same cascade order, and a few rules marked "app".</li>
+<li><b>Shared components:</b> rebuilt on the prototype's markup: dialogs and side panels (<code>.ov .dlg</code>), switches (<code>.sw</code>), approval progress (<code>.chain</code>), advanced sections (<code>details.adv</code>) and the toast.</li>
+<li><b>Pages:</b> all 26 page files were rewritten against the prototype. Fresh reviewers then checked every page, tab and dialog again, for each role that sees it, and fixed what was left.</li>
+<li><b>Server, so the screens show what the prototype shows:</b>
+  <ul>
+  <li>all 35 reports, with the prototype's columns, filters and totals, masked the same way on screen and in the CSV;</li>
+  <li>statutory file columns (the ECR upload text is unchanged and stays valid for EPFO);</li>
+  <li>approval health checks with their items, approver overlaps, and improvement-plan (PIP) flows;</li>
+  <li>resignation change and withdraw raised as requests in Approvals;</li>
+  <li>roster change details on regularizations; discipline grouped by role; the Work Policy column in bulk update;</li>
+  <li>Form 16 place; proof file names and times; PIPs in upcoming pay lines; lists in master order;</li>
+  <li>dashboard alerts in the prototype's order; the employee file; separation settings; exit interviews.</li>
+  </ul></li>
+<li><b>Role rights</b> follow the prototype's role definitions: only HR Admin manages work policies and masters, and Finance, Finance Head and CHRO view employee dues and claims. Two exceptions are listed under "Kept different on purpose".</li>
+<li><b>Also added:</b>
+  <ul>
+  <li>One business time zone (<code>APP_TZ</code>, default Asia/Kolkata).</li>
+  <li>Punch machines can now also be pulled, checked every minute, as well as pushing their punches.</li>
+  </ul></li>
+</ul>
+
+<h3>Bugs found on the way, all fixed with tests</h3>
+<div class="tbl"><table>
+<tr><th>Where</th><th>What was wrong</th><th>Fix</th></tr>
+<tr><td>Employee file</td><td>A role with salary set to Masked (HRBP) saw full pay figures in another person's payroll file.</td><td>Pay figures go only to roles that see salary in full, or to the person themselves. Test <code>TestEmployeeFileMasking</code>.</td></tr>
+<tr><td>Payroll run</td><td>After "Approve and update register" or "Publish payslips", the Payroll register card still said "No month approved yet".</td><td>The register reloads with the run.</td></tr>
+<tr><td>Dashboard → Attendance</td><td>Finance Head got "You do not have access to this". The tab is on every role's dashboard, but the server asked for the attendance-records right.</td><td>The tab needs only the dashboard right. It returns counts and shares within the person's scope, never one person's records.</td></tr>
+<tr><td>Roster, Attendance</td><td>An employee got a refused call (403) on these pages, because they asked for the whole employee list.</td><td>An employee's view loads only their own record.</td></tr>
+</table></div>
+
+<h3>Database changes (applied on the next start)</h3>
+<p>All are additive: new tables, new columns with defaults, new rows. None is a destructive update. Each was applied to a copy of the dev database and checked; the dev database itself was not changed.</p>
+<div class="tbl"><table>
+<tr><th>Migration</th><th>Adds</th></tr>
+<tr><td>011</td><td>Separation settings and the case history</td></tr>
+<tr><td>012</td><td>Punch machine pull settings; an index for the activity log</td></tr>
+<tr><td>013</td><td>Pay day, statutory file history, tax reminders, tax item settings</td></tr>
+<tr><td>014</td><td>Asset names, uniform issue dates, inventory kits, deduction waivers, documents attached to approvals</td></tr>
+<tr><td>015</td><td>Rules per employment type, requests for offer documents. Raises the compensation rights of CHRO, Finance Head and HRBP Corporate, only where the owner never changed them</td></tr>
+<tr><td>016</td><td>Effective dates in the change history; nomination verification settings and reminders</td></tr>
+<tr><td>017</td><td>Last-pull status for punch machines</td></tr>
+<tr><td>018</td><td>The improvement plan (PIP) approval flows</td></tr>
+<tr><td>020</td><td>A sequence number on masters, calendars and leave plans, so lists come back in master order</td></tr>
+<tr><td>021</td><td>Role rights as in the prototype (see above), only for rights the owner never changed in Access control</td></tr>
+</table></div>
+
+<h3>Kept different on purpose</h3>
+<ul>
+<li><b>Demo-only parts are left out:</b> "Viewing as", "Simulate no response", "Load a 10-employee test", and the prototype's sample-data wording.</li>
+<li><b>Approving payroll:</b> the Payroll Manager approves payroll, not Payroll, so the person who runs it is not the one who approves it. The prototype lets Payroll approve too. Change it in Access control if you want the prototype's rule.</li>
+<li><b>Finance and Finance Head downloads:</b> off by default (spec 6.3). The prototype allows them.</li>
+<li><b>Nominee names for Payroll:</b> masked, as spec 6.3 sets. The prototype shows them as "Hidden".</li>
+<li><b>Claims note:</b> the prototype's sentence about a ₹10,000 limit is left out. The spec routes claims by ₹5,000 and ₹25,000 bands, and the prototype has no rule behind the sentence.</li>
+<li><b>Pay schedule:</b> the "Planned next" card is left out; everything it lists is built.</li>
+<li><b>Extras kept because the server supports them or there is no other place for them:</b>
+  <ul>
+  <li>the Half day option in the leave dialog;</li>
+  <li>the Masters "Company" tab;</li>
+  <li>the Personal details and Opening leave balances bulk templates;</li>
+  <li>the first payroll month field;</li>
+  <li>type-ahead employee search where the prototype lists every employee.</li>
+  </ul></li>
+<li><b>PIP approval flow:</b> HRBP, then HRBP Corporate. The prototype's table for it is a copy of the arrear table, which looks like a slip.</li>
+</ul>
+
+<h2 id="fixes">Fix list from testing, 3 November 2026</h2>
+<p>A tester worked through the app on the dev database and sent 13 items. 10 were real problems and are fixed. 3 were checks; the answers are below. Each fix has an automated test, and each was confirmed in the browser in India time, on a copy of the tester's data (the dev database itself was not changed).</p>
+<div class="stats">
+<div class="stat"><b>59 / 59</b><span>Go test functions pass; 3 new ones with 13 sub-cases cover these fixes</span></div>
+<div class="stat"><b>76.7%</b><span>of all code run by tests; the new routing and personal-details code 78–100%</span></div>
+<div class="stat"><b>17 / 17</b><span>browser and API checks of the fixes on the copy of the tester's data</span></div>
+<div class="stat"><b>49 / 49</b><span>form flows pass again; 14 roles × every page, 0 errors</span></div>
+</div>
+<div class="tbl"><table>
+<tr><th>#</th><th>Screen</th><th>What was wrong</th><th>What changed</th><th>Checked on the tester's data</th></tr>
+<tr><td>1</td><td>Work policies → Leave plans</td><td>The page sent the whole plan back, including its id. The API refuses fields it does not know, so Save always failed. Dev also has no work policy at all, so even a saved plan gives nobody leave.</td><td>The page sends only the parts you can edit, and shows any error on the page. The Policies tab now warns when no active policy has a leave plan.</td><td>TEST QA Leave Plan saved; the warning shows.</td></tr>
+<tr><td>2</td><td>Shift and roster</td><td>The week arrows worked out dates in UTC, which in India is a day behind at midnight, so “next week” landed on the same week. The same mistake was in 25 other date defaults (reports, statutory files, forms).</td><td>One set of local-date helpers; every UTC date in the web app replaced.</td><td>Arrows go 2 → 9 → 16 Nov and back to 9 Nov.</td></tr>
+<tr><td>3</td><td>Employees</td><td>No way to correct a person's personal details.</td><td>HR Admin, and HRBP for their properties, can edit mobile, email, birth date, gender, address, marital status, father or spouse name and emergency contact. Each change goes into the change history. New bulk template <b>Personal details</b>, with a download of current values. People still change their own details by request, for approval. An approved request now also saves when the person had no details on record (before, it silently saved nothing).</td><td>EMP-1054 edited in the browser. A person with no mobile can sign in once HR adds one.</td></tr>
+<tr><td>4</td><td>Approvals</td><td>A step waited forever when its approver had raised the request (AR-3010, CLM-3012).</td><td>A step nobody can decide moves to the next approver. At the last step it goes to that step's escalation role, then HR Admin, then the CHRO. Each move is written to the history.</td><td>AR-3010 now waits on the Property Manager; CLM-3012 on Payroll.</td></tr>
+<tr><td>5</td><td>Approvals</td><td>The approver could be the person the request is about (ADV-3023).</td><td>The same rule skips them.</td><td>ADV-3023 now waits on Payroll.</td></tr>
+<tr><td>6</td><td>Approvals</td><td>An escalation could land on a role nobody holds, or on the same person who had not responded, and stop (RS-3022).</td><td>Escalation goes past both. Every 5 minutes the server re-checks open requests, so ones that are already stuck move on by themselves.</td><td>RS-3022 now waits on HRBP Corporate.</td></tr>
+<tr><td>7</td><td>Approvals</td><td>HR Admin had no Approve button on the 13 open requests. All 13 were raised by HR Admin, and spec §7 says nobody approves a request they raised. That rule stays (your decision).</td><td>The page now says why (“You raised this request, so someone else decides it”) and names who it is waiting on. The override wording shows only when it applies. HR Admin can still approve or reject, with a comment, any request someone else raised.</td><td>AR-3010 shows the reason; PR-3030 approved by override.</td></tr>
+<tr><td>8</td><td>Onboarding → New joining</td><td>The check behind “Aadhaar must be uploaded” did not run again after an upload, and Send used that old result.</td><td>An upload runs the check again, and Send always checks afresh. The joining-details form clears its messages on upload too.</td><td>Message cleared on upload; the offer was sent.</td></tr>
+<tr><td>9</td><td>Missing punches, Form setup, Nominations, Activity log</td><td>The pages showed nothing while loading. Here the API answered in 2–33 ms, so the 3–5 seconds came from the network or the dev server, but nothing on screen said it was loading.</td><td>A loading sign on every page and tab that waits for data (40 places), and a bar across the top for any request slower than a quarter second. Missing punches and Nominations show 100 rows a page (Nominations used to stop at 200 without saying so). The activity log can now page back through every entry (only the newest 100 were reachable).</td><td>With the API slowed to 2.5 s, all four showed the loading sign.</td></tr>
+<tr><td>10</td><td>Separation</td><td>The page said only the employee can raise a resignation. The API lets HR Admin, HRBP and HRBP Corporate start any exit type, and spec §14 agrees with the API.</td><td>The page and the flow help now say so.</td><td>Text checked.</td></tr>
+<tr><td>11</td><td>Separation → SEP-1</td><td><span class="pill plan">Not a bug</span> The exit interview was saved from Sandeep Rawat's session on 2 Nov at 00:46 IST (activity log entry 106), with all five ratings. The API refuses a part-filled interview, so it cannot be saved by accident.</td><td>No change. If it was a test entry, save it again with the real answers.</td><td>Activity log.</td></tr>
+<tr><td>12</td><td>Employee file</td><td>The hold check ignored the month the hold starts.</td><td>A hold shows from its starting month. Earlier months say “HLD-1 starts in November 2026. October 2026 is paid as usual.” The payroll run already got this right.</td><td>EMP-1058: October paid, November on hold.</td></tr>
+<tr><td>13</td><td>Payroll run</td><td><span class="pill plan">Both right</span> Contract staff get no PF: spec §14 says “Contractual: no statutory”. The ₹30,000 line is claim CLM-3002 for EMP-1020, who is outside the 5-person pilot; the full dry run pays it.</td><td>Run checks now name pay lines that belong to people outside the pilot.</td><td>“Not in this pilot: 1 line (additions ₹30,000)”.</td></tr>
+</table></div>
+<p class="mute">On item 13: if any contract staff are on your own payroll rather than an agency's, EPF law may still require PF for them; the spec says none. Also fixed while testing: one older test that only passed before 2 November, because it picked a date relative to today.</p>
+
+<h2 id="summary">Summary</h2>
+<p>Everything passes after fixes. The deep pass found <b>3 real bugs</b>, all fixed and covered by new tests. Payroll for 5,053 people runs in about 2 seconds.</p>
+<div class="stats">
+<div class="stat"><b>56 / 56</b><span>automated test functions pass, with 67 named sub-cases</span></div>
+<div class="stat"><b>76%</b><span>of all code run by tests (64% before); 90–96% of the rule packages</span></div>
+<div class="stat"><b>49 / 49</b><span>browser form flows pass; 14 roles × every page and tab, 0 errors</span></div>
+<div class="stat"><b>2.2 s</b><span>dry run, verify and approve for 5,053 people; slowest call 2.6 s</span></div>
+</div>
+
+<h2 id="bugs">Bugs found and fixed</h2>
+<div class="tbl"><table>
+<tr><th>#</th><th>Bug</th><th>Effect</th><th>Fix</th></tr>
+<tr><td>1</td><td>When ESI continues to the end of its six-month period after a raise above ₹21,000, the person was also given employer medical cover.</td><td>Double cover; employer cost overstated by up to ₹500 a month per person affected.</td><td>ESI kept for the period now replaces medical cover (the rulings: ESI <i>or</i> medical, by gross). Unit and payroll tests added.</td></tr>
+<tr><td>2</td><td>The dashboard showed the Attendance tab to roles without attendance access (Finance Head).</td><td>The tab loaded with access errors.</td><td>Dashboard tabs now follow the role's rights (Payroll tab needs payroll access, Attendance tab needs attendance access).</td></tr>
+<tr><td>3</td><td>Payroll → Claims and changes failed for roles that can view payroll but not change pay items (Finance Head, CHRO).</td><td>Lists did not load.</td><td>Anyone who can view payroll can read pay items; adding or changing them still needs the claims right.</td></tr>
+</table></div>
+<p class="mute">Also cleaned up: two unused helper functions removed. Several early browser-test failures were mistakes in my test scripts, not the app; they were corrected and the runs repeated from a fresh database.</p>
+
+<h2 id="auto">Automated tests (Go, against PostgreSQL)</h2>
+<p>Each integration test starts from an empty database with the sample organisation, signs people in with OTP, and works only through the API, so rights, scope and approvals are exercised for real.</p>
+<h3>Rule packages (no database)</h3>
+<div class="tbl"><table>
+<tr><th>Package</th><th>What is checked</th><th class="num">Code run</th></tr>
+<tr><td>Salary and payroll calculation</td><td>Every golden value in spec 22.3 (Gurugram, Delhi, Mumbai; permanent, contractual, retainer); the guide's six-month example (advance, deduction, arrear, variable pay: 38,166 / 33,827 / 23,166 / 25,166 / 34,166 / 28,166); LWF months; ESI period; pay row, carry-over, paid days; instalments; version blending; amount in words; run checks; ESI kept replaces medical.</td><td class="num">90%</td></tr>
+<tr><td>Tax</td><td>New and old regime slabs, rebate and marginal relief, cess, section caps, HRA exemption, financial year and quarters.</td><td class="num">90%</td></tr>
+<tr><td>Attendance</td><td>Reference cases from the developer pack (t73, uat36, the shift sheet): punch to day, status, deviations, loss of pay.</td><td class="num">90%</td></tr>
+<tr><td>Leave</td><td>Monthly and upfront credit, probation, carry forward, sandwich and include rules, windows.</td><td class="num">96%</td></tr>
+<tr><td>Approval engine</td><td>Rows combine in column order, Approve beats Notify, initiator skip, exit types, same person asked once, amount bands, departed approver.</td><td class="num">95%</td></tr>
+<tr><td>Access</td><td>Scope rules and SQL, password and ID rules, masking, rights consistent with the sensitive-field matrix.</td><td class="num">90%</td></tr>
+</table></div>
+<h3>End-to-end tests</h3>
+<div class="tbl"><table>
+<tr><th>Test</th><th>What it proves</th></tr>
+<tr><td>Sprint tests (12)</td><td>Sign-in, scope, masking, approvals, own request blocked, HR Admin override, departed approver skipped, escalation; onboarding to joining; bulk update; nominations; work policies, roster, attendance, leave and regularization; the payroll cycle; tax, TDS, Form 16 and ECR; separation to closure, termination, absconding, withdrawal; inventory; 35 reports; punch connector.</td></tr>
+<tr><td>Payroll rules</td><td>Structure change mid-month blended by days; variable pay paid over its cycle; retainer TDS and contractual pay; 26th–25th cut-off; pilot run; no edits after verify and back to dry run; corrected sheet upload.</td></tr>
+<tr><td>Payroll months</td><td>ESI kept after a raise; LWF only in its months; held salary left out of the bank advice and paid on release; negative net carried to next month; deductions for leavers; claims closed 15 days after the last day; negative arrear as a recovery.</td></tr>
+<tr><td>Background payroll job</td><td>A run over the limit goes to the River job and finishes with every row.</td></tr>
+<tr><td>Time and leave</td><td>Overtime hours and pay at the policy rate, and the “needs approval” rule; night allowance; comp-off credit from approved weekly-off work and its balance; clubbing blocked; team cover shown; staffing limit; locked month needs an exception.</td></tr>
+<tr><td>Leave in payroll</td><td>Approved casual leave is paid; loss-of-pay leave is not.</td></tr>
+<tr><td>Separation</td><td>Gratuity for 6 years, notice pay in lieu, leave encashment; gratuity on death; absconding notice recovery; the 7-day withdrawal window; clearance signed only by the right party; exit interview hidden from the manager.</td></tr>
+<tr><td>Statutory and tax</td><td>ECR line exactly as EPFO expects; ESI file only for covered people; insurance and ESI enrolment and exit files; people already sent left out; HRA exemption formula; no tax up to ₹12 lakh; retainer 194J in 26Q; Form 16 final after March and the Q4 filing.</td></tr>
+<tr><td>Role matrix</td><td>13 mapped role holders × 12 modules: each allowed or refused exactly as their rights say; location-scoped roles see only their places in lists and reports; roles without the download right cannot download.</td></tr>
+<tr><td>Endpoint sweep</td><td>Every endpoint the flows above do not reach, each with a valid call and a refusal: access control, approval inbox and matrix editor, masters, job changes, import, files, self-service, onboarding setup, company, nominations, policies, plans, calendars, exceptions, bulk templates, compensation, payroll lists and sheets, tax extras, letters, lost assets, devices, sign-out.</td></tr>
+<tr><td>Seed and storage</td><td>Starting logins, sample punches, local file storage (and that paths cannot leave the folder).</td></tr>
+</table></div>
+
+<h2 id="browser">Browser tests (headless Chrome)</h2>
+<h3>Every role, every page and tab</h3>
+<p>14 roles (Employee, Line Manager, Property Manager, Cluster Manager, City Head, Operations Head, HRBP, HRBP Corporate, Payroll, Payroll Manager, Finance Head, Function Head, CHRO, HR Admin) opened all 128 pages they can see, and every tab and sub-tab on them. The check fails on any page error, server error, or call the role is not allowed to make. First run: bugs 2 and 3 above. After the fixes: <b>0 findings</b>.</p>
+<h3>Forms, filled in and submitted (49)</h3>
+<div class="tbl"><table><tr><th>Flow</th><th>Result</th><th>What the app said</th></tr>
+<tr><td>Employee: submit a claim with the bill</td><td><span class="pill done">Pass</span></td><td class="mute">CLM-3001 sent</td></tr>
+<tr><td>Employee: tax declaration saved as draft</td><td><span class="pill done">Pass</span></td><td class="mute">Saved as draft</td></tr>
+<tr><td>Employee: tax declaration submitted</td><td><span class="pill done">Pass</span></td><td class="mute">Declaration submitted</td></tr>
+<tr><td>Employee: apply for leave (window rules shown if refused)</td><td><span class="pill done">Pass</span></td><td class="mute">LV-3002 sent for approval</td></tr>
+<tr><td>Employee: personal details change</td><td><span class="pill done">Pass</span></td><td class="mute">Sent for verification</td></tr>
+<tr><td>Employee: start resignation</td><td><span class="pill done">Pass</span></td><td class="mute">Submitted. Case SEP-1 is waiting for approval</td></tr>
+<tr><td>Employee: exit card opens the case</td><td><span class="pill done">Pass</span></td><td class="mute">Karan Khan · Resignation</td></tr>
+<tr><td>HR Admin: approve inbox item 1 with a comment</td><td><span class="pill done">Pass</span></td><td class="mute">approved Karan KhanLine ManagerSeparation · F&amp;B ·</td></tr>
+<tr><td>HR Admin: approve inbox item 2 with a comment</td><td><span class="pill done">Pass</span></td><td class="mute">approved Karan KhanProperty ManagerSeparation · F</td></tr>
+<tr><td>HR Admin: approve inbox item 3 with a comment</td><td><span class="pill done">Pass</span></td><td class="mute">approved Karan KhanProperty ManagerSeparation · F</td></tr>
+<tr><td>HR Admin: approve inbox item 4 with a comment</td><td><span class="pill done">Pass</span></td><td class="mute">approved Karan KhanProperty ManagerSeparation · F</td></tr>
+<tr><td>Payslip setup: codes, footer and logo</td><td><span class="pill done">Pass</span></td><td class="mute">Saved</td></tr>
+<tr><td>Month close: lock attendance</td><td><span class="pill done">Pass</span></td><td class="mute">Attendance locked</td></tr>
+<tr><td>Payroll run: dry run</td><td><span class="pill done">Pass</span></td><td class="mute">Dry run ready</td></tr>
+<tr><td>Payroll run: edit a row with a reason</td><td><span class="pill done">Pass</span></td><td class="mute">Saved and recalculated</td></tr>
+<tr><td>Payroll run: verify</td><td><span class="pill done">Pass</span></td><td class="mute">Marked verified</td></tr>
+<tr><td>Payroll run: approve</td><td><span class="pill done">Pass</span></td><td class="mute">Approved and added to the register</td></tr>
+<tr><td>Payroll run: publish payslips</td><td><span class="pill done">Pass</span></td><td class="mute">Payslips published</td></tr>
+<tr><td>Upcoming pay lines: open and download</td><td><span class="pill done">Pass</span></td><td class="mute">opened</td></tr>
+<tr><td>Claims and changes: add an arrear</td><td><span class="pill done">Pass</span></td><td class="mute">ARR-3005 sent for approval</td></tr>
+<tr><td>Tax: windows saved</td><td><span class="pill done">Pass</span></td><td class="mute">Windows saved</td></tr>
+<tr><td>Tax: review a declaration</td><td><span class="pill done">Pass</span></td><td class="mute">Karan Khan · 2026-27</td></tr>
+<tr><td>TDS: deductor details saved</td><td><span class="pill done">Pass</span></td><td class="mute">Saved</td></tr>
+<tr><td>Form 16: release to employees</td><td><span class="pill done">Pass</span></td><td class="mute">Provisional Form 16 released to employees</td></tr>
+<tr><td>Form 16: view one</td><td><span class="pill done">Pass</span></td><td class="mute">Part A and Part B shown</td></tr>
+<tr><td>Statutory: ECR preview and download</td><td><span class="pill done">Pass</span></td><td class="mute">40 rows</td></tr>
+<tr><td>Full and final: list opens</td><td><span class="pill done">Pass</span></td><td class="mute">listed</td></tr>
+<tr><td>Inventory: add stock with serials</td><td><span class="pill done">Pass</span></td><td class="mute">Stock added</td></tr>
+<tr><td>Inventory: issue uniform with recovery</td><td><span class="pill done">Pass</span></td><td class="mute">Issued; ₹900 recovered over two months and refunded later</td></tr>
+<tr><td>Inventory: issue an asset</td><td><span class="pill done">Pass</span></td><td class="mute">Asset issued</td></tr>
+<tr><td>Inventory: take an asset back</td><td><span class="pill done">Pass</span></td><td class="mute">Taken back</td></tr>
+<tr><td>Dues: give an advance</td><td><span class="pill done">Pass</span></td><td class="mute">ADV-3006 sent for approval</td></tr>
+<tr><td>Dues: add a deduction</td><td><span class="pill done">Pass</span></td><td class="mute">DED-3007 sent for approval</td></tr>
+<tr><td>Dues: put a salary on hold</td><td><span class="pill done">Pass</span></td><td class="mute">Salary put on hold</td></tr>
+<tr><td>Dues: release the hold</td><td><span class="pill done">Pass</span></td><td class="mute">Released</td></tr>
+<tr><td>Compensation: new structure version</td><td><span class="pill done">Pass</span></td><td class="mute">Version 2 added</td></tr>
+<tr><td>Compensation: map people to a version</td><td><span class="pill done">Pass</span></td><td class="mute">4 people mapped to Version 2</td></tr>
+<tr><td>Compensation: edit a pay band</td><td><span class="pill done">Pass</span></td><td class="mute">Band saved</td></tr>
+<tr><td>Compensation: change an LWF rule</td><td><span class="pill done">Pass</span></td><td class="mute">Rule saved</td></tr>
+<tr><td>Compensation: edit a budget</td><td><span class="pill done">Pass</span></td><td class="mute">Budget saved</td></tr>
+<tr><td>Separation: start a termination</td><td><span class="pill done">Pass</span></td><td class="mute">SEP-2 started; RS-3008 sent for approval</td></tr>
+<tr><td>Separation: case view opens</td><td><span class="pill done">Pass</span></td><td class="mute">Divya Patil · Termination</td></tr>
+<tr><td>Separation: cancel the case</td><td><span class="pill done">Pass</span></td><td class="mute">Cancelled</td></tr>
+<tr><td>Employee file: pick and read</td><td><span class="pill done">Pass</span></td><td class="mute">file shown</td></tr>
+<tr><td>Reports: run three reports</td><td><span class="pill done">Pass</span></td><td class="mute">53 rows, 5 rows, 53 rows</td></tr>
+<tr><td>Attendance: add a punch machine</td><td><span class="pill done">Pass</span></td><td class="mute">key shown once</td></tr>
+<tr><td>Dashboard: every tab renders</td><td><span class="pill done">Pass</span></td><td class="mute">all tabs</td></tr>
+<tr><td>Employee: open the payslip</td><td><span class="pill done">Pass</span></td><td class="mute">payslip shown</td></tr>
+<tr><td>Employee: Form 16 listed after release</td><td><span class="pill done">Pass</span></td><td class="mute">listed</td></tr>
+</table></div>
+
+<h2 id="load">Load test: 5,053 employees</h2>
+<p>A separate database with the sample organisation plus 5,000 generated employees (permanent, contractual and retainer), their pay, IDs and bank accounts, and a month of punches: 136,766 attendance days. One user, on this Mac with a local PostgreSQL. Queries read only the current year's attendance partition, and the server logged no errors. Publishing wrote 4,275 payslips, one per permanent employee.</p>
+<div class="tbl"><table><tr><th>Call</th><th class="num">Time</th></tr>
+<tr><td>Employee list, first page of 50</td><td class="num">15 ms</td></tr>
+<tr><td>Employee search</td><td class="num">13 ms</td></tr>
+<tr><td>Dashboard overview</td><td class="num">21 ms</td></tr>
+<tr><td>Attendance records for the month</td><td class="num">754 ms</td></tr>
+<tr><td>Month close (pending, missing punches)</td><td class="num">820 ms</td></tr>
+<tr><td>Lock attendance</td><td class="num">9 ms</td></tr>
+<tr><td>Dry run request (handed to the background job)</td><td class="num">8 ms</td></tr>
+<tr><td>Dry run for 5,053 people, end to end (background job)</td><td class="num">2,218 ms</td></tr>
+<tr><td>Payroll rows, page 1</td><td class="num">56 ms</td></tr>
+<tr><td>Payroll rows, filtered by flag</td><td class="num">46 ms</td></tr>
+<tr><td>Run checks</td><td class="num">44 ms</td></tr>
+<tr><td>Payroll sheet download</td><td class="num">179 ms</td></tr>
+<tr><td>Edit one row</td><td class="num">16 ms</td></tr>
+<tr><td>Verify request</td><td class="num">5 ms</td></tr>
+<tr><td>Verify end to end (recalculates everyone)</td><td class="num">2,212 ms</td></tr>
+<tr><td>Approve request</td><td class="num">14 ms</td></tr>
+<tr><td>Approve end to end (recalculates everyone)</td><td class="num">2,211 ms</td></tr>
+<tr><td>Publish (payslips, TDS history, carry-overs)</td><td class="num">1,649 ms</td></tr>
+<tr><td>Bank advice download</td><td class="num">145 ms</td></tr>
+<tr><td>ECR text file</td><td class="num">74 ms</td></tr>
+<tr><td>Report: employee master</td><td class="num">13 ms</td></tr>
+<tr><td>Report: headcount summary</td><td class="num">4 ms</td></tr>
+<tr><td>Report: payroll register</td><td class="num">50 ms</td></tr>
+<tr><td>Report: statutory summary</td><td class="num">46 ms</td></tr>
+<tr><td>Report: attendance summary with loss of pay</td><td class="num">815 ms</td></tr>
+<tr><td>Report: late coming</td><td class="num">829 ms</td></tr>
+<tr><td>Report: leave balances (12,825 rows)</td><td class="num">2,533 ms</td></tr>
+<tr><td>Report: missing details and IDs</td><td class="num">8 ms</td></tr>
+<tr><td>Report: approver workload</td><td class="num">2 ms</td></tr>
+<tr><td>Report download: employee master (all rows)</td><td class="num">78 ms</td></tr>
+<tr><td>Dashboard payroll tab</td><td class="num">57 ms</td></tr>
+<tr><td>Tax list (all permanent staff)</td><td class="num">1,792 ms</td></tr>
+<tr><td>5,000 punches pushed by one device</td><td class="num">2,592 ms</td></tr>
+</table></div>
+
+<h2 id="gaps">Not covered</h2>
+<ul>
+<li>Many people at once: the load test is one user. Concurrent load (for example 200 people signing in at 9 am) is not measured.</li>
+<li>Phones and other browsers: desktop Chrome only.</li>
+<li>Real outside systems: SMS and email (none connected), your bank's advice format, the insurer's file, and uploads to the EPFO and ESIC portals. Files are checked against the formats in the spec.</li>
+<li>Security testing beyond access rules (penetration testing, input fuzzing).</li>
+<li>The prototype's 37 Playwright scenarios are not ported one to one; the same flows are covered by the tests above.</li>
+<li>About a quarter of the code is not run by tests, mostly error branches such as database failures.</li>
+</ul>
+
+<h2 id="rerun">How to rerun</h2>
+<p>Only the fix-list tests, from <code>backend/</code>: <code>HRMS_TEST_DATABASE_URL=postgres://hrms:hrms@localhost:5433/hrms_test go test ./internal/api/ -run 'TestApprovalRouting|TestPersonalDetails|TestReportedScreens'</code></p>
+<ul>
+<li>Automated tests: <code>make test</code> (needs the Docker database; uses a throwaway <code>hrms_test</code> database).</li>
+<li>Browser and load tests: see <code>tests/e2e/README.md</code>. They need a throwaway database; never run them against real data.</li>
+</ul>
+</main>
+</body>
+</html>
