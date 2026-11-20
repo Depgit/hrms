@@ -1,0 +1,109 @@
+<title>Saltstayz HRMS Go-Live Checklist</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap">
+<style>
+/* Layout: one reading column; each section is a table of what we need, who gives it and by when. */
+:root {
+  --bg: #f6f7f6; --card: #ffffff; --fg: #1b1f1d; --muted: #5b6460; --line: #dfe4e1;
+  --accent: #0f6e6e; --accent-tint: #e2f0ef; --urgent: #a3332a; --urgent-tint: #f7e6e4;
+  --body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --head: "Space Grotesk", "Inter", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #141716; --card: #1c201f; --fg: #e8ecea; --muted: #a2aba7; --line: #313735;
+  --accent: #5ec4bf; --accent-tint: #1b3332; --urgent: #f08a80; --urgent-tint: #3a1f1c; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #141716; --card: #1c201f; --fg: #e8ecea; --muted: #a2aba7; --line: #313735;
+  --accent: #5ec4bf; --accent-tint: #1b3332; --urgent: #f08a80; --urgent-tint: #3a1f1c; color-scheme: dark }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.6 var(--body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+main { max-width: 880px; margin: 0 auto; padding-block: 40px 64px; }
+h1 { font: 600 28px/1.2 var(--head); margin: 0 0 6px; text-wrap: balance; }
+h2 { font: 600 19px/1.3 var(--head); margin: 36px 0 10px; text-wrap: balance; }
+.sub { color: var(--muted); margin: 0 0 18px; }
+.lead { background: var(--accent-tint); border-radius: 8px; padding: 14px 16px; margin: 0 0 8px; }
+.tbl { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 8px; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); font-weight: 600; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+tr:last-child td { border-bottom: 0; }
+td:first-child { width: 42%; }
+.tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.now { color: var(--urgent); background: var(--urgent-tint); }
+.soon { color: var(--accent); background: var(--accent-tint); }
+ol, ul { margin: 6px 0 12px; padding-left: 22px; }
+li { margin: 3px 0; }
+.foot { color: var(--muted); font-size: 13px; margin-top: 32px; }
+</style>
+<main>
+<h1>Saltstayz HRMS Go-Live Checklist</h1>
+<p class="sub">What we need from Saltstayz to run the HRMS in production · prepared 20 Nov 2026</p>
+<p class="lead">The HRMS is built and tested. To switch it on for real staff we need the items below. Items marked <span class="tag now">Before go-live</span> block the launch. Items marked <span class="tag soon">First month</span> can follow shortly after.</p>
+
+<h2>1. Hosting and access</h2>
+<div class="tbl"><table>
+<tr><th>What we need</th><th>Why</th><th>When</th></tr>
+<tr><td>A server or cloud machine for the HRMS (Linux; 4 CPU, 8 GB RAM, 100 GB disk is enough to start) and access for our team</td><td>Runs the application and database</td><td><span class="tag now">Before go-live</span></td></tr>
+<tr><td>A web address, e.g. <b>hrms.saltstayz.com</b>, with DNS pointed to the server</td><td>Staff and HR open the HRMS here; it gets an HTTPS certificate</td><td><span class="tag now">Before go-live</span></td></tr>
+<tr><td>Agreement on daily backups and who keeps them (cloud storage or a second disk)</td><td>Employee and payroll records must be recoverable</td><td><span class="tag now">Before go-live</span></td></tr>
+<tr><td>Optional: Google Drive account for storing uploaded documents</td><td>Offer letters, IDs and payslips can live in your Drive</td><td><span class="tag soon">First month</span></td></tr>
+</table></div>
+
+<h2>2. Realtime India attendance portal</h2>
+<div class="tbl"><table>
+<tr><th>What we need</th><th>Why</th><th>When</th></tr>
+<tr><td><b>Licence renewal</b>: the current licence ends around <b>29 Nov 2026</b></td><td>All punch data stops if it lapses</td><td><span class="tag now">Before go-live</span></td></tr>
+<tr><td>A portal login for the HRMS (a separate user is best)</td><td>The HRMS reads swipes and creates, updates and marks leavers on the portal automatically</td><td><span class="tag now">Before go-live</span></td></tr>
+<tr><td>Confirmation that the HRMS may add, edit and mark employees as left on the portal</td><td>New joiners reach the punch machines without manual entry</td><td><span class="tag now">Before go-live</span></td></tr>
+<tr><td>Which branch on the portal belongs to which property, and each machine's location</td><td>Maps the 40 machines to properties and clusters</td><td><span class="tag now">Before go-live</span></td></tr>
+</table></div>
+
+<h2>3. Company and statutory details</h2>
+<div class="tbl"><table>
+<tr><th>What we need</th><th>Why</th><th>When</th></tr>
+<tr><td>Company PAN and TAN, PF establishment code, ESIC code, LWF registrations by state</td><td>Payslips, challans, Form 16 and statutory files</td><td><span class="tag now">Before go-live</span></td></tr>
+<tr><td>States where you have staff, and whether any charge <b>Professional Tax</b> (e.g. Maharashtra, Karnataka, West Bengal)</td><td>PT is not yet calculated; we add it only if needed</td><td><span class="tag now">Before go-live</span></td></tr>
+<tr><td>Salary debit bank account (12-digit ICICI account) and confirmation of the ICICI bulk upload format</td><td>The bank file for paying salaries</td><td><span class="tag now">Before go-live</span></td></tr>
+<tr><td>Name and designation of the Form 16 signatory</td><td>Printed on Form 16</td><td><span class="tag soon">First month</span></td></tr>
+</table></div>
+
+<h2>4. Your organisation's data</h2>
+<div class="tbl"><table>
+<tr><th>What we need</th><th>Why</th><th>When</th></tr>
+<tr><td>States, cities, <b>clusters</b> and all <b>properties</b> (the portal shows 38 branches)</td><td>Everything (access, budgets, accommodation, machines) is organised by these</td><td><span class="tag now">Before go-live</span></td></tr>
+<tr><td>Departments, designations, grades, shifts, roles and skills</td><td>Required on every employee and offer</td><td><span class="tag now">Before go-live</span></td></tr>
+<tr><td>Employee master (Excel template provided): personal details, PAN, Aadhaar, <b>UAN</b> or "no existing UAN", ESIC no, bank, salary, attendance code</td><td>Without a UAN or a PF choice, the HRMS holds that person's salary</td><td><span class="tag now">Before go-live</span></td></tr>
+<tr><td>Opening leave balances, opening advances and uniforms issued (templates provided)</td><td>So balances continue from your current records</td><td><span class="tag now">Before go-live</span></td></tr>
+<tr><td>Staff accommodation: each flat or PG, its cluster, beds, landlord, lease dates and monthly rent</td><td>Accommodation cost by property and cluster</td><td><span class="tag soon">First month</span></td></tr>
+<tr><td>Monthly cost budget (CTC) and headcount budget per property and cluster</td><td>Cost and budget page, and the budget check on offers</td><td><span class="tag soon">First month</span></td></tr>
+</table></div>
+
+<h2>5. Policies and approvals</h2>
+<div class="tbl"><table>
+<tr><th>What we need</th><th>Why</th><th>When</th></tr>
+<tr><td>Work policies (working days, weekly offs, grace time) and leave plans, and which apply to whom</td><td>Attendance and leave are worked out from these</td><td><span class="tag now">Before go-live</span></td></tr>
+<tr><td>Holiday calendar for each city for 2026 and 2027</td><td>Holidays in attendance and payroll</td><td><span class="tag now">Before go-live</span></td></tr>
+<tr><td>Who approves what (shortlist, offer, joining, leave, regularisation, separation), and which processes HR may skip</td><td>Approval flows</td><td><span class="tag now">Before go-live</span></td></tr>
+<tr><td>List of HR admins and their roles, and which reports each role may see</td><td>Access control</td><td><span class="tag now">Before go-live</span></td></tr>
+</table></div>
+
+<h2>6. Notifications</h2>
+<div class="tbl"><table>
+<tr><th>What we need</th><th>Why</th><th>When</th></tr>
+<tr><td>Email sending details (SMTP server, sender address such as hr@saltstayz.com)</td><td>Joiner links, offer letters, alerts and payslip notices by email</td><td><span class="tag now">Before go-live</span></td></tr>
+<tr><td>WhatsApp or SMS provider, and DLT registration for SMS templates</td><td>Attendance alerts and reminders on phone</td><td><span class="tag soon">First month</span></td></tr>
+<tr><td>Who receives the daily manager attendance digest</td><td>Attendance alerts</td><td><span class="tag soon">First month</span></td></tr>
+</table></div>
+
+<h2>7. Launch plan</h2>
+<ol>
+<li>Load the data above into a test copy and check it with HR (one week).</li>
+<li>Training for HR admins and payroll (half a day), plus a short guide for managers and employees.</li>
+<li><b>Parallel run:</b> one payroll month calculated in both the old process and the HRMS; differences checked and signed off.</li>
+<li>Go-live date agreed; employees receive their login.</li>
+<li>Support during the first payroll month.</li>
+</ol>
+
+<p class="foot">Questions on any item: contact the HRMS project team.</p>
+</main>
