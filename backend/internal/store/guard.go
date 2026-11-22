@@ -148,6 +148,9 @@ func (c Coll) Distinct(ctx context.Context, field string, filter any) ([]any, er
 		return nil, err
 	}
 	v, err := c.distinct(ctx, field, filter)
+	if err == nil && v == nil {
+		v = []any{} // never nil: callers pass it to "$in", and MongoDB refuses null there ("$in needs an array")
+	}
 	return v, c.q.note(err)
 }
 

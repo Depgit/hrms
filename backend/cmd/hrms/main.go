@@ -3,6 +3,7 @@
 //	hrms migrate                                  create the MongoDB collections and indexes (and reference data)
 //	hrms seed [-sample]                           load reference data (and the sample organisation)
 //	hrms create-admin -name … -mobile …           make the first HR Admin of a new installation (once; see below)
+//	hrms set-password -id EMP-0001                set a sign-in password (from HRMS_ADMIN_PASSWORD) when there is no other way in
 //	hrms serve                                    run the API and background jobs
 //	hrms import-pg [-from postgres://…] [-replace [-reset-mdm]] copy an existing PostgreSQL installation into MongoDB
 //	                                              (-replace keeps the CMS link; -reset-mdm clears it too)
@@ -84,7 +85,7 @@ func main() {
 		log.Printf("APP_TZ %q not loaded (%v); using the host's time zone", store.Zone(), err)
 	}
 	if len(os.Args) < 2 {
-		fmt.Println("usage: hrms migrate | seed [-sample] | create-admin -name … -mobile … | serve | import-pg [-from postgres://…] [-replace [-reset-mdm]] | realtime-pull [-from yyyy-mm-dd] [-to yyyy-mm-dd] | realtime-match | realtime-forms | pay-compare -month yyyy-mm[,yyyy-mm]")
+		fmt.Println("usage: hrms migrate | seed [-sample] | create-admin -name … -mobile … | set-password -id … | serve | import-pg [-from postgres://…] [-replace [-reset-mdm]] | realtime-pull [-from yyyy-mm-dd] [-to yyyy-mm-dd] | realtime-match | realtime-forms | pay-compare -month yyyy-mm[,yyyy-mm]")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -255,6 +256,15 @@ func main() {
 		if in.Password == "" {
 			log.Printf("No password was set: %s signs in with Activate with OTP (needs SMS) .", id)
 		}
+	case "set-password":
+		// Sets the sign-in password of an existing employee (password from HRMS_ADMIN_PASSWORD, never a flag).
+		fs := flag.NewFlagSet("set-password", flag.ExitOnError)
+		id := fs.String("id", "", "the Employee ID, for example EMP-0001 (required)")
+		_ = fs.Parse(os.Args[2:])
+		if err := seed.SetPassword(ctx, st, *id, os.Getenv("HRMS_ADMIN_PASSWORD")); err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("Password set for %s. Wrong tries and any lock were cleared, and they were signed out everywhere.", strings.ToUpper(strings.TrimSpace(*id)))
 	case "realtime-pull":
 		// Punches from the Realtime India portal for a date range (default today), as the setup page's "Pull now";
 		// the account comes from REALTIME_URL, REALTIME_USER and REALTIME_PASS. The database must be migrated.

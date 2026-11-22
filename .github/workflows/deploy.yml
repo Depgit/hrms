@@ -120,7 +120,7 @@ jobs:
             --project "$PROJECT_ID" --region "$REGION" \
             --source frontend \
             --ingress internal-and-cloud-load-balancing --no-invoker-iam-check \
-            --network "$VPC_NETWORK" --subnet "$VPC_SUBNET" --vpc-egress private-ranges-only \
+            --network "$VPC_NETWORK" --subnet "$VPC_SUBNET" --vpc-egress all-traffic \
             --min-instances 0 --max-instances 5 --cpu-boost \
             --cpu 1 --memory 256Mi --timeout 300 --port 8080 \
             --update-labels product=hrms \

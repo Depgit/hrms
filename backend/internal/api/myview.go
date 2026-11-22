@@ -119,6 +119,9 @@ func myviewRecent(ctx context.Context, q store.Q, emp string) ([]store.Row, erro
 
 // myviewNames maps the ids of documents of a collection to their names.
 func myviewNames(ctx context.Context, q store.Q, coll string, ids []any) (map[string]string, error) {
+	if len(ids) == 0 {
+		return map[string]string{}, nil // "$in" with no list is an error in MongoDB (an organisation of one has no colleagues)
+	}
 	rows, err := q.C(coll).Find(ctx, bson.M{"_id": bson.M{"$in": ids}}, options.Find().SetProjection(bson.M{"name": 1}))
 	if err != nil {
 		return nil, err
@@ -219,6 +222,9 @@ func (s *Server) myCelebrations(ctx context.Context, self, on string) ([]celebra
 	depts, err := myviewNames(ctx, s.st.DB, "department", deptIDs)
 	if err != nil {
 		return nil, err
+	}
+	if len(rows) == 0 {
+		return out, nil // nobody else in the department or location
 	}
 	births, err := s.st.DB.C("employee_personal").Find(ctx, bson.M{"employee_id": bson.M{"$in": ids}}, options.Find().SetProjection(bson.M{"employee_id": 1, "dob": 1}))
 	if err != nil {
