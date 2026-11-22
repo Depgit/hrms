@@ -8,8 +8,10 @@ import { PortalSendDialog } from '../components/PortalCard';
  *  departments, designations, properties and shifts to the portal's lists. Every send is previewed and confirmed. */
 
 const KINDS: [string, string][] = [['dept', 'Departments'], ['desig', 'Designations'], ['branch', 'Properties → portal branch'], ['shift', 'Shifts']];
-const WK: Record<string, [string, 'ok' | 'warn' | 'bad' | 'info' | 'n']> = { New: ['Not on portal', 'warn'], Changed: ['Changed', 'info'], Leave: ['Mark left', 'bad'], Check: ['Check', 'bad'] };
-const ACTION: Record<string, string> = { New: 'create', Changed: 'update', Leave: 'left' };
+// The groups the server sends (portalWaiting in backend portal_write.go): Waiting, Held, Failed, Sending and Check.
+const WK: Record<string, [string, 'ok' | 'warn' | 'bad' | 'info' | 'n']> = { Waiting: ['Waiting', 'warn'], Held: ['Held', 'bad'], Failed: ['Failed', 'bad'], Sending: ['Sending', 'info'], Check: ['Check', 'bad'] };
+const wk = (k: string): [string, 'ok' | 'warn' | 'bad' | 'info' | 'n'] => WK[k] ?? [k || 'Other', 'n'];
+const ACTIONS = ['create', 'update', 'left'];
 
 export default function PortalSend() {
   const w = useLoad(() => api('/attendance/portal'), []);
@@ -20,27 +22,27 @@ export default function PortalSend() {
   const rows = (d?.rows ?? []).filter((r: any) => kind === 'All' || r.kind === kind);
   return <div className="card" style={{ marginBottom: 14 }}>
     <div className="row sp"><h3 style={{ margin: 0 }}>Realtime portal: waiting to send</h3>
-      {d && <Pill k={d.rows.length ? 'warn' : 'ok'}>{d.rows.length} waiting</Pill>}</div>
+      {d && <Pill k={(d.rows ?? []).length ? 'warn' : 'ok'}>{(d.rows ?? []).length} waiting</Pill>}</div>
     {!d ? <Loading error={w.error} /> : <>
       <p className="mute" style={{ fontSize: 12.5 }}>New joiners, changed details and exits are sent to the Realtime portal only when you press Send and confirm the preview. People already on the portal without an Attendance code should get their code from “Match portal codes” first, or the portal gets a second record.</p>
       {d.notReady && <div className="note warn">{d.notReady}</div>}
       <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-        {['All', 'New', 'Changed', 'Leave', 'Check'].map((k) => <button key={k} className={`btn sm ${kind === k ? 'primary' : ''}`} onClick={() => setKind(k)}>{k === 'All' ? 'All' : WK[k][0]}{k !== 'All' ? ` (${d.counts[k] ?? 0})` : ''}</button>)}
+        {['All', 'Waiting', 'Held', 'Failed', 'Sending', 'Check'].map((k) => <button key={k} className={`btn sm ${kind === k ? 'primary' : ''}`} onClick={() => setKind(k)}>{k === 'All' ? 'All' : wk(k)[0]}{k !== 'All' ? ` (${d.counts?.[k] ?? 0})` : ''}</button>)}
         <button className="btn sm" onClick={() => setShowMap(!showMap)}>{showMap ? 'Hide mapping' : 'Mapping and code rule'}</button>
       </div>
       {rows.length > 0 && <div className="tw" style={{ marginTop: 10, maxHeight: 420, overflow: 'auto' }}><table><thead><tr><th>Employee</th><th>To do</th><th>Property</th><th>Joined / left</th><th>Code</th><th>Note</th><th></th></tr></thead><tbody>
         {rows.map((r: any) => <tr key={r.employeeId + r.kind}>
           <td><b>{r.name}</b><div className="mute mono" style={{ fontSize: 12 }}>{r.employeeId}</div></td>
-          <td><Pill k={WK[r.kind][1]}>{WK[r.kind][0]}</Pill></td>
+          <td><Pill k={wk(r.kind)[1]}>{wk(r.kind)[0]}</Pill>{r.action && <div className="mute" style={{ fontSize: 12 }}>{r.action === 'left' ? 'mark left' : r.action}</div>}</td>
           <td>{r.location}<div className="mute" style={{ fontSize: 12 }}>{r.dept}{r.desig ? ` · ${r.desig}` : ''}</div></td>
-          <td>{r.kind === 'Leave' ? (r.lwd ? fmtD(r.lwd) : '') : fmtD(r.doj)}</td>
+          <td>{r.action === 'left' ? (r.lwd ? fmtD(r.lwd) : '') : (r.doj ? fmtD(r.doj) : '')}</td>
           <td className="mono">{r.code}</td>
-          <td style={{ fontSize: 12 }}>{r.blocked?.length > 0 && r.kind !== 'Leave' ? <span style={{ color: 'var(--bad)' }}>{r.blocked.join('; ')}</span> : r.changed?.length > 0 ? `Changed: ${r.changed.join(', ')}` : r.matches?.length > 0 ? `Portal may have: ${r.matches.join('; ')}` : ''}</td>
-          <td>{d.canSend && !d.notReady && ACTION[r.kind] && !(r.blocked?.length > 0 && r.kind !== 'Leave') && <button className="btn sm" onClick={async () => {
+          <td style={{ fontSize: 12 }}>{r.message || ''}</td>
+          <td>{d.canSend && !d.notReady && r.kind !== 'Sending' && ACTIONS.includes(r.action) && <button className="btn sm" onClick={async () => {
             let code = r.code;
-            if (r.kind === 'New') { try { code = (await api(`/employees/${r.employeeId}/portal`)).suggestCode ?? ''; } catch { code = ''; } }
-            setSend({ ...r, action: ACTION[r.kind], code });
-          }}>{r.kind === 'Leave' ? 'Mark left' : 'Send'}</button>}</td>
+            if (r.action === 'create') { try { code = (await api(`/employees/${r.employeeId}/portal`)).suggestCode ?? ''; } catch { code = ''; } }
+            setSend({ ...r, action: r.action, code });
+          }}>{r.action === 'left' ? 'Mark left' : 'Send'}</button>}</td>
         </tr>)}
       </tbody></table></div>}
       {rows.length === 0 && <p className="mute" style={{ fontSize: 12.5 }}>Nothing waiting.</p>}
