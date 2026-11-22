@@ -867,7 +867,7 @@ func (s *Server) systemRequestTx(ctx context.Context, tx store.Q, wf, subjectID,
 		return nil, err
 	}
 	if len(req.Chain) == 0 {
-		return req, s.finalize(ctx, tx, req)
+		return req, s.autoApprove(ctx, tx, req, p.HierarchyOff)
 	}
 	return req, nil
 }
@@ -892,6 +892,9 @@ func (s *Server) finalizeShortlist(ctx context.Context, tx store.Q, r *Request) 
 	}
 	if _, err := tx.C("candidate").Update(ctx, bson.D{{Key: "_id", Value: r.EmployeeID}}, bson.D{{Key: "$set", Value: bson.D{{Key: "interview_request_id", Value: req.ID}}}}); err != nil {
 		return "", err
+	}
+	if req.Status == "Approved" { // the interview flow's approval hierarchy is off: selected at once
+		return fmt.Sprintf("Shortlist approved. No interview approval needed (%s): selected, raise the offer.", req.ID), nil
 	}
 	who := ""
 	if req.Status == "Pending" && req.Step < len(req.Chain) {

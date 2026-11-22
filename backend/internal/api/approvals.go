@@ -248,7 +248,7 @@ func resolvePerson(ctx context.Context, q store.Q, role string, s *subject, f ap
 }
 
 // loadFlow reads a workflow's rule list for a flow (leave: its leave group's list) and whether its approval
-// hierarchy is off (the tick cleared: requests still go to the approvers, and HR may skip approval).
+// hierarchy is off (the tick cleared, 21 Nov 2026: a new request goes to nobody and is approved at once).
 func loadFlow(ctx context.Context, q store.Q, wf string, flow approval.Flow, leaveGroup string) (approval.RuleSet, bool, error) {
 	var rs approval.RuleSet
 	row, err := q.C(store.ApprovalFlowColl).FindOne(ctx, bson.M{"wf": approval.MatrixKey(wf, leaveGroup), "flow": string(flow)})
@@ -271,7 +271,8 @@ func mayCanSkip(c *Ctx, raisedBy string) bool {
 	return c.Role == "HR Admin" || c.Level("appr.setup") >= 2 || (raisedBy != "" && raisedBy == c.EmployeeID)
 }
 
-// flowSkippable says whether a request's flow has its approval hierarchy off, so HR may skip approval.
+// flowSkippable says whether a request's flow has its approval hierarchy off, so HR may skip approval of a request
+// raised before the tick was cleared and still waiting (a new one is approved at once).
 func flowSkippable(ctx context.Context, q store.Q, r *Request) bool {
 	_, off, err := loadFlow(ctx, q, r.WF, approval.Flow(r.Flow), r.Facts.LeaveGroup)
 	return err == nil && off
@@ -280,6 +281,19 @@ func flowSkippable(ctx context.Context, q store.Q, r *Request) bool {
 // canSkip: the request waits for approval, its flow lets HR skip, and the caller may (never on a request about them).
 func canSkip(ctx context.Context, q store.Q, c *Ctx, r *Request) bool {
 	return r.Status == "Pending" && r.EmployeeID != c.EmployeeID && mayCanSkip(c, r.RaisedBy) && flowSkippable(ctx, q, r)
+}
+
+// AutoNote is the history line of a request approved at once because its flow's approval hierarchy is off.
+const AutoNote = "Approved automatically: approval hierarchy is off"
+
+// autoApprove approves a request with no approvers: the history says why when its flow's hierarchy is off.
+func (s *Server) autoApprove(ctx context.Context, tx store.Q, r *Request, off bool) error {
+	if off {
+		if err := history(ctx, tx, r.ID, "", "Approved", "System", AutoNote); err != nil {
+			return err
+		}
+	}
+	return s.finalize(ctx, tx, r)
 }
 
 // SkipNote is the history line of a request HR approved without waiting for its approvers.
@@ -328,7 +342,7 @@ type storedFlow struct {
 	WF    string
 	Flow  string
 	Rules []approval.Rule
-	Off   bool // approval hierarchy off: HR may skip approval (the rules still decide)
+	Off   bool // approval hierarchy off: new requests are approved at once (the rules are kept for when it is ticked again)
 }
 
 // loadFlows reads every rule list, by workflow key and flow.
@@ -349,7 +363,7 @@ func loadFlows(ctx context.Context, q store.Q) ([]storedFlow, error) {
 }
 
 // inUse says whether a rule can decide a request: switched on, or the last rule (Otherwise, always used). A flow
-// whose approval hierarchy is off still routes by its rules (HR may skip approval).
+// whose approval hierarchy is off keeps its rules, but planFor sends its requests to nobody.
 func (f storedFlow) inUse(i int) bool { return f.Rules[i].On || i == len(f.Rules)-1 }
 
 // StagePerson is a planned stage with the named person and their state.
@@ -368,7 +382,7 @@ type Plan struct {
 	// Rule is the name of the rule that decided ("Otherwise" when none above it fitted). Why is what is saved on
 	// the request: that rule's name (none for Otherwise) and then what added approvers beyond it.
 	Rule string `json:"rule"`
-	// HierarchyOff: the flow's approval hierarchy is off. The request still goes to the approvers; HR may skip.
+	// HierarchyOff: the flow's approval hierarchy is off. The request goes to nobody and is approved at once.
 	HierarchyOff bool `json:"hierarchyOff,omitempty"`
 }
 
@@ -433,6 +447,10 @@ func planFor(ctx context.Context, q store.Q, wf string, s *subject, f approval.F
 	if wf == "joining" && f.RehireCHRO && !containsStr(c.Chain, "CHRO") {
 		c.Chain = append(c.Chain, "CHRO")
 		c.Why = append(c.Why, "Rehire needs CHRO approval")
+	}
+	// "Approval hierarchy required" unticked (21 Nov 2026): no approvers at all; the request is approved at once.
+	if off {
+		c.Chain, c.Why = []string{}, []string{AutoNote}
 	}
 	p := &Plan{Flow: flow, Chain: c.Chain, Notify: c.Notify, Why: c.Why, Rule: rule, People: []StagePerson{}, HierarchyOff: off}
 	for _, st := range c.Chain {
@@ -589,12 +607,12 @@ func (s *Server) createRequestTx(ctx context.Context, tx store.Q, c *Ctx, wf, em
 		if err := skipVacant(ctx, tx, req); err != nil {
 			return err
 		}
-		if c != nil && c.Skip && req.Status == "Pending" { // HR's "Skip approval" when raising it
+		if c != nil && c.Skip && req.Status == "Pending" && len(p.Chain) > 0 { // HR's "Skip approval" when raising it
 			if err := s.skipApprovalTx(ctx, tx, c, req, c.SkipReason); err != nil {
 				return err
 			}
 		} else if len(p.Chain) == 0 {
-			if err := s.finalize(ctx, tx, req); err != nil {
+			if err := s.autoApprove(ctx, tx, req, p.HierarchyOff); err != nil {
 				return err
 			}
 		}

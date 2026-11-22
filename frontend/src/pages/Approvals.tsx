@@ -38,8 +38,9 @@ const FILTER_WF: [string, string][] = [...Object.entries(WORKFLOWS).flatMap(([k,
   (k === 'p_ded' ? [['p_pip', EXTRA_WF.p_pip], [k, l]] : k === 'shortlist' ? [[k, l], ['interview', EXTRA_WF.interview]] : [[k, l]])), ['p_tax', EXTRA_WF.p_tax]];
 /** The prototype's WFS: every request type with an approval flow, the improvement plan included (MX.p_pip). */
 const FLOW_WF: [string, string][] = FILTER_WF.filter(([k]) => k !== 'p_tax' && k !== 'interview'); // the interview is always the hiring manager's
-/** The Approval flow tab: every request type with a flow, the interview too (only its "Approval hierarchy" tick). */
-const EDIT_WF: [string, string][] = FILTER_WF.filter(([k]) => k !== 'p_tax');
+/** The Approval flow tab: every request type with a flow (the "Approval required" tick is in Check a flow › All flows
+ *  at a glance only, 21 Nov 2026). */
+const EDIT_WF: [string, string][] = FLOW_WF;
 export const wfName = (k: string) => WORKFLOWS[k] ?? EXTRA_WF[k] ?? (k.startsWith('leave') ? `Leave, ${k === 'leaveC' ? 'casual and sick' : 'privilege and other'}` : k);
 const COND: Record<string, string> = {
   always: 'Every request', days: 'Leave days in the last 30 days', grades: 'Grade is', cnt: 'Requests this month', budget: 'Above budget (headcount or pay band)',
@@ -1037,23 +1038,42 @@ function CheckFlow({ goNames }: { goNames?: () => void }) {
   </>;
 }
 
-/** Every flow on one page, read as sentences: each rule in use, in order, with its approvers. */
+/** Ticks or clears a flow's "Approval required" in All flows at a glance (21 Nov 2026). Cleared: a new request of this type and flow
+ *  goes to nobody and is approved at once; requests already waiting keep their approvers (HR can skip them). Asks
+ *  first before clearing. Returns how many requests wait, or null when not changed. */
+async function putHierarchy(key: string, flow: string, on: boolean): Promise<number | null> {
+  if (!on && !confirm(`Untick "Approval hierarchy required" for ${wfName(key)}, ${flow} flow?\n\nNo approval: every new request of this type in this flow is approved at once, nobody is asked. The rules and approvers are kept for when you tick it again. Requests already waiting stay with their approvers (HR can skip them).`)) return null;
+  try {
+    const r = await api<{ waiting: number }>(`/approvals/flows/${key}/${flow}/hierarchy`, { method: 'PUT', body: { on } });
+    toast(on ? 'Approval hierarchy on. The rules apply again' : 'No approval needed. New requests are approved automatically');
+    return r.waiting;
+  } catch (x: any) { toast(x.message || 'Not saved'); return null; }
+}
+
+/** Every flow on one page, read as sentences: each rule in use, in order, with its approvers. Who sets up approval
+ *  flows ticks or clears "Approval required" on each flow here. */
 function FlowGlance() {
-  const { data, error } = useLoad(() => api<any[]>('/approvals/flows'), []);
+  const { can } = useAuth();
+  const edit = can('appr.setup', 2);
+  const { data, error, reload } = useLoad(() => api<any[]>('/approvals/flows'), []);
   if (!data) return <Loading error={error} />;
+  const tick = async (m: any, on: boolean) => { if ((await putHierarchy(m.wf, m.flow, on)) !== null) reload(); };
   const groups: Record<string, any[]> = {};
   data.forEach((m) => { const b = m.wf.startsWith('leave') ? 'leave' : m.wf; (groups[b] ||= []).push(m); });
   const keys = inOrder(Object.keys(groups), GLANCE);
   const flowRank = (f: string) => (f === 'Operations' ? 0 : 1);
   return <div className="card"><h3>All flows at a glance</h3>
-    <p className="ink2" style={{ margin: '0 0 10px', fontSize: 13 }}>Each flow is a list of rules, checked from the top. The first rule that fits a request decides who approves. Open a request type to see it. Change it in the Approval flow tab.</p>
+    <p className="ink2" style={{ margin: '0 0 10px', fontSize: 13 }}>Each flow is a list of rules, checked from the top. The first rule that fits a request decides who approves. Open a request type to see it. Change it in the Approval flow tab.{edit && <> Untick <b>Approval required</b> on a flow and its requests are approved automatically, nobody is asked.</>}</p>
     {keys.map((b) => <details key={b} style={{ borderTop: '1px solid var(--line)', padding: '8px 0' }}>
       <summary style={{ cursor: 'pointer', fontWeight: 600 }}>{wfName(b)}</summary>
       <div className="tw" style={{ marginTop: 8 }}><table><thead><tr><th>Flow</th><th>Rule</th><th>Approvers, in order</th><th>Also told</th></tr></thead><tbody>
-        {[...groups[b]].sort((x, y) => x.wf.localeCompare(y.wf) || flowRank(x.flow) - flowRank(y.flow)).flatMap((m) => [m.hierarchy_off
-          ? <tr key={m.wf + m.flow + 'skip'} style={{ verticalAlign: 'top' }}><td className="ink2" style={{ fontSize: 12.5 }}>{b === 'leave' ? wfName(m.wf) + ' · ' : ''}{m.flow}</td>
-            <td colSpan={3}><b>HR can skip approval</b><div className="mute" style={{ fontSize: 12 }}>Requests go to the approvers below; HR can skip with a reason.{m.waiting > 0 && ` ${m.waiting} waiting.`}</div></td></tr>
-          : null, ...(m.rules as Rule[]).map((x, i) => {
+        {[...groups[b]].sort((x, y) => x.wf.localeCompare(y.wf) || flowRank(x.flow) - flowRank(y.flow)).flatMap((m) => [
+          <tr key={m.wf + m.flow + 'req'} style={{ verticalAlign: 'top', background: 'var(--bg2, transparent)' }}><td className="ink2" style={{ fontSize: 12.5 }}>{b === 'leave' ? wfName(m.wf) + ' · ' : ''}{m.flow}</td>
+            <td colSpan={3}>{edit
+              ? <label className="chkl" style={{ fontWeight: 600 }}><input type="checkbox" checked={!m.hierarchy_off} onChange={(e) => tick(m, e.target.checked)} />Approval required</label>
+              : <b>{m.hierarchy_off ? 'No approval' : 'Approval required'}</b>}
+              {m.hierarchy_off && <div className="mute" style={{ fontSize: 12 }}>Every new request is approved automatically, nobody is asked.{m.waiting > 0 && ` ${m.waiting} raised before still ${m.waiting === 1 ? 'waits' : 'wait'} (HR can skip).`}</div>}</td></tr>,
+          ...(m.hierarchy_off ? [] : m.rules as Rule[]).map((x, i) => {
           const last = i === m.rules.length - 1;
           if (!x.on && !last) return null;
           return <tr key={m.wf + m.flow + x.id} style={{ verticalAlign: 'top' }}><td className="ink2" style={{ fontSize: 12.5 }}>{b === 'leave' ? wfName(m.wf) + ' · ' : ''}{m.flow}</td>
@@ -1239,7 +1259,6 @@ function TestRequest({ wf, path, grades, saves }: { wf: string; path: string; gr
     <div className="row" style={{ marginTop: 10 }}><button className="btn" onClick={run}>Test</button></div>
     {err && <div className="note bad" style={{ marginTop: 10 }}>{err}</div>}
     {res && <div id="flow-test-result" style={{ marginTop: 10 }}>
-      {res.hierarchyOff && <div className="note warn" style={{ marginBottom: 6 }}>Approval hierarchy not required for this flow: the request goes to the approvers below, and HR can skip approval with a reason.</div>}
       <p style={{ margin: '0 0 6px', fontSize: 13 }}>{res.otherwise ? <>No rule fits, so <b>Otherwise</b> decides.</> : <>Rule {res.rule} decides: <b>{res.label}</b></>}</p>
       {res.chain.length ? <Chain steps={res.chain} /> : <div className="note">Nobody needs to approve. The request is approved automatically.</div>}
       {res.notify.length > 0 && <p className="mute" style={{ fontSize: 12.5, margin: '6px 0 0' }}>Also told: {res.notify.map((n: any) => n.role).join(', ')}</p>}
@@ -1267,8 +1286,6 @@ function FlowEditor({ goNames }: { goNames: () => void }) {
   /** What stops the list on screen from being saved: the rule it is about (if any) and the message. */
   const [problem, setProblem] = useState<{ id?: string; msg: string } | null>(null);
   const [saves, setSaves] = useState(0);
-  /** The "Approval hierarchy" tick as changed here, by flow: off, and how many requests raised before still wait. */
-  const [hier, setHier] = useState<Record<string, { off: boolean; waiting: number }>>({});
   const saved = useRef<Record<string, FlowDraft>>({});
   /** Rules added here that are switched off only because they have no approver yet. */
   const fresh = useRef<Set<string>>(new Set());
@@ -1294,17 +1311,6 @@ function FlowEditor({ goNames }: { goNames: () => void }) {
   const gl = grades.data || [];
   /** Moving to another flow drops a change that is not saved: ask first. */
   const leave = (go: () => void) => { if (!problem || confirm('Your last change to this flow is not saved. Leave it and lose it?')) go(); };
-  const flowRow = data?.find((x) => x.wf === key && x.flow === flow);
-  const hs = hier[k] ?? { off: !!flowRow?.hierarchy_off, waiting: +(flowRow?.waiting ?? 0) };
-  const setHierarchy = async (on: boolean) => {
-    if (!on && !confirm(`Untick "Approval hierarchy required" for ${wfName(key)}, ${flow} flow?\n\nRequests of this type in this flow still go to the approvers as usual, but HR gets a "Skip approval" option (with a reason) when raising one and on one already waiting. The rules and approvers stay as they are.`)) return;
-    try {
-      const r = await api<{ waiting: number }>(`/approvals/flows/${k}/hierarchy`, { method: 'PUT', body: { on } });
-      setHier((h) => ({ ...h, [k]: { off: !on, waiting: r.waiting } }));
-      setSaves((n) => n + 1);
-      toast(on ? 'Approval hierarchy on. The rules apply again' : 'Approval hierarchy not required. HR can skip approval');
-    } catch (x: any) { toast(x.message || 'Not saved'); }
-  };
   const putBack = () => { const s = lastSaved(); setDraft(s ? structuredClone(s) : null); setProblem(null); };
   const save = async (d: FlowDraft, msg = 'Saved') => {
     setDraft(d);
@@ -1357,19 +1363,13 @@ function FlowEditor({ goNames }: { goNames: () => void }) {
           <div className="seg">{(['Operations', 'Corporate'] as const).map((f) => <button key={f} className={flow === f ? 'on' : ''} onClick={() => leave(() => setFlow(f))}>{f} flow</button>)}</div>
           {wf === 'leave' && <div className="seg">{([['C', 'Casual and sick leave'], ['P', 'Privilege and other leave']] as const).map(([g, l]) => <button key={g} className={grp === g ? 'on' : ''} onClick={() => leave(() => setGrp(g))}>{l}</button>)}</div>}
         </div>
-        {flowRow && <div style={{ marginBottom: 12 }}>
-          <label className="chkl" style={{ fontWeight: 600 }}><input type="checkbox" checked={!hs.off} onChange={(e) => setHierarchy(e.target.checked)} />Approval hierarchy required (untick to let HR skip approval)</label>
-          <div className="mute" style={{ fontSize: 12.5, marginTop: 2 }}>Ticked: {wf === 'interview' ? 'the hiring manager takes the interview' : 'the rules below decide who approves'}, and nobody can skip it. Not ticked: requests still go to the approvers, but HR (HR Admin, HR roles with Approval flows at Edit, or the HR person who raised it) can skip approval with a reason.</div>
-          {hs.off && <div className="note warn" style={{ marginTop: 8 }}><b>HR can skip approval.</b> A skipped request is approved at once, with “Approval skipped by &lt;name&gt;: &lt;reason&gt;” in its history.
-            {hs.waiting > 0 && ` ${hs.waiting} ${hs.waiting === 1 ? 'request is' : 'requests are'} waiting now.`}</div>}
-        </div>}
         {wf === 'interview' ? null : <>
         {wf === 'leave' && <p className="mute" style={{ margin: '0 0 8px', fontSize: 12.5 }}>Which leave type uses which list is set in the work policy, under leave rules.</p>}
         <p className="mute" style={{ margin: '0 0 10px', fontSize: 12.5 }}>Rules are checked from the top. The <b>first rule that fits</b> the request decides who approves, one after the other, and who is also told. If no rule fits, <b>Otherwise</b> decides. A rule that is switched off is skipped. Operations or corporate is set on the department.</p>
         {problem && <div className="note bad" role="alert" style={{ marginBottom: 10 }}><b>Not saved.</b> {problem.msg}. Your changes to this flow are kept on screen but are not saved until this is fixed.{' '}
           <button className="btn sm" onClick={putBack}>Put back the saved rules</button></div>}
         {!data ? <Loading /> : !draft ? <p className="mute">This flow has no rules yet.</p> : <>
-          <div id="flow-rules" style={hs.off ? { opacity: 0.6 } : undefined}>{rules.map((r, i) => {
+          <div id="flow-rules">{rules.map((r, i) => {
             const last = i === n - 1, isOpen = open === r.id, bad = problem?.id === r.id;
             const named = whenText(r.when);
             return <div key={r.id} className={`flow-rule${bad ? ' bad' : ''}`} style={{ borderTop: '1px solid var(--line)', padding: '10px 0', opacity: r.on || last ? 1 : 0.5 }}>

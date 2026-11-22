@@ -285,14 +285,14 @@ Start the API with `OTP_DEV_ECHO=true` and no `SMTP_HOST` (emails go to the API 
 - [ ] Approval flow › Test a request: enter grade / days / amount / exit type …, Test shows "Rule N decides: …" (or
       "No rule fits, so Otherwise decides") and the approvers in order. Moving a rule above another changes which
       one decides.
-- [ ] Approval flow › "Approval hierarchy required (untick to let HR skip approval)" tick (top of each flow, every
-      request type incl. Interview): untick it for, say, Reimbursement claim › Operations (asks first). Raise a claim
-      as an Operations employee: it still waits for the same approvers. As HR Admin open it: "Skip approval" shows;
-      with a blank reason nothing happens; with a reason it is Approved at once, its history says "Approval skipped by
-      <your name>: <reason>", the amount reaches the open month and it leaves the approvers' queue. Payroll, a manager
-      or the employee see no Skip approval. As HR, raise a payroll item for an Operations employee: "Skip approval"
-      sits next to "Send for approval". All flows at a glance shows "HR can skip approval"; Test a request shows the
-      route and the same note. Tick it again: no Skip approval anywhere, a new claim waits as before.
+- [ ] Approvals › All flows at a glance: each flow has an "Approval required" tick (only who can edit flows sees
+      the tick). Untick Shortlist › Operations and Interview › Operations (asks first). Shortlist an Operations
+      candidate: it is approved at once and the candidate goes straight to Selected, ready for the offer; the
+      request history says "Approved automatically: approval hierarchy is off". Untick Reimbursement claim ›
+      Operations: an employee's claim is Approved at once and reaches the open month. Test a request says nobody is
+      asked. A claim raised before unticking still waits; as HR Admin it shows "Skip approval" (reason required).
+      Tick it again: a new claim waits for the approvers as before. The Approval flow tab has no tick (rules only),
+      and Interview is not listed there.
 - [ ] After a change, Check a flow shows the new route for a real employee, and All flows at a glance lists the
       rules in use in order with Otherwise last.
 - [ ] Approver names: "No one mapped for…" lists the gaps. "Check overlaps" shows when two people hold one place.

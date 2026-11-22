@@ -113,21 +113,19 @@ sign-ins, what each role sees, every page, the end-to-end flows, security, and t
   escalation) is a periodic River job every 5 minutes, scheduled only by the elected leader when several API servers
   run. `Server.Enqueue` inserts a job inside a database transaction, so later work such as payroll runs and bulk
   imports is queued only if the data change commits.
-- **"Approval hierarchy required" tick per request type and flow (18 Nov 2026; meaning changed 19 Nov).** At the top
-  of each flow in Approvals › Approval flow (every request type, the interview too; only who can edit flows,
-  `appr.setup` 2). Ticked (the default) = today's behaviour, nobody can skip. Not ticked = requests still go to the
-  approvers as usual, but HR gets **Skip approval**: next to "Send for approval" when raising one (raise forms in
-  Approvals, Payroll items, Attendance regularization; `?skipApproval=<reason>` on any raising call, refused as a
-  whole if not allowed) and as a button on a request already waiting (`POST /api/approvals/{id}/skip` `{reason}`;
-  `canSkip` on `GET /api/approvals/{id}`; `GET /api/approvals/skip-check?wf=&subject=` tells a raise form). A reason is
-  required; the request is approved at once with "Approval skipped by <name>: <reason>" in its history, an audit
-  entry "Approval skipped" and the usual next steps (finalize); nothing waits on the approvers any more. Who can skip:
-  HR roles only (HR Admin, HRBP, HRBP Corporate, CHRO) and of those HR Admin, a role with `appr.setup` at Edit, or the
-  HR person who raised it; never on a request about yourself. All flows at a glance shows "HR can skip approval"; Test
-  a request shows the route plus that note. Stored as `approval_flow.hierarchy_off` (absent = ticked, no migration);
-  `PUT /api/approvals/flows/{wf}/{flow}/hierarchy` `{on}` → `{hierarchy, waiting}`, audited. The Onboarding raise
-  forms (shortlist, offer, joining verification) can use `components/SkipApproval.tsx` the same way; until then HR
-  skips those from the waiting request.
+- **"Approval required" tick per request type and flow (18 Nov 2026; meaning set 21 Nov).** On every flow in
+  Approvals › Check a flow › All flows at a glance, only there (every request type, the shortlist and interview too;
+  only who can edit flows, `appr.setup` 2). The Approval flow tab has no tick (rules and approvers only). Ticked (the default) = the rules decide who
+  approves. **Not ticked = no approval**: every new request of that type and flow goes to nobody and is approved at
+  once, with "Approved automatically: approval hierarchy is off" in its history and the usual next steps (finalize).
+  E.g. untick Shortlist and Interview: a shortlist is approved when sent and the candidate goes straight to Selected,
+  ready for the offer. The rules and approvers are kept for when it is ticked again. Requests raised before the tick was
+  cleared and still waiting keep their approvers; HR may **Skip approval** on them with a reason
+  (`POST /api/approvals/{id}/skip` `{reason}`, `canSkip` on `GET /api/approvals/{id}`; HR Admin, an HR role with
+  `appr.setup` at Edit, or the HR person who raised it; "Approval skipped by <name>: <reason>", audited). Raise forms no
+  longer show Skip approval (`GET /api/approvals/skip-check` always says no). Test a request shows "nobody is asked".
+  Stored as `approval_flow.hierarchy_off` (absent = ticked, no migration); `PUT /api/approvals/flows/{wf}/{flow}/hierarchy`
+  `{on}` → `{hierarchy, waiting}`, audited.
 - **Approval flows are rule lists (owner, 11 Nov 2026).** Each request type has, per flow (Operations and Corporate
   tabs; leave per leave group), an ordered list of rules. A rule has a name, conditions that must all hold (grade,
   leave days in 30 days, requests this month and type, amount, pay change, above budget, outside the pay band, notice

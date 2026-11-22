@@ -677,35 +677,11 @@ func (s *Server) approvalSkip(r *http.Request, c *Ctx) (any, error) {
 	return map[string]any{"status": status}, nil
 }
 
-// approvalSkipCheck tells a raise form whether to offer "Skip approval" next to "Send for approval": the caller is
-// an HR role (who raises it may skip it) and the request type's flow has its approval hierarchy off. With a subject
-// (employee, candidate or offer) its own flow decides; without one, any flow of the type; leave reads its group.
-func (s *Server) approvalSkipCheck(r *http.Request, c *Ctx) (any, error) {
-	ctx, q := r.Context(), r.URL.Query()
-	wf, subj, group := q.Get("wf"), q.Get("subject"), q.Get("leaveGroup")
-	if !mayCanSkip(c, c.EmployeeID) || wf == "" || subj == c.EmployeeID {
-		return map[string]any{"skip": false}, nil
-	}
-	keys := []string{approval.MatrixKey(wf, group)}
-	if wf == "leave" && group == "" {
-		keys = []string{"leaveC", "leaveP"}
-	}
-	f := bson.M{"wf": bson.M{"$in": keys}, "hierarchy_off": true}
-	if subj != "" {
-		sj, err := loadSubject(ctx, s.st.DB, subj)
-		if err != nil {
-			return map[string]any{"skip": false}, nil
-		}
-		f["flow"] = string(approval.Operations)
-		if sj.Corporate {
-			f["flow"] = string(approval.Corporate)
-		}
-	}
-	ok, err := s.st.DB.C(store.ApprovalFlowColl).Exists(ctx, f)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{"skip": ok}, nil
+// approvalSkipCheck told a raise form whether to offer "Skip approval" (19 Nov 2026). Since 21 Nov an unticked
+// "Approval hierarchy required" approves a new request at once, so a raise form never needs the button: always no.
+// A request raised before the tick was cleared and still waiting keeps "Skip approval" (canSkip).
+func (s *Server) approvalSkipCheck(_ *http.Request, _ *Ctx) (any, error) {
+	return map[string]any{"skip": false}, nil
 }
 
 func (s *Server) approvalCancel(r *http.Request, c *Ctx) (any, error) {
@@ -749,7 +725,7 @@ func (s *Server) flowsAll(r *http.Request, c *Ctx) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	// A flow whose approval hierarchy is off says how many of its requests wait (HR may skip their approval).
+	// A flow whose approval hierarchy is off says how many requests raised before still wait (HR may skip them).
 	for _, x := range rows {
 		if x["hierarchy_off"] == true {
 			n, err := s.st.DB.C("approval_request").Count(r.Context(), flowWaitingFilter(str(x["wf"]), str(x["flow"])))
@@ -776,8 +752,9 @@ func flowWaitingFilter(key, flow string) bson.M {
 }
 
 // flowHierarchy ticks or clears a flow's "Approval hierarchy required" (every request type, the interview too).
-// Cleared, requests still go to the approvers as usual, but HR may skip approval with a reason (skipApprovalTx), when
-// raising one or on one waiting; the rules and approvers stay as they are. The answer says how many wait.
+// Cleared (21 Nov 2026), a new request goes to nobody and is approved at once; the rules and approvers stay as they
+// are for when it is ticked again. Requests already waiting keep their approvers (HR may skip them); the answer
+// says how many wait.
 func (s *Server) flowHierarchy(r *http.Request, c *Ctx) (any, error) {
 	if err := c.Need("appr.setup", 2); err != nil {
 		return nil, err
@@ -807,7 +784,7 @@ func (s *Server) flowHierarchy(r *http.Request, c *Ctx) (any, error) {
 		}
 		action := "Approval hierarchy switched on"
 		if !*b.On {
-			action = "Approval hierarchy switched off: HR can skip approval"
+			action = "Approval hierarchy switched off: requests approved automatically"
 		}
 		return audit(ctx, tx, c, action, store.ApprovalFlowColl, wf+"/"+flow, map[string]any{"hierarchy": before["hierarchy_off"] != true},
 			map[string]any{"hierarchy": *b.On, "waiting": waiting})
@@ -886,7 +863,7 @@ type flowTestOut struct {
 	Chain     []string          `json:"chain"`
 	Notify    []approval.Notify `json:"notify"`
 	People    []StagePerson     `json:"people,omitempty"` // with an employee: who each stage is
-	// HierarchyOff: the flow's approval hierarchy is off: the route below applies, and HR can skip approval.
+	// HierarchyOff: the flow's approval hierarchy is off: nobody is asked, the request is approved at once.
 	HierarchyOff bool `json:"hierarchyOff,omitempty"`
 }
 
@@ -948,6 +925,10 @@ func (s *Server) flowTest(r *http.Request, c *Ctx) (any, error) {
 		ch = approval.BuildKeyed(rs, f, resolve, func(role string) string { resolve(role); return personKey(cache[role]) })
 	}
 	out := &flowTestOut{Rule: i + 1, Label: rs.Rules[i].Label, Otherwise: i == len(rs.Rules)-1, Chain: ch.Chain, Notify: ch.Notify, HierarchyOff: off}
+	if off { // nobody is asked: approved at once
+		out.Chain = []string{}
+		return out, nil
+	}
 	if subj != nil {
 		out.People = []StagePerson{}
 		for _, st := range ch.Chain {
