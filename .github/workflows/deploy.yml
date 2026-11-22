@@ -15,7 +15,7 @@ name: Deploy HRMS
 # Live at https://people.saltstayz.com
 #
 # Optional repo variables (Settings > Secrets and variables > Actions > Variables):
-#   HRMS_SMTP_FROM (default hr@saltstayz.com), HRMS_MSG91_SMS_FLOW_ID (the HRMS OTP flow; required for SMS OTP),
+#   HRMS_SMTP_FROM (default people@saltstayz.com), HRMS_MSG91_SMS_FLOW_ID (the HRMS OTP flow; required for SMS OTP),
 #   HRMS_TRUSTED_PROXIES (addresses or CIDR ranges of the web service as the API sees it; default 10.0.0.0/8, check it)
 # Secrets live in Secret Manager as hrms-prod-<name> (list in the doc).
 # To require an approval click before every deploy: Settings > Environments > production > Required reviewers.
@@ -44,7 +44,7 @@ env:
   DOMAIN: people.saltstayz.com
   WIF_PROVIDER: projects/1085769788955/locations/global/workloadIdentityPools/github-pool/providers/github-provider
   DEPLOY_SA: sa-saltstayz-github-deploy@civil-pattern-495904-g0.iam.gserviceaccount.com
-  RUNTIME_SA: sa-hrms@civil-pattern-495904-g0.iam.gserviceaccount.com
+  RUNTIME_SA: saltstayz-hrms@civil-pattern-495904-g0.iam.gserviceaccount.com
   VPC_NETWORK: saltstayz-vpc
   VPC_SUBNET: saltstayz-apps-asia-south1
 
@@ -59,7 +59,7 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
-      - name: API vet and build
+      - name: Backend vet and build
         working-directory: backend
         run: |
           go vet ./...
@@ -69,7 +69,7 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - name: Web typecheck and build
+      - name: Frontend typecheck and build
         working-directory: frontend
         run: |
           npm ci
@@ -92,13 +92,13 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      - name: Deploy API
+      - name: Deploy backend
         env:
-          SMTP_FROM: ${{ vars.HRMS_SMTP_FROM || 'hr@saltstayz.com' }}
+          SMTP_FROM: ${{ vars.HRMS_SMTP_FROM || 'people@saltstayz.com' }}
           MSG91_FLOW: ${{ vars.HRMS_MSG91_SMS_FLOW_ID }}
           TRUSTED: ${{ vars.HRMS_TRUSTED_PROXIES || '10.0.0.0/8' }}
         run: |
-          # "^@^" makes @ the separator between settings, because TRUSTED_PROXIES may hold commas.
+          # "^|^" makes | the separator between settings: TRUSTED_PROXIES may hold commas and SMTP_FROM holds an @.
           gcloud run deploy hrms-api-prod \
             --project "$PROJECT_ID" --region "$REGION" \
             --source backend \
@@ -108,11 +108,11 @@ jobs:
             --min-instances 1 --max-instances 1 --no-cpu-throttling --cpu-boost \
             --cpu 1 --memory 1Gi --timeout 300 --port 8080 \
             --update-labels product=hrms \
-            --set-env-vars "^@^APP_ENV=production@TZ=Asia/Kolkata@APP_TZ=Asia/Kolkata@MONGO_DB=hrms@OTP_DEV_ECHO=false@APP_URL=https://${DOMAIN}@STORAGE_DRIVER=gcs@GCS_BUCKET=hrms-files-prod-${PROJECT_ID}@SMTP_HOST=smtp.gmail.com@SMTP_PORT=587@SMTP_FROM=${SMTP_FROM}@MSG91_SMS_FLOW_ID=${MSG91_FLOW}@TRUSTED_PROXIES=${TRUSTED}" \
+            --set-env-vars "^|^APP_ENV=production|TZ=Asia/Kolkata|APP_TZ=Asia/Kolkata|MONGO_DB=hrms|OTP_DEV_ECHO=false|APP_URL=https://${DOMAIN}|STORAGE_DRIVER=gcs|GCS_BUCKET=hrms-files-prod-${PROJECT_ID}|SMTP_HOST=smtp.gmail.com|SMTP_PORT=587|SMTP_FROM=${SMTP_FROM}|MSG91_SMS_FLOW_ID=${MSG91_FLOW}|TRUSTED_PROXIES=${TRUSTED}" \
             --set-secrets "MONGO_URL=hrms-prod-mongo-url:latest,APP_SECRET=hrms-prod-app-secret:latest,GOOGLE_CLIENT_ID=hrms-prod-google-client-id:latest,GOOGLE_CLIENT_SECRET=hrms-prod-google-client-secret:latest,SMTP_USER=hrms-prod-smtp-user:latest,SMTP_PASS=hrms-prod-smtp-password:latest,MSG91_AUTH_KEY=hrms-prod-msg91-auth-key:latest" \
             --quiet
 
-      - name: Deploy web
+      - name: Deploy frontend
         run: |
           API_URL="$(gcloud run services describe hrms-api-prod --project "$PROJECT_ID" --region "$REGION" --format 'value(status.url)')"
           API_HOST="${API_URL#https://}"
