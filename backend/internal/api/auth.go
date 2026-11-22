@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
+	"log"
 	"math/big"
 	"net/http"
 	"regexp"
@@ -35,8 +36,12 @@ var (
 	randomHex    = access.RandomHex
 )
 
-// SMSSender delivers OTPs. Wire the SMS / WhatsApp provider here.
+// SMSSender delivers a free-text message by SMS or WhatsApp (nothing uses it yet).
 type SMSSender func(mobile, message string) error
+
+// OTPSender texts a one-time code. The wording is the provider's approved template; only the code goes in
+// (MSG91 flow, internal/sms). Nil means the OTP cannot be sent.
+type OTPSender func(ctx context.Context, mobile, code string) error
 
 func (s *Server) newSession(ctx context.Context, q store.Q, employeeID string) (string, error) {
 	b := make([]byte, 32)
@@ -118,6 +123,9 @@ func (s *Server) otpSend(r *http.Request) (any, error) {
 	if mask == "" {
 		return nil, bad("There is no mobile number on record for this Employee ID. Ask HR to add it.")
 	}
+	if s.otp == nil && s.sms == nil && !s.devOTP { // never say "sent" when nothing can be sent
+		return nil, bad("OTP by SMS is not set up yet. Ask HR or IT.")
+	}
 	if last, err := s.st.DB.C("auth_otp").FindOne(ctx, bson.M{"employee_id": id}, authNewest()); err == nil && last != nil {
 		if at, ok := last["sent_at"].(time.Time); ok && time.Since(at) < otpResend {
 			return nil, bad("Wait 30 seconds before asking for a new OTP.")
@@ -144,7 +152,12 @@ func (s *Server) otpSend(r *http.Request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.sms != nil {
+	if s.otp != nil {
+		if err := s.otp(ctx, mobile, code); err != nil {
+			log.Printf("OTP SMS to %s failed: %v", mask, err) // the code is never logged
+			return nil, bad("We could not send the OTP right now. Try again in a minute.")
+		}
+	} else if s.sms != nil {
 		if err := s.sms(mobile, "Your Saltstayz HRMS OTP is "+code+". Valid for 5 minutes. Do not share it."); err != nil {
 			return nil, err
 		}

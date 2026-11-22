@@ -1,6 +1,6 @@
 # Saltstayz HRMS
 
-Go API + React frontend + PostgreSQL, built from `Saltstayz_HRMS_Build_Spec.pdf` (the spec) with prototype v81 as the
+Go API + React frontend + MongoDB (a one-node replica set; PostgreSQL only for `hrms import-pg`), built from `Saltstayz_HRMS_Build_Spec.pdf` (the spec) with prototype v81 as the
 executable reference for business logic.
 
 ## Run it
@@ -28,6 +28,14 @@ real use. Everyone else signs in the first time with **Activate with OTP**. In d
 | EMP-1009 | Anil Kapoor | Line Manager (derived from reports) |
 | EMP-1011 / 1012 | Sunita Rao / Deepak Arora | Payroll / Payroll Manager |
 | EMP-1014 | sample staff | Employee only |
+
+### Deploy (production)
+
+Production runs on Google Cloud Run at https://people.saltstayz.com with its own MongoDB Atlas cluster, deployed by
+publishing a GitHub Release (`.github/workflows/deploy.yml`). The full setup is in `docs/hrms-deployment.md` of the
+loyalty-program repo. On a new installation, after the first deploy: `hrms migrate`, `hrms seed` (never `-sample`),
+then `HRMS_ADMIN_PASSWORD=… hrms create-admin -name "…" -mobile 98xxxxxxxx` once. People then activate with an OTP sent
+by SMS (`MSG91_AUTH_KEY` and `MSG91_SMS_FLOW_ID`).
 
 ### Google Drive for uploaded documents (one-time setup)
 

@@ -13,13 +13,13 @@ Keep it short. Read this instead of exploring the whole repo. **When you change 
 - **Ports:** the user owns 8080/5173. Also busy: 5174, 5200, 8081, 8082 (docker), 8090, 8093, 8095, 8097, 8098, 8099, 3000. Use 8091/8092/8094/8096 and 5191/5194/5196.
 - No commits unless the user asks. Never print secrets from `backend/.env`.
 - Realtime portal (`REALTIME_*` in `.env`): only the whitelisted pages in `internal/realtime`. Writes allowed ONLY for employee create / edit / mark-left, made AUTOMATICALLY by the HRMS when HR marks someone joined, changes their details, or they exit (user, 19 Nov; replaces the 17 Nov "Send to portal" button); agents never submit these forms themselves (reading the forms with GET is fine). Never press "Update software Database", "Transfer Data In ERP", "Open & Close Gate", Delete, Upload or Import.
-- No external network calls except the Realtime portal (PAN providers are stubs).
+- No external network calls except the Realtime portal (PAN providers are stubs), and in production MSG91 (OTP SMS), Google Drive and Cloud Storage. Tests never call them: use httptest fakes.
 - Never write a wait loop using `pgrep -f` on a pattern its own command contains.
 
 ## Conventions (follow, don't rediscover)
 - Permissions: `c.Need("<area>", level)` in handlers. Audit every change with `audit(ctx, tx, c, ...)`.
 - Bulk templates self-register via `init()` in their own file (`bulk_opening.go`, `bulk_incentive.go`, `b1_bulk.go`); new employee columns follow `realtime_bulk.go`.
-- Punches always go through `ingestPunches` (`devices.go`). Notifications: bell via `docNotice` (`doc_collect.go`), email via `internal/mail` (off unless SMTP is set), SMS/WhatsApp hook `SMSSender` (`auth.go`, no provider yet).
+- Punches always go through `ingestPunches` (`devices.go`). Notifications: bell via `docNotice` (`doc_collect.go`), email via `internal/mail` (off unless SMTP is set), the OTP goes by SMS through `internal/sms` (MSG91 Flow API, `Options.OTP`); `SMSSender` (`auth.go`) is a free-text hook nothing uses yet.
 - Salary holds: `holdAdd` (`payitems.go`). Closures: `payroll_closure.go`.
 - **Every new GET route must be added to `tests/parity/routes.mjs`**, or the parity stage fails.
 - User-facing docs: update `README.md` and `docs/manual_test.md`. Plans and reports go in `docs/*.html`.
@@ -37,6 +37,7 @@ Keep it short. Read this instead of exploring the whole repo. **When you change 
 - Light work, docs and extraction: Sonnet 5.5. Heavy builds, audits and reviews: the user's selected model. Unsure: ask.
 
 ## Recent changes (newest first; one line each: date, what, key files)
+- 2026-11-22 Production readiness: OTP by SMS (MSG91 flow, `internal/sms`, `Options.OTP`; with no sender and no dev echo the OTP refuses instead of saying sent; `APP_ENV=production` refuses `OTP_DEV_ECHO`), `hrms create-admin` (first HR Admin + placeholder head office, `seed/firstadmin.go`, password only from `HRMS_ADMIN_PASSWORD`), Cloud Storage file driver (`STORAGE_DRIVER=gcs`, `GCS_BUCKET`, needs `APP_SECRET`; `storage/gcs.go`, `storage.FromEnv`), Dockerfiles + nginx template + `.github/workflows/{ci,deploy}.yml`, top-bar theme switch is a sun/moon icon (`ThemeToggle.tsx`). Plan: loyalty-program `docs/hrms-deployment.md`
 - 2026-11-19 "Approval hierarchy required" unticked now = requests still go to approvers, HR may "Skip approval" with a reason (raise forms via `?skipApproval=`, waiting request `POST /api/approvals/{id}/skip`, `GET /api/approvals/skip-check`; HR roles only: HR Admin / `appr.setup` Edit / HR raiser); history "Approval skipped by <name>: <reason>", audited, finalize; old auto-approve removed. `api/approvals.go` (`skipApprovalTx`, `mayCanSkip`), `api/approval_routes.go`, `components/SkipApproval.tsx`, `Approvals.tsx`, `PayItems.tsx`, `Attendance.tsx`
 - 2026-11-19 PAN verification = offline pattern check by default (provider "Format check", on: ABCDE1234F with 4th letter P; name not compared; nothing sent). `api/b1_pan.go`
 - 2026-11-19 PF choice: `pf_exempt_gross` default ₹25,000; joining form asks "Do you want PF deducted?" (no UAN, gross > threshold) → No = `pf_choice` optout, PF exempt + `all_basic` (calc.Input.AllBasic: gross all Basic, HRA/SA 0), HR changes on the PF card (`PUT …/pf-choice`), TDS projection uses the same split (no HRA exemption); UAN number required when Existing UAN = Yes (+ Personal details bulk UAN); one medical plan, Spouse name required when Married (`employee_personal.spouse`), joiners report family fallback. Migration `021_pf_choice`. `api/pfuan.go`, `api/onboarding.go`, `api/joining_link.go`, `calc/components.go`, `store/schema_pfchoice.go`, `PfExempt.tsx`, `Join.tsx`, `Onboarding.tsx`

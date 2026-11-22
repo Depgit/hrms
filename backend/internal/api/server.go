@@ -20,6 +20,7 @@ type Server struct {
 	jobs       *jobs.Client // background job queue (jobs.go); nil until StartJobs
 	devOTP     bool
 	sms        SMSSender
+	otp        OTPSender
 	files      storage.Store
 	finalizers map[string]Finalizer
 	drive      *driveService // Google Drive document storage (drive.go)
@@ -34,6 +35,7 @@ type Server struct {
 type Options struct {
 	DevOTP bool          // return the OTP in the response (development only)
 	SMS    SMSSender     // nil = no SMS provider configured
+	OTP    OTPSender     // sends the one-time code by SMS; nil = cannot send (OTP then works only with DevOTP)
 	Files  storage.Store // uploaded documents; defaults to ./data/uploads on local disk
 	// SecretKey (32 bytes, see SecretKey) encrypts the stored Google refresh token; nil = from APP_SECRET, else a
 	// key for this process only (tests).
@@ -62,7 +64,7 @@ func New(st *store.Store, o Options) *Server {
 	if err != nil {
 		panic(err) // main checks TRUSTED_PROXIES with ParseTrustedProxies first
 	}
-	s := &Server{st: st, devOTP: o.DevOTP, sms: o.SMS, files: o.Files, finalizers: map[string]Finalizer{}, drive: newDriveService(o.SecretKey),
+	s := &Server{st: st, devOTP: o.DevOTP, sms: o.SMS, otp: o.OTP, files: o.Files, finalizers: map[string]Finalizer{}, drive: newDriveService(o.SecretKey),
 		mail: o.Mail, appURL: strings.TrimRight(o.AppURL, "/"), joinGuard: newJoinLimiter(), authGuard: newAuthLimiter(o.DevOTP), trusted: trusted}
 	s.registerFinalizers()
 	s.mdmInit()

@@ -1,0 +1,133 @@
+name: Deploy HRMS
+
+# Production only. Merging code never deploys. A deploy happens when someone publishes a GitHub Release
+# (Releases > Draft a new release > choose a tag like v0.1.0, target main > Publish),
+# or runs this workflow by hand from the Actions tab and names a tag, branch or commit.
+#
+# Two Cloud Run services in civil-pattern-495904-g0 / asia-south1:
+#   hrms-api-prod  Go API. Private (ingress internal), always on: min=max=1 with CPU always allocated, because the
+#                  background jobs (attendance alerts, punch pull, hiring sweep) run inside it. Two copies would run
+#                  every job twice; do not raise max-instances without moving the jobs out first.
+#   hrms-web-prod  nginx + React. Behind the load balancer; forwards /api/* to the API.
+# The database is MongoDB Atlas (a cluster of its own, MONGO_URL in Secret Manager). It only accepts the fixed outbound
+# IP of the VPC's Cloud NAT, so the API sends all its traffic through the VPC. Files go to a Cloud Storage bucket.
+# One-time setup: docs/hrms-deployment.md (in the loyalty-program repo's docs folder).
+# Live at https://people.saltstayz.com
+#
+# Optional repo variables (Settings > Secrets and variables > Actions > Variables):
+#   HRMS_SMTP_FROM (default hr@saltstayz.com), HRMS_MSG91_SMS_FLOW_ID (the HRMS OTP flow; required for SMS OTP),
+#   HRMS_TRUSTED_PROXIES (addresses or CIDR ranges of the web service as the API sees it; default 10.0.0.0/8, check it)
+# Secrets live in Secret Manager as hrms-prod-<name> (list in the doc).
+# To require an approval click before every deploy: Settings > Environments > production > Required reviewers.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Tag, branch or commit to deploy
+        required: true
+        default: main
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: hrms-deploy
+  cancel-in-progress: false
+
+env:
+  PROJECT_ID: civil-pattern-495904-g0
+  REGION: asia-south1
+  DOMAIN: people.saltstayz.com
+  WIF_PROVIDER: projects/1085769788955/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+  DEPLOY_SA: sa-saltstayz-github-deploy@civil-pattern-495904-g0.iam.gserviceaccount.com
+  RUNTIME_SA: sa-hrms@civil-pattern-495904-g0.iam.gserviceaccount.com
+  VPC_NETWORK: saltstayz-vpc
+  VPC_SUBNET: saltstayz-apps-asia-south1
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: API vet and build
+        working-directory: backend
+        run: |
+          go vet ./...
+          go build ./...
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Web typecheck and build
+        working-directory: frontend
+        run: |
+          npm ci
+          npx tsc -b
+          npx vite build
+
+  deploy:
+    needs: check
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy API
+        env:
+          SMTP_FROM: ${{ vars.HRMS_SMTP_FROM || 'hr@saltstayz.com' }}
+          MSG91_FLOW: ${{ vars.HRMS_MSG91_SMS_FLOW_ID }}
+          TRUSTED: ${{ vars.HRMS_TRUSTED_PROXIES || '10.0.0.0/8' }}
+        run: |
+          # "^@^" makes @ the separator between settings, because TRUSTED_PROXIES may hold commas.
+          gcloud run deploy hrms-api-prod \
+            --project "$PROJECT_ID" --region "$REGION" \
+            --source backend \
+            --service-account "$RUNTIME_SA" \
+            --ingress internal --no-invoker-iam-check \
+            --network "$VPC_NETWORK" --subnet "$VPC_SUBNET" --vpc-egress all-traffic \
+            --min-instances 1 --max-instances 1 --no-cpu-throttling --cpu-boost \
+            --cpu 1 --memory 1Gi --timeout 300 --port 8080 \
+            --update-labels product=hrms \
+            --set-env-vars "^@^APP_ENV=production@TZ=Asia/Kolkata@APP_TZ=Asia/Kolkata@MONGO_DB=hrms@OTP_DEV_ECHO=false@APP_URL=https://${DOMAIN}@STORAGE_DRIVER=gcs@GCS_BUCKET=hrms-files-prod-${PROJECT_ID}@SMTP_HOST=smtp.gmail.com@SMTP_PORT=587@SMTP_FROM=${SMTP_FROM}@MSG91_SMS_FLOW_ID=${MSG91_FLOW}@TRUSTED_PROXIES=${TRUSTED}" \
+            --set-secrets "MONGO_URL=hrms-prod-mongo-url:latest,APP_SECRET=hrms-prod-app-secret:latest,GOOGLE_CLIENT_ID=hrms-prod-google-client-id:latest,GOOGLE_CLIENT_SECRET=hrms-prod-google-client-secret:latest,SMTP_USER=hrms-prod-smtp-user:latest,SMTP_PASS=hrms-prod-smtp-password:latest,MSG91_AUTH_KEY=hrms-prod-msg91-auth-key:latest" \
+            --quiet
+
+      - name: Deploy web
+        run: |
+          API_URL="$(gcloud run services describe hrms-api-prod --project "$PROJECT_ID" --region "$REGION" --format 'value(status.url)')"
+          API_HOST="${API_URL#https://}"
+          gcloud run deploy hrms-web-prod \
+            --project "$PROJECT_ID" --region "$REGION" \
+            --source frontend \
+            --ingress internal-and-cloud-load-balancing --no-invoker-iam-check \
+            --network "$VPC_NETWORK" --subnet "$VPC_SUBNET" --vpc-egress private-ranges-only \
+            --min-instances 0 --max-instances 5 --cpu-boost \
+            --cpu 1 --memory 256Mi --timeout 300 --port 8080 \
+            --update-labels product=hrms \
+            --set-env-vars "API_UPSTREAM=${API_URL},API_HOST=${API_HOST},DNS_RESOLVER=169.254.169.254" \
+            --quiet
+
+      - name: Result
+        run: |
+          echo "web: $(gcloud run services describe hrms-web-prod --project "$PROJECT_ID" --region "$REGION" --format 'value(status.url)')"
+          echo "api revision: $(gcloud run services describe hrms-api-prod --project "$PROJECT_ID" --region "$REGION" --format 'value(status.latestReadyRevisionName)')"
