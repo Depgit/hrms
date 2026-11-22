@@ -2,7 +2,7 @@ import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { useAuth, type Me } from './auth';
 import { BusyBar, Toaster, useLoad } from './components/ui';
 import { Icon } from './components/icons';
-import { toggleTheme } from './components/theme';
+import { ThemeToggle } from './components/ThemeToggle';
 import { api } from './api';
 import Login from './pages/Login';
 import Join from './pages/Join';
@@ -109,7 +109,7 @@ export default function App() {
           </span>}
           <span style={{ fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 8 }}><b>{me.employee.name}</b> · {me.ctx.employeeId} <button className="btn sm" onClick={signOut}>Sign out</button></span>
           <NoticeBell />
-          <button className="btn sm" onClick={toggleTheme}>Theme</button>
+          <ThemeToggle />
         </header>
         <Routes>
           {visible.map((p) => <Route key={p.path} path={p.path === '/' ? '/' : p.path + '/*'} element={p.el} />)}
