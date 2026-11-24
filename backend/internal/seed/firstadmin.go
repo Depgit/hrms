@@ -66,6 +66,7 @@ func FirstAdmin(ctx context.Context, st *store.Store, in FirstAdminInput) (strin
 	if !reMobile.MatchString(mobile) {
 		return "", errors.New("the mobile number must be a 10-digit Indian mobile number: the OTP is sent to it")
 	}
+	in.Password = strings.TrimSpace(in.Password) // a space or new line pasted with the secret must not become part of it
 	if in.Password != "" {
 		if err := CheckPassword(in.Password); err != nil {
 			return "", err
@@ -178,4 +179,32 @@ func FirstAdmin(ctx context.Context, st *store.Store, in FirstAdminInput) (strin
 		return nil
 	})
 	return code, err
+}
+
+// SetPassword sets the sign-in password of an existing employee (run as `hrms set-password -id EMP-0001`, the
+// password from HRMS_ADMIN_PASSWORD). It is the way back in when the first admin's password was stored wrong and
+// SMS is not set up yet. It clears wrong tries and any lock, and signs the person out everywhere.
+func SetPassword(ctx context.Context, st *store.Store, id, password string) error {
+	id = strings.ToUpper(strings.TrimSpace(id))
+	password = strings.TrimSpace(password)
+	if id == "" {
+		return errors.New("the Employee ID is required")
+	}
+	if err := CheckPassword(password); err != nil {
+		return err
+	}
+	return st.Tx(ctx, func(tx store.Q) error {
+		if ok, err := tx.C("employee").Exists(ctx, bson.M{"_id": id}); err != nil {
+			return err
+		} else if !ok {
+			return fmt.Errorf("there is no employee %s", id)
+		}
+		salt := access.RandomHex(16)
+		if _, err := tx.C("auth_credential").Upsert(ctx, bson.M{"employee_id": id},
+			bson.M{"salt": salt, "hash": access.HashPassword(password, salt), "fails": 0, "locked_until": nil, "updated_at": tx.Now()}, nil); err != nil {
+			return err
+		}
+		_, err := tx.C("auth_session").DeleteMany(ctx, bson.M{"employee_id": id})
+		return err
+	})
 }

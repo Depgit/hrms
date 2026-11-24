@@ -77,4 +77,18 @@ func TestFirstAdmin(t *testing.T) {
 	if s, _ := st.DB.C("employee_code_series").FindOne(ctx, bson.M{"key": "All"}); s == nil || (s["next_no"] != int32(2) && s["next_no"] != int64(2)) {
 		t.Fatalf("series did not advance: %v", s)
 	}
+	// A stored password that has gone wrong is replaced, even one given with a stray new line, and a lock is lifted.
+	if err := SetPassword(ctx, st, id, "An0ther!Passw0rd\n"); err != nil {
+		t.Fatal(err)
+	}
+	c, _ = st.DB.C("auth_credential").FindOne(ctx, bson.M{"employee_id": id})
+	if c == nil || c["hash"] != access.HashPassword("An0ther!Passw0rd", c["salt"].(string)) {
+		t.Fatal("set-password must store the trimmed password")
+	}
+	if err := SetPassword(ctx, st, "EMP-9999", "An0ther!Passw0rd"); err == nil {
+		t.Fatal("an unknown employee must be refused")
+	}
+	if err := SetPassword(ctx, st, id, "weak"); err == nil {
+		t.Fatal("a weak password must be refused")
+	}
 }

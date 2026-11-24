@@ -10,6 +10,8 @@ import { Field, Loading, Pill, toast, useLoad } from '../components/ui';
 const KINDS: [string, string][] = [['dept', 'Departments'], ['desig', 'Designations'], ['branch', 'Properties → portal branch'], ['shift', 'Shifts']];
 const WK: Record<string, [string, 'ok' | 'warn' | 'bad' | 'info' | 'n']> = { Waiting: ['Waiting (sending off)', 'warn'], Held: ['Held: mapping', 'warn'], Failed: ['Failed', 'bad'], Sending: ['Sending', 'info'], Check: ['Check on the portal', 'bad'] };
 const VERB: Record<string, string> = { create: 'Create', update: 'Update', left: 'Mark left' };
+/** A group the screen does not know (a newer server) still shows, as its own name (from main's fix, 24 Nov 2026). */
+const wk = (k: string): [string, 'ok' | 'warn' | 'bad' | 'info' | 'n'] => WK[k] ?? [k || 'Other', 'n'];
 
 export default function PortalSend() {
   const w = useLoad(() => api('/attendance/portal'), []);
@@ -24,19 +26,19 @@ export default function PortalSend() {
   };
   return <div className="card" style={{ marginBottom: 14 }}>
     <div className="row sp"><h3 style={{ margin: 0 }}>Realtime portal: automatic sending</h3>
-      {d && <Pill k={d.rows.length ? 'warn' : 'ok'}>{d.rows.length ? `${d.rows.length} not sent` : 'All sent'}</Pill>}</div>
+      {d && <Pill k={(d.rows ?? []).length ? 'warn' : 'ok'}>{(d.rows ?? []).length ? `${(d.rows ?? []).length} not sent` : 'All sent'}</Pill>}</div>
     {!d ? <Loading error={w.error} /> : <>
       <p className="mute" style={{ fontSize: 12.5 }}>New joiners are created on the portal when marked joined, changed details are updated and exits are marked left, by the HRMS itself. A write is made once and never repeated by itself: what failed or was held waits here with the portal’s message until you press Retry. People already on the portal without an Attendance code should get their code from “Match portal codes”.</p>
       {d.notReady && <div className="note warn">{d.notReady}. Writes due wait here; once sending is on, press “Send waiting”.</div>}
       <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-        {['All', 'Waiting', 'Held', 'Failed', 'Sending', 'Check'].map((k) => <button key={k} className={`btn sm ${kind === k ? 'primary' : ''}`} onClick={() => setKind(k)}>{k === 'All' ? 'All' : WK[k][0]}{k !== 'All' ? ` (${d.counts[k] ?? 0})` : ''}</button>)}
+        {['All', 'Waiting', 'Held', 'Failed', 'Sending', 'Check'].map((k) => <button key={k} className={`btn sm ${kind === k ? 'primary' : ''}`} onClick={() => setKind(k)}>{k === 'All' ? 'All' : wk(k)[0]}{k !== 'All' ? ` (${d.counts?.[k] ?? 0})` : ''}</button>)}
         {d.canSend && !d.notReady && (d.counts.Waiting ?? 0) > 0 && <button className="btn sm primary" disabled={!!busy} onClick={() => window.confirm(`Send the ${d.counts.Waiting} waiting write(s) to the portal now?`) && run('backlog', '/attendance/portal/backlog', {}, (r) => `${r.queued} queued`)}>Send waiting ({d.counts.Waiting})</button>}
         <button className="btn sm" onClick={() => setShowMap(!showMap)}>{showMap ? 'Hide mapping' : 'Mapping and code rule'}</button>
       </div>
       {rows.length > 0 && <div className="tw" style={{ marginTop: 10, maxHeight: 420, overflow: 'auto' }}><table><thead><tr><th>Employee</th><th>Status</th><th>Write</th><th>Property</th><th>Joined / left</th><th>Code</th><th>Message</th><th></th></tr></thead><tbody>
         {rows.map((r: any) => <tr key={r.employeeId}>
           <td><b>{r.name}</b><div className="mute mono" style={{ fontSize: 12 }}>{r.employeeId}</div></td>
-          <td><Pill k={WK[r.kind]?.[1] ?? 'n'}>{WK[r.kind]?.[0] ?? r.kind}</Pill></td>
+          <td><Pill k={wk(r.kind)[1]}>{wk(r.kind)[0]}</Pill></td>
           <td>{VERB[r.action] ?? r.action}</td>
           <td>{r.location}<div className="mute" style={{ fontSize: 12 }}>{r.dept}{r.desig ? ` · ${r.desig}` : ''}</div></td>
           <td>{r.action === 'left' ? (r.lwd ? fmtD(r.lwd) : '') : fmtD(r.doj)}</td>
