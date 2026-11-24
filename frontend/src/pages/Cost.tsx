@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api, inr } from '../api';
 import { Bars, Field, Loading, Modal, Pill, Tabs, download, toast, useLoad } from '../components/ui';
+import { BulkModal } from './Bulk';
 
 /** Cost and budget console (workforce plan, module 6; backend cost.go). What the company spends in a month for the
  *  whole company or any state, city, cluster or property, with a drill-down to each person: salary paid (minimum-wage
@@ -51,6 +52,7 @@ function CostView() {
   const month = ym || x?.meta.ym || '';
   const toggle = (n: Node) => setOpen({ ...open, [keyOf(n)]: !open[keyOf(n)] });
   const dl = () => download(`/cost/export.xlsx?ym=${month}`, `cost-${month}.xlsx`).catch((e) => toast(e.message));
+  const [bulk, setBulk] = useState(false); // budgets uploaded here, in a dialog (owner, 24 Nov 2026)
 
   const rows: ReactNode[] = [];
   const walk = (n: Node, depth: number) => {
@@ -88,7 +90,12 @@ function CostView() {
         {x && <Basis m={x.meta} />}
         {x && <span className="mute" style={{ fontSize: 12.5 }}>Open payroll month: {ymLabel(x.meta.openYm)}</span>}
       </div>
-      <button className="btn" onClick={dl} disabled={!month}>Download Excel</button>
+      <div className="row" style={{ gap: 8 }}>
+        {/* Budgets for many places at once: the Bulk update "Budgets" template (Level, Name, Headcount Budget, Monthly Cost Budget (CTC)). */}
+        {x?.canBudget && <button className="btn" onClick={() => setBulk(true)}>Bulk upload budgets</button>}
+        {bulk && <BulkModal tpl="bud" title="Bulk upload: budgets" onClose={() => setBulk(false)} onApplied={() => d.reload()} />}
+        <button className="btn" onClick={dl} disabled={!month}>Download Excel</button>
+      </div>
     </div>
       {x?.meta.mode === 'projected' && <div className="note warn" style={{ marginTop: 10 }}>Projected: everyone paid in {ymLabel(month)} on their current salary structure for the full month, with the pay lines already entered. Changes until the run is approved.</div>}
       {x?.meta.frozen && <p className="mute" style={{ fontSize: 12.5, margin: '10px 0 0' }}>Frozen when payroll was published{x.meta.frozenBy ? ` (${x.meta.frozenBy})` : ''}: these figures and budgets no longer change.</p>}

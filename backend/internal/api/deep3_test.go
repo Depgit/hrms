@@ -303,7 +303,8 @@ func TestDeepEndpointSweep(t *testing.T) {
 			cl, _ = cals["calendars"].([]any)
 		}
 		calID := cl[0].(map[string]any)["id"].(string)
-		A("PUT", "/api/calendars/"+calID, map[string]any{"holiday": map[string]any{"date": time.Now().Format("2006") + "-12-31", "name": "Year end", "kind": "Regional"}})
+		yr := fmt.Sprintf("%.0f", cl[0].(map[string]any)["year"]) // a holiday must be in its calendar's year
+		A("PUT", "/api/calendars/"+calID, map[string]any{"holiday": map[string]any{"date": yr + "-12-31", "name": "Year end", "kind": "Regional"}})
 		A("POST", "/api/exceptions", map[string]any{"employeeId": "EMP-1020", "kind": "leave", "from": today(), "to": today(), "until": today(), "reason": "Sweep"})
 		exs := list(A("GET", "/api/exceptions", nil))
 		if len(exs) == 0 {

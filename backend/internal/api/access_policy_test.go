@@ -271,11 +271,17 @@ func TestPolicyConflictCheck(t *testing.T) {
 		t.Fatalf("someone else's policy: %d", s)
 	}
 
-	// Replace on a second policy: the people in conflict move to it.
+	// Replace on a second policy: the people in conflict move to it. The hub is still on Hub 5.5 day, so mapping it
+	// again is refused (owner, 24 Nov 2026) until it is switched off there.
 	p2 := newPolicy("Hub 5 day")
-	s, pv = c.do("POST", "/api/policies/"+p2+"/maps/preview", hr, hrRole, maps)
-	if s != 200 || len(pv["moves"].([]any)) != 1 {
-		t.Fatalf("the hub mapping moving from Hub 5.5 day is a move: %v", pv)
+	if s, pv = c.do("POST", "/api/policies/"+p2+"/maps/preview", hr, hrRole, maps); s != 409 || pv["error"] != "Already applied to Hub 5.5 day. Switch it off there or edit that mapping." {
+		t.Fatalf("the hub mapping is already on Hub 5.5 day: %d %v", s, pv)
+	}
+	if s, r := c.do("PUT", "/api/policies/"+p1+"/maps", hr, hrRole, map[string]any{"maps": []any{map[string]any{"level": "location", "ref": hubID, "on": false}}}); s != 200 {
+		t.Fatalf("hub off on Hub 5.5 day: %d %v", s, r)
+	}
+	if s, pv = c.do("POST", "/api/policies/"+p2+"/maps/preview", hr, hrRole, maps); s != 200 || len(pv["conflicts"].([]any)) == 0 {
+		t.Fatalf("the kept people are conflicts for Hub 5 day: %d %v", s, pv)
 	}
 	body = map[string]any{"maps": maps["maps"], "resolution": map[string]any{"mode": "replace"}}
 	if s, r := c.do("PUT", "/api/policies/"+p2+"/maps", hr, hrRole, body); s != 200 {
@@ -285,9 +291,13 @@ func TestPolicyConflictCheck(t *testing.T) {
 		t.Fatalf("after replace: %v", ep)
 	}
 
-	// Pick: only the named person moves.
+	// Pick: only the named person moves. (Front Office itself is on the 24x7 policy, so mapping the department again is
+	// refused since 24 Nov 2026; Front Office in the hub's cluster is a different level that covers the same people.)
 	p3 := newPolicy("Front office pilot")
-	fmaps := map[string]any{"maps": []any{map[string]any{"level": "department", "ref": "Front Office", "on": true}}}
+	if s, r := c.do("POST", "/api/policies/"+p3+"/maps/preview", hr, hrRole, map[string]any{"maps": []any{map[string]any{"level": "department", "ref": "Front Office", "on": true}}}); s != 409 {
+		t.Fatalf("the Front Office department is on another policy: %d %v", s, r)
+	}
+	fmaps := map[string]any{"maps": []any{map[string]any{"level": "dept_cluster", "ref": "Front Office|" + hub["cluster_id"].(string), "on": true}}}
 	_, pv = c.do("POST", "/api/policies/"+p3+"/maps/preview", hr, hrRole, fmaps)
 	if int(pv["people"].(float64)) < 2 {
 		t.Fatalf("front office conflicts: %v", pv)

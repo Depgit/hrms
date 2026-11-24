@@ -222,6 +222,10 @@ func SampleOrg(ctx context.Context, st *store.Store) (map[string]string, error) 
 				return err
 			}
 		}
+		// Where each shift applies (Department + Location rows), from the locations above: N at its four, the rest everywhere.
+		if _, err := store.ShiftMapsFromLocations(ctx, tx); err != nil {
+			return err
+		}
 		var defaultStructure string
 		if r, err := tx.C("salary_structure").FindOne(ctx, bson.M{"is_default": true}); err != nil {
 			return err

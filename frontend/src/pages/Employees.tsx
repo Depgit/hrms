@@ -7,6 +7,7 @@ import { Drawer, Loading, Modal, Pill, Tabs, download, toast, useLoad } from '..
 import DocCollection from './DocCollection';
 import Payslip, { printSlip, type SlipView } from '../components/Payslip';
 import { scopeAll, scopeText, typeNames } from './Dashboard';
+import { PAID_DAYS, ordinal } from './Approvals';
 import { Statement } from './Compensation';
 import { UniformBlock } from '../components/Uniform';
 import { PfExemptBlock } from './PfExempt';
@@ -234,7 +235,8 @@ export function EmployeeDetail({ id, onClose }: { id: string; onClose?: () => vo
   if (!e) return <Loading error={error} />;
   const R = rules(e.type);
   const pol = e.policy, prob = +(pol?.probMonths || 0), probEnd: string = pol?.probEnds || '', inProb = !!probEnd && probEnd > today();
-  const plText = !pol?.pl?.on ? 'Not applicable' : pol.pl.from === 'doj' ? 'Accruing from joining' : inProb ? `Starts after probation, ${fmtD(probEnd)}` : 'Accruing';
+  const plText = (!pol?.pl?.on ? 'Not applicable' : pol.pl.from === 'doj' ? 'Accruing from joining' : inProb ? `Starts after probation, ${fmtD(probEnd)}` : 'Accruing') +
+    (pol?.pl?.on && pol.pl.earn ? `, earned by working days: ${pol.pl.earn.per} day${pol.pl.earn.per === 1 ? '' : 's'} for every ${pol.pl.earn.every} paid days${pol.pl.days > 0 ? ` (up to ${pol.pl.days} a year)` : ''}, credited the day after the ${ordinal(pol.pl.earn.every)} paid day; ${PAID_DAYS}` : '');
   const sepReasons = reasons.data?.filter((r) => r.used_for === 'Separation').map((r) => r.name) || [];
   const reason = off.reason || sepReasons[0] || '';
   const inactivate = async () => {

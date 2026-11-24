@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api, fmtD, postForm, today } from '../api';
-import { Loading, download, toast, useLoad } from '../components/ui';
+import { Loading, Modal, download, toast, useLoad } from '../components/ui';
 
 type Tpl = { key: string; name: string; cols: string[]; hint: string; data: boolean; note?: string; zip?: boolean };
 /** A checked row; eff and reason are the row's Effective From and Reason for change, shown on every change (prototype c.eff, c.reason). */
@@ -16,7 +16,7 @@ const fromEff = (d: string) => ` · from ${fmtD(d)}${d > today() ? ' (scheduled)
 const GROUPS: [string, string[]][] = [
   ['Employees', ['upd', 'off', 'new', 'pers', 'uni', 'cards']],
   ['Pay and dues', ['sal', 'band', 'bud', 'incentive', 'openadv', 'openuni']],
-  ['Leave and time', ['lvopen']],
+  ['Leave and time', ['lvopen', 'polmap', 'shiftmap']], // polmap: Work policy mapping (Work policies › Applies to); shiftmap: Shift mapping (Masters › Shifts)
 ];
 const ELSEWHERE = ['att', 'roster', 'gross'];
 // The prototype writes a change as "from 24 Nov 2026 (scheduled) · Promotion"; the server's note says "scheduled from …".
@@ -51,27 +51,62 @@ export default function Bulk() {
   // ?tpl= opens a template, e.g. /bulk?tpl=new from Employees, "Import employees" (HR Admin only).
   const [qp, setQp] = useSearchParams();
   const key = qp.get('tpl') || '';
-  const [text, setText] = useState('');
-  const [file, setFile] = useState<File | null>(null);
-  const [res, setRes] = useState<{ ok: number; results: Res[]; summary?: { matched: number; unmatched: number; invalid: number } } | null>(null);
-  const [busy, setBusy] = useState(false);
   if (!data) return <Loading error={error} />;
   const groups = grouped(data);
   const tpls = groups.flatMap(([, l]) => l);
   if (!tpls.length) return <div className="card"><p className="mute" style={{ margin: 0 }}>Your role has no bulk templates.</p></div>;
   const t = tpls.find((x) => x.key === key) ?? tpls[0];
   const group = groups.find(([, l]) => l.includes(t))?.[0] ?? '';
-  const pick = (k: string) => {
-    setText(''); setFile(null); setRes(null);
-    const p = new URLSearchParams(qp); p.set('tpl', k); setQp(p, { replace: true });
-  };
+  const pick = (k: string) => { const p = new URLSearchParams(qp); p.set('tpl', k); setQp(p, { replace: true }); };
+  return (
+    <>
+      <div className="card" style={{ marginBottom: 14 }} data-testid="bulk-picker">
+        <h3>Choose a template</h3>
+        <div className="bulk-groups">
+          {groups.map(([g, l]) => <div key={g} className="bulk-group" role="group" aria-label={g}>
+            <div className="bulk-glabel">{g}</div>
+            <div className="seg">{l.map((x) => <button key={x.key} className={x.key === t.key ? 'on' : ''} aria-pressed={x.key === t.key} onClick={() => pick(x.key)}>{x.name}</button>)}</div>
+          </div>)}
+        </div>
+      </div>
+      <BulkPanel key={t.key} t={t} group={group} aside={<div className="card"><h3>How bulk update works</h3>
+        <ul className="ink2" style={{ paddingLeft: 18, margin: 0, display: 'grid', gap: 8 }}>
+          <li>Choose a template, download it, fill it offline, upload it here.</li>
+          <li>Every row is checked against active masters before anything changes.</li>
+          <li>Designations must belong to the department, and shifts must be mapped to the department and location.</li>
+          <li>Valid rows apply, invalid rows are listed with the reason.</li>
+          <li>The “How to fill” sheet in each template explains every column, with an example.</li>
+        </ul>
+      </div>} />
+    </>
+  );
+}
+
+/** Bulk upload of one template inside the page that owns the data (owner, 24 Nov 2026: upload there, no move to Bulk
+ *  update): the same download, check and apply as Bulk update, in a dialog. onApplied runs after rows are applied. */
+export function BulkModal({ tpl, title, onClose, onApplied }: { tpl: string; title?: string; onClose: () => void; onApplied?: () => void }) {
+  const { data, error } = useLoad(() => api<Tpl[]>('/bulk'), []);
+  const t = data?.find((x) => x.key === tpl);
+  return <Modal wide onClose={onClose}>
+    <div className="row sp" style={{ marginBottom: 6 }}><h3 style={{ margin: 0 }}>{title ?? t?.name ?? 'Bulk upload'}</h3><button className="btn sm" onClick={onClose}>Close</button></div>
+    {!data ? <Loading error={error} /> : !t ? <p className="mute" style={{ margin: 0 }}>Your role does not have this bulk template.</p>
+      : <BulkPanel t={t} plain onApplied={onApplied} />}
+  </Modal>;
+}
+
+/** One template: columns, downloads, the file or pasted rows, Check file, Apply, and the check result. */
+function BulkPanel({ t, group, aside, plain, onApplied }: { t: Tpl; group?: string; aside?: ReactNode; plain?: boolean; onApplied?: () => void }) {
+  const [text, setText] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [res, setRes] = useState<{ ok: number; results: Res[]; summary?: { matched: number; unmatched: number; invalid: number } } | null>(null);
+  const [busy, setBusy] = useState(false);
   // A pasted sheet goes to the server as a CSV file; an Excel file goes as it is.
   const payload = () => file ?? new File([text], `${t.key}.csv`, { type: 'text/csv' });
   const run = async (action: 'check' | 'apply') => {
     setBusy(true);
     try {
       const r = await postForm(`/bulk/${t.key}/${action}`, {}, payload());
-      if (action === 'apply') { toast(`${r.ok} row${r.ok === 1 ? '' : 's'} applied`); setRes(null); setText(''); setFile(null); } else setRes(r);
+      if (action === 'apply') { toast(`${r.ok} row${r.ok === 1 ? '' : 's'} applied`); setRes(null); setText(''); setFile(null); onApplied?.(); } else setRes(r);
     } catch (x: any) { toast(x.message); setRes(null); } finally { setBusy(false); }
   };
   const choose = async (f: File | undefined) => {
@@ -86,71 +121,52 @@ export default function Bulk() {
   const ok = res?.ok ?? 0;
   const bad = res ? res.results.filter((r) => r.errors.length).length : 0;
   const ready = !!text.trim() || !!file;
-  return (
-    <>
-      <div className="card" style={{ marginBottom: 14 }} data-testid="bulk-picker">
-        <h3>Choose a template</h3>
-        <div className="bulk-groups">
-          {groups.map(([g, l]) => <div key={g} className="bulk-group" role="group" aria-label={g}>
-            <div className="bulk-glabel">{g}</div>
-            <div className="seg">{l.map((x) => <button key={x.key} className={x.key === t.key ? 'on' : ''} aria-pressed={x.key === t.key} onClick={() => pick(x.key)}>{x.name}</button>)}</div>
-          </div>)}
-        </div>
+  const body = <>
+    {group && <div className="bulk-glabel">{group}</div>}
+    {!plain && <h3 style={{ fontSize: 16 }}>{t.name}</h3>}
+    <p className="ink2" style={{ marginTop: 0 }}>{HINT[t.key] ?? t.hint}</p>
+    {t.note && <div className="note" style={{ marginBottom: 12 }}>{t.note}</div>}
+    {t.zip ? <>
+      <label className="field"><span>File names in the ZIP</span><div className="mono" style={{ background: 'var(--soft)', padding: 10, borderRadius: 8, overflowWrap: 'anywhere' }}>EMP-1007_ESIC.pdf · EMP-1007_MEDICAL.pdf · EMP-1008-esic.jpg</div></label>
+      <div className="row" style={{ margin: '12px 0', flexWrap: 'wrap' }}>
+        <label className="btn">Choose ZIP file<input type="file" accept=".zip,application/zip" hidden onChange={(e) => { choose(e.target.files?.[0]); e.target.value = ''; }} /></label>
       </div>
-      <div className="grid split">
-        <div className="card" data-testid="bulk-template">
-          <div className="bulk-glabel">{group}</div>
-          <h3 style={{ fontSize: 16 }}>{t.name}</h3>
-          <p className="ink2" style={{ marginTop: 0 }}>{HINT[t.key] ?? t.hint}</p>
-          {t.note && <div className="note" style={{ marginBottom: 12 }}>{t.note}</div>}
-          {t.zip ? <>
-            <label className="field"><span>File names in the ZIP</span><div className="mono" style={{ background: 'var(--soft)', padding: 10, borderRadius: 8, overflowWrap: 'anywhere' }}>EMP-1007_ESIC.pdf · EMP-1007_MEDICAL.pdf · EMP-1008-esic.jpg</div></label>
-            <div className="row" style={{ margin: '12px 0', flexWrap: 'wrap' }}>
-              <label className="btn">Choose ZIP file<input type="file" accept=".zip,application/zip" hidden onChange={(e) => { choose(e.target.files?.[0]); e.target.value = ''; }} /></label>
-            </div>
-          </> : <>
-          <label className="field"><span>Template columns</span><div className="mono" style={{ background: 'var(--soft)', padding: 10, borderRadius: 8, overflowWrap: 'anywhere' }}>{t.cols.join(',')}</div></label>
-          <div className="row" style={{ margin: '12px 0', flexWrap: 'wrap' }}>
-            <button className="btn" onClick={copy}>Copy header row</button>
-            <button className="btn" onClick={() => dl(false)}>Download template</button>
-            {t.data && <button className="btn" onClick={() => dl(true)}>Download current data</button>}
-            <label className="btn">Choose Excel or CSV file<input type="file" accept=".xlsx,.csv,text/csv" hidden onChange={(e) => { choose(e.target.files?.[0]); e.target.value = ''; }} /></label>
-          </div>
-          <label className="field"><span>Paste or load CSV</span>
-            <textarea placeholder={t.cols.join(',')} value={file ? '' : text} disabled={!!file} onChange={(e) => { setText(e.target.value); setRes(null); }} /></label>
-          </>}
-          {file && <div className="row mute" style={{ fontSize: 12.5, marginTop: 6 }}>Loaded {file.name}<button className="btn sm" onClick={() => { setFile(null); setRes(null); }}>Remove</button></div>}
-          <div className="row" style={{ marginTop: 12, flexWrap: 'wrap' }}>
-            <button className="btn primary" disabled={!ready || busy} onClick={() => run('check')}>Check file</button>
-            {res && <button className="btn primary" disabled={!ok || busy} onClick={() => run('apply')}>Apply {ok} valid row{ok === 1 ? '' : 's'}</button>}
-          </div>
-        </div>
-        <div className="card"><h3>How bulk update works</h3>
-          <ul className="ink2" style={{ paddingLeft: 18, margin: 0, display: 'grid', gap: 8 }}>
-            <li>Choose a template, download it, fill it offline, upload it here.</li>
-            <li>Every row is checked against active masters before anything changes.</li>
-            <li>Designations must belong to the department, and shifts must be mapped to the location.</li>
-            <li>Valid rows apply, invalid rows are listed with the reason.</li>
-            <li>The “How to fill” sheet in each template explains every column, with an example.</li>
-          </ul>
-        </div>
-      </div>
-      {res && <div className="card" style={{ marginTop: 14 }} data-testid="bulk-result"><h3>Check result</h3>
-        <p className="mute" style={{ marginTop: -6, fontSize: 12.5 }}>{res.summary
-          ? `${res.results.length} file${res.results.length === 1 ? '' : 's'}: ${res.summary.matched} matched, ${res.summary.unmatched} unmatched, ${res.summary.invalid} invalid. Nothing has changed yet.`
-          : `${res.results.length} row${res.results.length === 1 ? '' : 's'}: ${ok} ready to apply, ${bad} with problems. Nothing has changed yet.`}</p>
-        <div className="tw"><table className="bulk-res"><thead><tr><th>Row</th><th>Employee</th><th>Result</th></tr></thead><tbody>
-          {res.results.map((r, i) => <tr key={i} style={{ verticalAlign: 'top' }}>
-            <td className="mono"><span className="mute bulk-rowlbl">Row </span>{r.line || '—'}</td>
-            <td>{r.id || ''} {r.name && <span className="mute">{r.name}</span>}</td>
-            <td>{r.errors.length ? r.errors.map((x, j) => <span key={j}>{j > 0 && ' '}<span className="pill bad" style={{ whiteSpace: 'normal' }}>{x}</span></span>)
-              : r.changes.length ? (r.changes.some((c) => !c.from)
-                ? <div className="bulk-plan">{r.changes.map((c, j) => <ChangeText key={j} r={r} c={c} />)}</div>
-                : r.changes.map((c, j) => <span key={j}>{j > 0 && ' '}<ChangeText r={r} c={c} /></span>))
-              : <span className="pill n">No change</span>}</td>
-          </tr>)}
-        </tbody></table></div>
-      </div>}
-    </>
-  );
+    </> : <>
+    <label className="field"><span>Template columns</span><div className="mono" style={{ background: 'var(--soft)', padding: 10, borderRadius: 8, overflowWrap: 'anywhere' }}>{t.cols.join(',')}</div></label>
+    <div className="row" style={{ margin: '12px 0', flexWrap: 'wrap' }}>
+      <button className="btn" onClick={copy}>Copy header row</button>
+      <button className="btn" onClick={() => dl(false)}>Download template</button>
+      {t.data && <button className="btn" onClick={() => dl(true)}>Download current data</button>}
+      <label className="btn">Choose Excel or CSV file<input type="file" accept=".xlsx,.csv,text/csv" hidden onChange={(e) => { choose(e.target.files?.[0]); e.target.value = ''; }} /></label>
+    </div>
+    <label className="field"><span>Paste or load CSV</span>
+      <textarea placeholder={t.cols.join(',')} value={file ? '' : text} disabled={!!file} onChange={(e) => { setText(e.target.value); setRes(null); }} /></label>
+    </>}
+    {file && <div className="row mute" style={{ fontSize: 12.5, marginTop: 6 }}>Loaded {file.name}<button className="btn sm" onClick={() => { setFile(null); setRes(null); }}>Remove</button></div>}
+    <div className="row" style={{ marginTop: 12, flexWrap: 'wrap' }}>
+      <button className="btn primary" disabled={!ready || busy} onClick={() => run('check')}>Check file</button>
+      {res && <button className="btn primary" disabled={!ok || busy} onClick={() => run('apply')}>Apply {ok} valid row{ok === 1 ? '' : 's'}</button>}
+    </div>
+  </>;
+  const result = res && <div className={plain ? '' : 'card'} style={{ marginTop: 14 }} data-testid="bulk-result"><h3>Check result</h3>
+    <p className="mute" style={{ marginTop: -6, fontSize: 12.5 }}>{res.summary
+      ? `${res.results.length} file${res.results.length === 1 ? '' : 's'}: ${res.summary.matched} matched, ${res.summary.unmatched} unmatched, ${res.summary.invalid} invalid. Nothing has changed yet.`
+      : `${res.results.length} row${res.results.length === 1 ? '' : 's'}: ${ok} ready to apply, ${bad} with problems. Nothing has changed yet.`}</p>
+    <div className="tw"><table className="bulk-res"><thead><tr><th>Row</th><th>Employee</th><th>Result</th></tr></thead><tbody>
+      {res.results.map((r, i) => <tr key={i} style={{ verticalAlign: 'top' }}>
+        <td className="mono"><span className="mute bulk-rowlbl">Row </span>{r.line || '—'}</td>
+        <td>{r.id || ''} {r.name && <span className="mute">{r.name}</span>}</td>
+        <td>{r.errors.length ? r.errors.map((x, j) => <span key={j}>{j > 0 && ' '}<span className="pill bad" style={{ whiteSpace: 'normal' }}>{x}</span></span>)
+          : r.changes.length ? (r.changes.some((c) => !c.from)
+            ? <div className="bulk-plan">{r.changes.map((c, j) => <ChangeText key={j} r={r} c={c} />)}</div>
+            : r.changes.map((c, j) => <span key={j}>{j > 0 && ' '}<ChangeText r={r} c={c} /></span>))
+          : <span className="pill n">No change</span>}</td>
+      </tr>)}
+    </tbody></table></div>
+  </div>;
+  if (plain) return <>{body}{result}</>;
+  return <>
+    <div className="grid split"><div className="card" data-testid="bulk-template">{body}</div>{aside}</div>
+    {result}
+  </>;
 }

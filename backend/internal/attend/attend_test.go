@@ -7,7 +7,7 @@ import (
 	"github.com/saltstayz/hrms/internal/policy"
 )
 
-var shifts = []Shift{{"G", 540, 1080, nil}, {"M", 360, 840, nil}, {"E", 840, 1320, nil}, {"N", 1320, 360, nil}}
+var shifts = []Shift{{Code: "G", Start: 540, End: 1080}, {Code: "M", Start: 360, End: 840}, {Code: "E", Start: 840, End: 1320}, {Code: "N", Start: 1320, End: 360}}
 
 func shiftOf(c string) *Shift {
 	for i := range shifts {

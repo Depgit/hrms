@@ -51,6 +51,9 @@ type bulkTemplate struct {
 	how func(ctx context.Context, q store.Q) []string
 	// current: the template's "current data" rows, for a template outside bulkCurrent's list.
 	current func(ctx context.Context, s *Server, c *Ctx) ([]string, [][]any, error)
+	// key: what makes two rows of a file the same row (the later one is refused), for a template outside bulkRun's
+	// list (bulk_polmap.go: the Department and Location pair).
+	key func(v map[string]string) string
 }
 
 // bulkList reads the values of a template column's drop-down.
@@ -682,6 +685,9 @@ func (s *Server) bulkRun(r *http.Request, c *Ctx) (any, error) {
 		}
 		if t.Key == "incentive" { // several incentives a person; the same month and remark twice is the repeat (bulk_incentive.go)
 			key = incentiveRowKey(v)
+		}
+		if t.key != nil {
+			key = t.key(v)
 		}
 		it := bulkItem{row: row, group: strings.ToUpper(v["Employee ID"])}
 		if first, dup := seen[strings.ToUpper(key)]; dup {

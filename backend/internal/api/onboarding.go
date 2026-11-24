@@ -675,11 +675,11 @@ func resolveJob(ctx context.Context, q store.Q, d map[string]string, errs *[]str
 		}
 	}
 	if v := d["shift"]; v != "" && j.LocID != "" {
-		// A shift with no locations listed is used everywhere.
+		// The shift must apply to the department and location (its rows, shift_maps.go).
 		if x, _ := q.C("shift").FindOne(ctx, bson.D{{Key: "code", Value: v}, {Key: "status", Value: "Active"}}); x == nil {
 			add("Shift %s is not an active shift", v)
-		} else if x["location_ids"] != nil && !containsStr(onboardingStrings(x["location_ids"]), j.LocID) {
-			add("Shift %s is not mapped to %s", v, j.Loc)
+		} else if ok, _ := shiftRowFor(ctx, q, str(x["id"]), j.DeptID, j.LocID); !ok {
+			add("%s", shiftNotForMsg(v, j.Dept, j.Loc))
 		}
 	}
 	if v := d["attMode"]; v != "" {

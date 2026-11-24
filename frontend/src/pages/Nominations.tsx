@@ -1,10 +1,12 @@
 import { useState } from 'react';
-import { api, fmtD, openDoc, today, uploadDoc } from '../api';
+import { ApiError, api, fmtD, openDoc, postForm, session, today, uploadDoc } from '../api';
 import { useAuth } from '../auth';
 import { Loading, Modal, Pill, Switch, toast, useLoad } from '../components/ui';
 
-/** `on` false: the document is switched off (kept for earlier submissions, not asked). */
-type Doc = { id: string; label: string; per: 'nominee' | 'employee'; req: boolean; on?: boolean };
+/** `on` false: the document is switched off (kept for earlier submissions, not asked). `blank`: the blank form HR
+ *  attached for people to download, fill and upload (POST/DELETE /nominations/schemes/{id}/blank/{doc}). */
+type Blank = { id: string; name: string; size: number; at: string };
+type Doc = { id: string; label: string; per: 'nominee' | 'employee'; req: boolean; on?: boolean; blank?: Blank };
 /** `verify` false: final when the employee sends it (no Payroll check). */
 type Scheme = { id: number; name: string; form: string; note: string; on: boolean; types: string[]; mandatory: boolean; max: number; shares: boolean; relations: string[]; guardian: boolean; dueDays: number; docs: Doc[]; verify?: boolean };
 const docOn = (d: Doc) => d.on !== false;
@@ -12,6 +14,18 @@ type Person = { name: string; rel: string; dob: string; share: number | ''; guar
 const RELATIONS = ['Spouse', 'Son', 'Daughter', 'Father', 'Mother', 'Brother', 'Sister', 'Other'];
 const ETYPES = ['Permanent', 'Retainer', 'Contractual'];
 const blank = (): Person => ({ name: '', rel: '', dob: '', share: '', guardian: '' });
+
+/** Download a stored document under its own file name (a blank form may be a Word file). */
+async function downloadDoc(b: Blank) {
+  const res = await fetch(`/api/files/${b.id}`, { headers: { Authorization: `Bearer ${session.token}`, 'X-Role': session.role } });
+  if (!res.ok) throw new ApiError(res.status, (await res.json().catch(() => ({}))).error || 'Could not download the file');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(await res.blob());
+  a.download = b.name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+}
+const blankLink = (b: Blank, text = 'Download blank form') => <a href="#" title={b.name} onClick={(e) => { e.preventDefault(); downloadDoc(b).catch((x) => toast(x.message)); }}>{text}</a>;
 
 // The employee's state of one nomination as the prototype words it (nmState).
 const statePill = (x: any) => {
@@ -65,7 +79,7 @@ function NominationForm({ emp, st, onClose }: { emp: string; st: any; onClose: (
   };
   const docField = (key: string, d: Doc) => {
     const have = files.data?.[key];
-    return <label key={key} className="field"><span>{d.label}{d.req ? ' *' : ''}</span>
+    return <label key={key} className="field"><span>{d.label}{d.req ? ' *' : ''}{d.blank && <> · {blankLink(d.blank)}</>}</span>
       <input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={(e) => { up(key, e.target.files?.[0]); e.target.value = ''; }} />
       {have && <small className="mute"><a href="#" onClick={(e) => { e.preventDefault(); openDoc(have.id).catch((x) => toast(x.message)); }}>{have.file_name}</a></small>}</label>;
   };
@@ -206,6 +220,14 @@ function SchemeModal({ s: init, all, ed, onClose }: { s: Scheme; all: Scheme[]; 
     if (all.some((x) => x.id !== s.id && x.name.toLowerCase() === s.name.trim().toLowerCase())) { toast('That name already exists'); return; }
     try { await api(s.id ? `/nominations/schemes/${s.id}` : '/nominations/schemes', { method: s.id ? 'PUT' : 'POST', body: s }); toast('Saved. New nominations follow it from now on'); onClose(); } catch (x: any) { toast(x.message); }
   };
+  // A blank form is attached, replaced or removed at once (audited), not with Save.
+  const attach = async (i: number, f?: File) => {
+    if (!f) return;
+    try { const b = await postForm<Blank>(`/nominations/schemes/${s.id}/blank/${encodeURIComponent(s.docs[i].id)}`, {}, f); setDoc(i, { blank: b }); toast('Blank form attached'); } catch (x: any) { toast(x.message); }
+  };
+  const detach = async (i: number) => {
+    try { await api(`/nominations/schemes/${s.id}/blank/${encodeURIComponent(s.docs[i].id)}`, { method: 'DELETE' }); setDoc(i, { blank: undefined }); toast('Blank form removed'); } catch (x: any) { toast(x.message); }
+  };
   const tog = (k: 'types' | 'relations', v: string) => setS({ ...s, [k]: s[k].includes(v) ? s[k].filter((x) => x !== v) : [...s[k], v] });
   const setDoc = (i: number, d: Partial<Doc>) => setS({ ...s, docs: s.docs.map((x, j) => (j === i ? { ...x, ...d } : x)) });
   const addDoc = () => {
@@ -231,9 +253,13 @@ function SchemeModal({ s: init, all, ed, onClose }: { s: Scheme; all: Scheme[]; 
       <div style={{ marginTop: 10 }}><b style={{ fontSize: 13 }}>Applies to</b><div className="row" style={{ gap: 14, marginTop: 6 }}>{ETYPES.map((t) => <label key={t}><input type="checkbox" checked={s.types.includes(t)} onChange={() => tog('types', t)} /> {t}</label>)}</div></div>
       <div style={{ marginTop: 10 }}><b style={{ fontSize: 13 }}>Relations allowed</b><div className="row" style={{ gap: 14, marginTop: 6, flexWrap: 'wrap' }}>{RELATIONS.map((t) => <label key={t}><input type="checkbox" checked={s.relations.includes(t)} onChange={() => tog('relations', t)} /> {t}</label>)}</div></div>
       <div style={{ marginTop: 14 }}><b style={{ fontSize: 13 }}>Documents needed to enrol</b>
-        <div className="tw" style={{ marginTop: 6 }}><table><thead><tr><th>Document</th><th>From</th><th>Needed</th><th>Active</th></tr></thead><tbody>
+        <div className="tw" style={{ marginTop: 6 }}><table><thead><tr><th>Document</th><th>From</th><th>Needed</th><th>Blank form</th><th>Active</th></tr></thead><tbody>
           {s.docs.map((d, i) => <tr key={i}><td><input value={d.label} onChange={(e) => setDoc(i, { label: e.target.value })} style={{ minWidth: 200, width: 'auto' }} /></td><td>{d.per === 'nominee' ? 'Each person' : 'Employee'}</td>
             <td><select value={d.req ? '1' : '0'} onChange={(e) => setDoc(i, { req: e.target.value === '1' })}><option value="1">Required</option><option value="0">Optional</option></select></td>
+            <td style={{ whiteSpace: 'nowrap' }}>{!s.id || !d.id ? <span className="mute" style={{ fontSize: 12 }}>Save first</span> : <>
+              {d.blank ? blankLink(d.blank, d.blank.name) : !ed && <span className="mute">—</span>}
+              {ed && <> <label className="btn sm">{d.blank ? 'Replace' : 'Attach'}<input type="file" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png" hidden onChange={(e) => { attach(i, e.target.files?.[0]); e.target.value = ''; }} /></label>
+                {d.blank && <> <button className="btn sm" onClick={() => detach(i)}>Remove</button></>}</>}</>}</td>
             <td><Switch on={docOn(d)} onChange={() => setDoc(i, { on: !docOn(d) })} /></td></tr>)}
         </tbody></table></div>
         <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: 'wrap' }}>
@@ -241,7 +267,7 @@ function SchemeModal({ s: init, all, ed, onClose }: { s: Scheme; all: Scheme[]; 
           <select value={nd.per} onChange={(e) => setNd({ ...nd, per: e.target.value as Doc['per'] })}><option value="nominee">From each person</option><option value="employee">From the employee</option></select>
           <select value={nd.req ? '1' : '0'} onChange={(e) => setNd({ ...nd, req: e.target.value === '1' })}><option value="1">Required</option><option value="0">Optional</option></select>
           <button className="btn" onClick={addDoc}>Add document</button></div>
-        <p className="mute" style={{ fontSize: 12, margin: '6px 0 0' }}>Documents are switched off, never deleted, so earlier submissions still show what was asked.</p></div>
+        <p className="mute" style={{ fontSize: 12, margin: '6px 0 0' }}>Documents are switched off, never deleted, so earlier submissions still show what was asked. A blank form (PDF, Word, JPG or PNG, up to 5 MB) is offered to the employee as “Download blank form” next to that document.</p></div>
     </fieldset>
     {ed && <div className="row" style={{ marginTop: 14, justifyContent: 'flex-end' }}><button className="btn primary" onClick={save}>Save</button></div>}
   </Modal>;

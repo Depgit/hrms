@@ -8,9 +8,10 @@ import RealtimeMatch from './RealtimeMatch';
 import AttAlerts from './AttAlerts';
 import MachinePool from './MachinePool';
 import PortalSend from './PortalSend';
+import CalledToWork from './CalledToWork';
 
 type K = 'ok' | 'warn' | 'bad' | 'info' | 'n';
-type T = 'sum' | 'rec' | 'exc' | 'mis' | 'api';
+type T = 'sum' | 'rec' | 'exc' | 'call' | 'mis' | 'api';
 type View = 'emp' | 'date' | 'cal';
 export const REG_REASONS = ['Forgot to punch', 'Biometric or device issue', 'Field or site duty', 'Work from home', 'Roster changed', 'Other'];
 const tone = (t: string) => (t || 'n') as K;
@@ -77,7 +78,7 @@ const ATKIND: Record<string, K> = { Present: 'ok', Late: 'warn', 'Half day': 'wa
 const ATLET: Record<string, string> = { Present: 'P', Late: 'LT', 'Half day': 'HD', Absent: 'AB', 'Missing punch': 'MP', 'On leave': 'LV', 'Week off': 'WO', Holiday: 'PH' };
 /** The prototype's day category (attDay) from a day's status. */
 function attCat(r?: { status?: string; tone?: string } | null): string | null {
-  const s = r?.status;
+  const s = r?.status?.replace(/ until regularized$/, ''); // a deviation allowance's action: "Half day until regularized" is a half day
   if (!s || s === 'Upcoming' || s === 'Before joining' || s === 'After last working day') return null;
   if (r!.tone === 'info') return 'On leave';
   if (['Present', 'Late', 'Half day', 'Week off', 'Holiday'].includes(s)) return s;
@@ -115,9 +116,10 @@ export default function Attendance() {
   // With exactly one person in scope the employee picker is not needed: that person is chosen and the picker hidden.
   const solo = dir.data?.length === 1 ? dir.data[0].id : '';
   const pick = solo || emp;
-  const tabs: [T, string][] = [['sum', 'Summary'], ['rec', 'Records'], ['exc', 'Missing punches'], ...(up ? [['mis', 'MIS upload'] as [T, string]] : []), ...(cf ? [['api', 'Punch machine setup'] as [T, string]] : [])];
+  const tabs: [T, string][] = [['sum', 'Summary'], ['rec', 'Records'], ['exc', 'Missing punches'], ...(!my ? [['call', 'Called to work'] as [T, string]] : []), ...(up ? [['mis', 'MIS upload'] as [T, string]] : []), ...(cf ? [['api', 'Punch machine setup'] as [T, string]] : [])];
   const head = <div className="tabs">{tabs.map(([k, l]) => <button key={k} className={`tab ${tab === k ? 'on' : ''}`} onClick={() => setTab(k)}>{l}</button>)}</div>;
   if (tab === 'mis' && up) return <>{head}<Mis /></>;
+  if (tab === 'call' && !my) return <>{head}{!dir.data ? <Loading error={dir.error} /> : <CalledToWork list={dir.data} />}</>;
   if (tab === 'api' && cf) return <>{head}<Devices /></>;
   const bar = (extra?: ReactNode) => (my ? (extra ? <div className="card" style={{ marginBottom: 14 }}><div className="row" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>{extra}</div></div> : null) : <FilterBar f={f} setF={setF} extra={extra} />);
   const body = !dir.data ? <Loading error={dir.error} />
@@ -192,6 +194,10 @@ const EmpSel = ({ list, emp, setEmp, all, hide }: { list: ScopeEmp[]; emp: strin
 /** One employee's month (finalAtt): days up to today, from joining, with leave shown as On leave. */
 const monthOf = (id: string, ym: string) => api(`/attendance/month/${id}?ym=${ym}`);
 const shownDays = (m: any) => (m?.month.days ?? []).filter((d: any) => d.date <= today() && !['Upcoming', 'Before joining', 'After last working day'].includes(d.status));
+/** The month's called-to-work days and deviation allowances (owner, 24 Nov 2026), as pills when there are any. */
+export const extraPills = (c: Record<string, number>) => (['Called to work', 'Late check-in allowed', 'Early check-in allowed', 'Early check-out allowed', 'Beyond the deviation allowance',
+  'Absent until regularized', 'Half day until regularized', 'Present until regularized'] as const)
+  .filter((k) => c[k]).map((k) => <Pill key={k} k={k.startsWith('Beyond') || k.endsWith('regularized') ? 'warn' : 'info'}>{c[k]} {k.toLowerCase()}</Pill>);
 
 function ByEmp({ list, ym, setYm, emp, setEmp, solo }: { list: ScopeEmp[]; ym: string; setYm: (s: string) => void; emp: string; setEmp: (s: string) => void; solo?: boolean }) {
   const one = list.find((e) => e.id === emp);
@@ -212,10 +218,11 @@ function ByEmp({ list, ym, setYm, emp, setEmp, solo }: { list: ScopeEmp[]; ym: s
     </tbody></table></div>{rows.length > 150 && <p className="mute" style={{ fontSize: 12 }}>Showing 150 of {rows.length}.</p>}</div>)}
     {one && (!det.data ? <Loading error={det.error} /> : <>
       <div className="row" style={{ gap: 8, marginBottom: 12 }}><Pill k="ok">{c.Present || 0} present</Pill><Pill k="warn">{c.Late || 0} late</Pill><Pill k="warn">{c['Half day'] || 0} half day</Pill>
-        <Pill k={c['Missing punch'] ? 'warn' : 'n'}>{c['Missing punch'] || 0} missing punch</Pill><Pill k={c['No punch'] ? 'bad' : 'n'}>{c['No punch'] || 0} no punch</Pill></div>
-      <div className="card"><div className="tw"><table><thead><tr><th>Date</th><th>Day</th><th>In</th><th>Out</th><th className="num">Hours</th><th>Source</th><th>Status</th></tr></thead><tbody>
+        <Pill k={c['Missing punch'] ? 'warn' : 'n'}>{c['Missing punch'] || 0} missing punch</Pill><Pill k={c['No punch'] ? 'bad' : 'n'}>{c['No punch'] || 0} no punch</Pill>{extraPills(c)}</div>
+      <div className="card"><div className="tw"><table><thead><tr><th>Date</th><th>Day</th><th>In</th><th>Out</th><th className="num">Hours</th><th>Source</th><th>Status</th><th>Note</th></tr></thead><tbody>
         {shownDays(det.data).reverse().map((d: any) => { const lv = attCat(d) === 'On leave'; return <tr key={d.date}><td>{fmtD(d.date)}</td><td className="mute">{wd(d.date)}</td><td className="mono">{d.in || '—'}</td><td className="mono">{d.out || '—'}</td>
-          <td className="num">{hrs(d.in, d.out)}</td><td className="mute">{d.src || '—'}</td><td><Pill k={lv ? 'info' : tone(d.tone)}>{lv ? 'On leave' : d.status}</Pill></td></tr>; })}
+          <td className="num">{hrs(d.in, d.out)}</td><td className="mute">{d.src || '—'}</td><td><Pill k={lv ? 'info' : tone(d.tone)}>{lv ? 'On leave' : d.status}</Pill>{d.called && <> <Pill k="info">Called to work</Pill></>}</td>
+          <td className="mute" style={{ fontSize: 12 }}>{d.note || ''}</td></tr>; })}
       </tbody></table></div></div>
     </>)}
   </>;

@@ -38,6 +38,7 @@ type rosterRowOut struct {
 	Codes       []string      `json:"codes"` // the codes usable at the employee's property
 	Cells       []rosterCellO `json:"cells"`
 	Warnings    []string      `json:"warnings"`
+	DevOwn      bool          `json:"devOwn,omitempty"` // deviation allowances of their own in effect (dev_own.go)
 }
 
 type rosterCellO struct {
@@ -45,8 +46,28 @@ type rosterCellO struct {
 	Changed bool       `json:"changed,omitempty"`
 	Late    bool       `json:"late,omitempty"`
 	Tip     string     `json:"tip,omitempty"`
+	Time    string     `json:"time,omitempty"`    // the shift's timings on the day: "06:00–10:00 + 15:00–19:00" for a split shift
 	Pending string     `json:"pending,omitempty"` // leave waiting for approval
 	Dev     *rosterDev `json:"dev,omitempty"`     // the day worked differently from the roster
+	// The individual changes of the cell picker (roster_day.go).
+	Other   *otherBody   `json:"other,omitempty"`   // OT: other time for this day
+	Leave   string       `json:"leave,omitempty"`   // approved leave on the day (paid or unpaid): a shift calls them to work
+	Holiday bool         `json:"holiday,omitempty"` // a holiday on their calendar: a shift calls them to work
+	Call    *rosterCallO `json:"call,omitempty"`    // called to work on the day
+}
+
+// rosterCallO is a call to work shown in a roster cell.
+type rosterCallO struct {
+	ID        string `json:"id"`
+	Shift     string `json:"shift"` // the call's shift, else the one the day is measured against
+	Time      string `json:"time,omitempty"`
+	Kind      string `json:"kind"` // holiday | leave
+	Leave     string `json:"leave,omitempty"`
+	Reason    string `json:"reason"`
+	By        string `json:"by"`
+	At        string `json:"at"`
+	Active    bool   `json:"active"`    // the day still is a holiday or leave day (else the call does nothing)
+	Removable bool   `json:"removable"` // the month is not paid
 }
 
 // rosterDev is a deviation on the roster grid, with the manager's decision (Pending until taken).
@@ -88,10 +109,32 @@ func (s *Server) rosterGet(r *http.Request, c *Ctx) (any, error) {
 	for _, e := range emps {
 		p, _ := ts.policyFor(e)
 		row := rosterRowOut{ID: e.ID, Name: e.Name, Designation: e.Desig, Policy: p.Name, Location: e.Location, LocationID: e.LocID, Department: e.Dept,
-			Codes: ts.codesAt(e.LocID), Warnings: []string{}}
+			Codes: ts.codesFor(e), Warnings: []string{}}
 		codes := []string{}
+		if v := ts.ownDevOn(e.ID, days[6]); v != nil && v.R.Own() {
+			row.DevOwn = true
+		}
 		for _, d := range days {
 			cell := rosterCellO{Code: m.planned(e, p, d).Code}
+			if sh := m.dayShift(e, d, cell.Code); sh != nil {
+				cell.Time = sh.Timing()
+			}
+			if cell.Code == otherCode {
+				cell.Other = otherOut(m.dayShift(e, d, otherCode))
+			}
+			if l := m.leaveOn(e, d, false); l != nil {
+				cell.Leave = l.Type
+			} else {
+				cell.Holiday = m.isHolidayCell(e, p, d)
+			}
+			if cd := m.callOf(e.ID, d); cd != nil {
+				pl := m.callPlan(e, p, d)
+				cell.Call = &rosterCallO{ID: cd.ID, Shift: pl.Code, Kind: cd.Kind, Leave: cd.LType, Reason: cd.Reason, By: cd.By, At: cd.At, Active: m.callIn(e, p, d),
+					Removable: paidMonthMsg(ctx, s.st.DB, d, d) == ""}
+				if pl.Shift != nil {
+					cell.Call.Time = pl.Shift.Timing()
+				}
+			}
 			if rc, ok := m.roster[e.ID][d]; ok {
 				cell.Changed, cell.Late = true, rc.Late
 				cell.Tip = fmt.Sprintf("Changed%s by %s, %s. Was %s", map[bool]string{true: " late", false: ""}[rc.Late], rc.By, rc.At, or(rc.From, "—"))
@@ -154,13 +197,20 @@ func (s *Server) rosterGet(r *http.Request, c *Ctx) (any, error) {
 		}
 		codes = append(codes, "WO", "PH")
 	}
+	// Each shift code's timings for the legend, as in effect on the week's first day.
+	timings := map[string]string{}
+	for _, code := range codes {
+		if sh, _, ok := ts.shiftOn(code, days[0]); ok {
+			timings[code] = sh.Timing()
+		}
+	}
 	lead, past, reason := 2, "lock", true
 	if len(emps) > 0 {
 		p, _ := ts.policyFor(emps[0])
 		lead, past, reason = p.S.RS.Lead, p.S.RS.Past, p.S.RS.Reason
 	}
 	alerts, _ := s.rosterAlerts(ctx, c, ym)
-	return map[string]any{"week": wk, "days": days, "rows": rows, "codes": codes, "published": pub, "locations": locs, "reasons": rosterReasons,
+	return map[string]any{"week": wk, "days": days, "rows": rows, "codes": codes, "timings": timings, "published": pub, "locations": locs, "reasons": rosterReasons,
 		"rules": map[string]any{"lead": lead, "past": past, "reason": reason}, "alerts": alerts, "today": today()}, nil
 }
 
@@ -204,17 +254,16 @@ func (m *monthData) rosterWarnings(e *emp, p *workPolicy, days, codes []string) 
 		w = append(w, "No weekly off")
 	}
 	for i := 0; i+1 < len(codes); i++ {
-		a, ra, ok1 := m.ts.shiftOn(codes[i], days[i])
-		b, rb, ok2 := m.ts.shiftOn(codes[i+1], days[i+1])
-		if ok1 && ok2 {
-			if g, _ := attend.RestBetweenRuled(&a, ra, &b, rb); p.S.Att.MinRest > 0 && float64(g) < p.S.Att.MinRest*60 {
+		a, b := m.dayShift(e, days[i], codes[i]), m.dayShift(e, days[i+1], codes[i+1])
+		if a != nil && b != nil {
+			if g, _ := attend.RestBetween(a, b); p.S.Att.MinRest > 0 && float64(g) < p.S.Att.MinRest*60 {
 				w = append(w, fmt.Sprintf("%s then %s leaves %.1f h of rest", codes[i], codes[i+1], math.Max(0, float64(g)/60)))
 			}
 		}
 	}
 	for _, c := range codes {
-		if sh, ok := m.ts.shifts[c]; ok && !sh.RunsAt(e.LocID) {
-			w = append(w, "Shift "+c+" is not mapped to this location")
+		if sh, ok := m.ts.shifts[c]; ok && !sh.RunsFor(e.DeptID, e.LocID) {
+			w = append(w, "Shift "+c+" is not mapped to this department and location")
 			break
 		}
 	}
@@ -242,12 +291,18 @@ func (m *monthData) rosterWarnings(e *emp, p *workPolicy, days, codes []string) 
 // rosterSet applies one cell change with the policy's rules (rosSet). It returns a warning when
 // the rest gap is short and the policy only warns.
 func (s *Server) rosterSet(ctx context.Context, tx store.Q, c *Ctx, ts *timeSet, e *emp, date, code, why, via string) (warn string, late bool, err error) {
-	cur, warn, late, err := rosterCheck(ts, e, date, code, why, via, func() (*monthData, error) {
+	return s.rosterSetDay(ctx, tx, c, ts, e, date, code, nil, why, via)
+}
+
+// rosterSetDay is rosterSet with other time for the day (code OT and its timing; nil for any other code).
+func (s *Server) rosterSetDay(ctx context.Context, tx store.Q, c *Ctx, ts *timeSet, e *emp, date, code string, other *attend.Shift, why, via string) (warn string, late bool, err error) {
+	now, same, warn, late, err := rosterCheckDay(ts, e, date, code, other, why, via, func() (*monthData, error) {
 		return loadMonth(ctx, tx, ts, []string{e.ID}, policy.AddDays(date, -1), policy.AddDays(date, 1))
 	})
-	if err != nil || cur == code {
+	if err != nil || same {
 		return "", false, err
 	}
+	cur := now.Code
 	p, _ := ts.policyFor(e)
 	def := p.S.DefCode(e.ID, ts.baseShift(e), date, ts.holidays(p, e.CityID))
 	by := c.Name + " (" + c.Role + ")"
@@ -256,16 +311,28 @@ func (s *Server) rosterSet(ctx context.Context, tx store.Q, c *Ctx, ts *timeSet,
 		if _, err := tx.C("roster_entry").Delete(ctx, cell); err != nil {
 			return "", false, err
 		}
-	} else if _, err := tx.C("roster_entry").Upsert(ctx, cell, bson.M{"code": code, "why": timectxNullIf(why), "late": late, "from_code": cur,
-		"by_dev": via == "deviation", "by_name": by, "at": tx.Now()}, nil); err != nil {
-		return "", false, err
+	} else {
+		set := bson.M{"code": code, "why": timectxNullIf(why), "late": late, "from_code": cur, "by_dev": via == "deviation", "by_name": by, "at": tx.Now()}
+		for k, v := range otherFields(other) {
+			set[k] = v
+		}
+		if _, err := tx.C("roster_entry").Upsert(ctx, cell, set, nil); err != nil {
+			return "", false, err
+		}
 	}
 	_, err = tx.C("roster_log").Insert(ctx, bson.M{"employee_id": e.ID, "date": date, "from_code": cur, "to_code": code, "why": timectxNullIf(why), "late": late,
-		"by_dev": via == "deviation", "location_id": e.LocID, "department": e.Dept, "by_name": by})
+		"by_dev": via == "deviation", "location_id": e.LocID, "department": e.Dept, "by_name": by,
+		"from_time": timectxNullIf(timingOf(now.Other)), "to_time": timectxNullIf(timingOf(other))})
 	if err == nil && date <= today() { // a day already punched moves to or from a shift's punch window (Set shift)
 		_, ro, _ := ts.shiftOn(cur, date)
 		_, rn, _ := ts.shiftOn(code, date)
-		if ro.Windowed() || rn.Windowed() {
+		if now.Other != nil {
+			ro = otherRules(*now.Other)
+		}
+		if other != nil {
+			rn = otherRules(*other)
+		}
+		if early, lateOut := attend.PunchLimits(&p.S); ro.Windowed(early, lateOut) || rn.Windowed(early, lateOut) {
 			err = rebuildPunchDays(ctx, tx, ts, map[string]map[string]bool{e.ID: {policy.AddDays(date, -1): true, date: true, policy.AddDays(date, 1): true}}, true)
 		}
 	}
@@ -277,54 +344,90 @@ func (s *Server) rosterSet(ctx context.Context, tx store.Q, c *Ctx, ts *timeSet,
 // whether the change is late, a warning when the rest gap is short and the policy only warns, and the rule that
 // refuses the change as err.
 func rosterCheck(ts *timeSet, e *emp, date, code, why, via string, month func() (*monthData, error)) (cur, warn string, late bool, err error) {
+	now, _, warn, late, err := rosterCheckDay(ts, e, date, code, nil, why, via, month)
+	return now.Code, warn, late, err
+}
+
+// rosterCheckDay is rosterCheck with other time for the day (code OT and its timing). now is the cell as it is (its
+// code and other time); same is true when the change would leave it so.
+func rosterCheckDay(ts *timeSet, e *emp, date, code string, other *attend.Shift, why, via string, month func() (*monthData, error)) (now rosterCell, same bool, warn string, late bool, err error) {
+	fail := func(err error) (rosterCell, bool, string, bool, error) { return rosterCell{}, false, "", false, err }
 	p, _ := ts.policyFor(e)
-	if _, ok := ts.shifts[code]; !ok && code != "WO" && code != "PH" {
-		return "", "", false, bad("%s is not a shift, WO or PH", code)
+	switch _, isShift := ts.shifts[code]; {
+	case code == otherCode && other == nil:
+		return fail(bad("Give the times for this day"))
+	case code != otherCode && other != nil:
+		return fail(bad("Times are given only with Other time for this day"))
+	case !isShift && code != "WO" && code != "PH" && code != otherCode:
+		return fail(bad("%s is not a shift, WO or PH", code))
 	}
-	if sh, ok := ts.shifts[code]; ok && !sh.RunsAt(e.LocID) {
-		return "", "", false, bad("Shift %s is not mapped to %s", code, e.Location)
+	if sh, ok := ts.shifts[code]; ok && !sh.RunsFor(e.DeptID, e.LocID) {
+		return fail(bad("%s", shiftNotForMsg(code, e.Dept, e.Location)))
 	}
 	if date < e.DOJ || (e.LWD != nil && date > *e.LWD) {
-		return "", "", false, bad("%s is outside %s's employment", longDate(date), e.Name)
+		return fail(bad("%s is outside %s's employment", longDate(date), e.Name))
 	}
 	m, err := month()
 	if err != nil {
-		return "", "", false, err
+		return fail(err)
 	}
 	if l := m.leaveOn(e, date, false); l != nil && !m.unpaid(l.Type) {
-		return "", "", false, bad("%s is approved leave. Change it by cancelling the leave", longDate(date))
+		return fail(bad("%s is approved leave. Change it by cancelling the leave", longDate(date)))
 	}
-	cur = m.rosterCode(e, p, date)
-	if cur == code {
-		return cur, "", false, nil
+	if m.callOf(e.ID, date) != nil && m.callIn(e, p, date) && via != "deviation" { // roster_day.go
+		return fail(bad("%s is called to work on %s. Remove the call to work first, then change the roster", e.Name, longDate(date)))
+	}
+	now = rosterCell{Code: m.rosterCode(e, p, date)}
+	if x, ok := m.roster[e.ID][date]; ok {
+		now.Other = x.Other
+	}
+	newSh := other
+	if newSh == nil && !rosterCodes[code] {
+		if sh, _, ok := ts.shiftOn(code, date); ok {
+			newSh = &sh
+		}
+	}
+	if newSh != nil && m.isHolidayCell(e, p, date) && via != "deviation" {
+		// A shift on a holiday calls the person to work (owner, 24 Nov 2026), never a plain working day.
+		return fail(bad("%s is a holiday for %s. A shift on a holiday calls them to work: choose Called to work on the roster with the shift and the reason, or use Attendance › Called to work",
+			longDate(date), e.Name))
+	}
+	if now.Code == code && (code != otherCode || sameTiming(now.Other, other)) {
+		return now, true, "", false, nil
 	}
 	lead := policy.DayDiff(today(), date)
 	if lead < 0 && p.S.RS.Past == "lock" && via != "deviation" {
-		return "", "", false, bad("%s has passed and is locked. If the day was worked differently, the employee regularizes with the reason Roster changed", longDate(date))
+		return fail(bad("%s has passed and is locked. If the day was worked differently, the employee regularizes with the reason Roster changed", longDate(date)))
 	}
 	late = lead < p.S.RS.Lead && via != "deviation"
 	if late && p.S.RS.Reason && strings.TrimSpace(why) == "" {
-		return "", "", false, bad("This is a late change, inside %d days of the date. Give a reason", p.S.RS.Lead)
+		return fail(bad("This is a late change, inside %d days of the date. Give a reason", p.S.RS.Lead))
 	}
-	if _, ok := ts.shifts[code]; ok && p.S.Att.MinRest > 0 {
+	if newSh != nil && p.S.Att.MinRest > 0 {
 		need := int(p.S.Att.MinRest * 60)
-		for i, pair := range [][2]string{{m.rosterCode(e, p, policy.AddDays(date, -1)), code}, {code, m.rosterCode(e, p, policy.AddDays(date, 1))}} {
-			d0 := policy.AddDays(date, i-1) // the version in effect on each day
-			a, ra, ok1 := ts.shiftOn(pair[0], d0)
-			b, rb, ok2 := ts.shiftOn(pair[1], policy.AddDays(d0, 1))
-			if !ok1 || !ok2 {
+		label := code
+		if other != nil {
+			label = otherCode + " " + other.Timing()
+		}
+		prev, next := policy.AddDays(date, -1), policy.AddDays(date, 1)
+		pc, nc := m.rosterCode(e, p, prev), m.rosterCode(e, p, next)
+		for _, pair := range []struct {
+			a, b   *attend.Shift
+			la, lb string
+		}{{m.dayShift(e, prev, pc), newSh, pc, label}, {newSh, m.dayShift(e, next, nc), label, nc}} {
+			if pair.a == nil || pair.b == nil {
 				continue
 			}
-			if g, _ := attend.RestBetweenRuled(&a, ra, &b, rb); g < need {
-				msg := fmt.Sprintf("%s then %s leaves %.1f h of rest, the minimum is %v h", pair[0], pair[1], math.Max(0, float64(g)/60), p.S.Att.MinRest)
+			if g, _ := attend.RestBetween(pair.a, pair.b); g < need {
+				msg := fmt.Sprintf("%s then %s leaves %.1f h of rest, the minimum is %v h", pair.la, pair.lb, math.Max(0, float64(g)/60), p.S.Att.MinRest)
 				if p.S.Att.RestAct == "block" && via != "deviation" {
-					return "", "", false, bad("Not changed. %s", msg)
+					return fail(bad("Not changed. %s", msg))
 				}
 				warn = msg
 			}
 		}
 	}
-	return cur, warn, late, nil
+	return now, false, warn, late, nil
 }
 
 // rosterOverlay records a checked change in m as rosterSet would store it (the policy default is not stored),
@@ -340,17 +443,30 @@ func (m *monthData) rosterOverlay(e *emp, p *workPolicy, date, code string) {
 	m.roster[e.ID][date] = rosterCell{Code: code}
 }
 
+// rosterCell changes one cell: a shift, WO or PH; other time for the day (code OT with time); or, with call, a call
+// to work with the shift on a holiday or a day of leave (roster_day.go), which needs the right of Attendance › Called
+// to work (att.records at Edit) rather than the roster's.
 func (s *Server) rosterCell(r *http.Request, c *Ctx) (any, error) {
-	if err := c.Need("ros.roster", 2); err != nil {
-		return nil, err
-	}
 	var b struct {
-		EmployeeID string `json:"employeeId"`
-		Date       string `json:"date"`
-		Code       string `json:"code"`
-		Why        string `json:"why"`
+		EmployeeID string     `json:"employeeId"`
+		Date       string     `json:"date"`
+		Code       string     `json:"code"`
+		Why        string     `json:"why"`
+		Time       *otherBody `json:"time"`   // with code OT: other time for this day
+		Call       bool       `json:"call"`   // called to work with the shift (code) on a holiday or leave day
+		Reason     string     `json:"reason"` // the reason of the call
+	}
+	if c.Level("ros.roster") < 2 && c.Level("att.records") < 2 {
+		return nil, forbidden("")
 	}
 	if err := decode(r, &b); err != nil {
+		return nil, err
+	}
+	right := "ros.roster"
+	if b.Call {
+		right = "att.records"
+	}
+	if err := c.Need(right, 2); err != nil {
 		return nil, err
 	}
 	if !isDate(b.Date) {
@@ -368,11 +484,32 @@ func (s *Server) rosterCell(r *http.Request, c *Ctx) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	code := strings.ToUpper(strings.TrimSpace(b.Code))
+	if b.Call {
+		var done string
+		err = s.st.Tx(ctx, func(tx store.Q) error {
+			var err error
+			done, err = s.rosterCall(ctx, tx, c, ts, e, b.Date, code, b.Reason)
+			return err
+		})
+		return map[string]any{"call": done}, err
+	}
+	var other *attend.Shift
+	if b.Time != nil || code == otherCode {
+		if b.Time == nil || code != otherCode {
+			return nil, bad("Other time for this day needs the code OT and the times")
+		}
+		sh, err := otherShift(b.Time)
+		if err != nil {
+			return nil, err
+		}
+		other = &sh
+	}
 	var warn string
 	var late bool
 	err = s.st.Tx(ctx, func(tx store.Q) error {
 		var err error
-		warn, late, err = s.rosterSet(ctx, tx, c, ts, e, b.Date, strings.ToUpper(strings.TrimSpace(b.Code)), b.Why, "")
+		warn, late, err = s.rosterSetDay(ctx, tx, c, ts, e, b.Date, code, other, b.Why, "")
 		return err
 	})
 	return map[string]any{"warning": warn, "late": late}, err

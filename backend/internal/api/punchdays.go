@@ -17,11 +17,12 @@ import (
 //
 // A day's record (attendance_day: first in, last out) used to come from the punches of its calendar day, so a
 // 22:00–06:00 shift got its in on one date and its out on the next and showed "Missing out punch". A day whose
-// planned shift (the roster's shift for the date, else the policy default) has Shift ending next day, Consider
-// shift in previous or next day, or a maximum early-in or late-out punch is now built from the punches inside the
-// shift's window: [start − early-in max, end (+1 day when it ends next day) + late-out max], anchored on the
-// recorded date (+1 day for "previous", −1 day for "next"); 4 hours either side when no limit is set. The first IN
-// (or first punch) is the in, the last OUT (or last punch) the out, with out_date when the out is on a later date.
+// planned shift (the roster's shift for the date, else the policy default) has Shift ending next day, or whose
+// employee's work policy sets a maximum early in or late out punch (Attendance › Punching; owner, 24 Nov 2026: these
+// were on each shift before, with "Consider shift in", which was removed), is now built from the punches inside the
+// shift's window: [start − early-in max, end of its last part (+1 day when it ends next day) + late-out max] on the
+// recorded date; 4 hours either side when no limit is set. The first IN (or first punch) is the in, the last OUT (or
+// last punch) the out, with out_date when the out is on a later date.
 // The punches a window day uses (its in, its out and everything between) are not used again by the day before or
 // after it. Every other day keeps its calendar-day record, exactly as before.
 //
@@ -42,10 +43,14 @@ type dayPlanner struct {
 	ts     *timeSet
 	emps   map[string]*emp
 	roster map[string]map[string]string
+	other  map[string]map[string]*attend.Shift // roster cells with other time for the day (roster_day.go)
+	calls  map[string]map[string][2]string     // calls to work with a shift chosen on the roster: kind, shift
+	pols   map[string]*workPolicy              // each employee's work policy, worked out once
 }
 
 func loadPlanner(ctx context.Context, q store.Q, ts *timeSet, ids []string, from, to string) (*dayPlanner, error) {
-	pl := &dayPlanner{ts: ts, emps: map[string]*emp{}, roster: map[string]map[string]string{}}
+	pl := &dayPlanner{ts: ts, emps: map[string]*emp{}, roster: map[string]map[string]string{}, other: map[string]map[string]*attend.Shift{},
+		calls: map[string]map[string][2]string{}, pols: map[string]*workPolicy{}}
 	el, err := loadEmps(ctx, q, bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: ids}}}})
 	if err != nil {
 		return nil, err
@@ -54,65 +59,92 @@ func loadPlanner(ctx context.Context, q store.Q, ts *timeSet, ids []string, from
 		pl.emps[e.ID] = e
 	}
 	rows, err := q.C("roster_entry").Find(ctx, bson.D{{Key: "employee_id", Value: bson.D{{Key: "$in", Value: ids}}}, {Key: "date", Value: timectxBetween(from, to)}},
-		options.Find().SetProjection(bson.D{{Key: "employee_id", Value: 1}, {Key: "date", Value: 1}, {Key: "code", Value: 1}}))
+		options.Find().SetProjection(bson.D{{Key: "employee_id", Value: 1}, {Key: "date", Value: 1}, {Key: "code", Value: 1},
+			{Key: "start_time", Value: 1}, {Key: "end_time", Value: 1}, {Key: "start2_time", Value: 1}, {Key: "end2_time", Value: 1}}))
 	if err != nil {
 		return nil, err
 	}
 	for _, r := range rows {
 		id := str(r["employee_id"])
 		if pl.roster[id] == nil {
-			pl.roster[id] = map[string]string{}
+			pl.roster[id], pl.other[id] = map[string]string{}, map[string]*attend.Shift{}
 		}
 		pl.roster[id][str(r["date"])] = str(r["code"])
+		if o := otherOfRow(r); o != nil {
+			pl.other[id][str(r["date"])] = o
+		}
+	}
+	rows, err = q.C(store.WorkCallColl).Find(ctx, bson.D{{Key: "employee_id", Value: bson.D{{Key: "$in", Value: ids}}}, {Key: "date", Value: timectxBetween(from, to)},
+		{Key: "shift_code", Value: bson.D{{Key: "$ne", Value: nil}}}})
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		id := str(r["employee_id"])
+		if pl.calls[id] == nil {
+			pl.calls[id] = map[string][2]string{}
+		}
+		pl.calls[id][str(r["date"])] = [2]string{str(r["kind"]), str(r["shift_code"])}
 	}
 	return pl, nil
 }
 
-// shiftFor is the day's planned shift with the version in effect on the date.
-func (pl *dayPlanner) shiftFor(id, d string) (attend.Shift, *attend.Rules, bool) {
+// shiftFor is the day's planned shift with the version in effect on the date, and the employee's work policy.
+func (pl *dayPlanner) shiftFor(id, d string) (attend.Shift, *attend.Rules, *workPolicy, bool) {
 	e := pl.emps[id]
 	if e == nil {
-		return attend.Shift{}, nil, false
+		return attend.Shift{}, nil, nil, false
+	}
+	p := pl.pols[id]
+	if p == nil {
+		p, _ = pl.ts.policyFor(e)
+		pl.pols[id] = p
 	}
 	code, ok := pl.roster[id][d]
 	if !ok {
-		p, _ := pl.ts.policyFor(e)
 		code = p.S.DefCode(e.ID, pl.ts.baseShift(e), d, pl.ts.holidays(p, e.CityID))
 	}
-	return pl.ts.shiftOn(code, d)
+	// Called to work from the roster with a shift: the day's punches are those of that shift (on a holiday, or on a
+	// day of leave, which the roster does not show).
+	if x, ok := pl.calls[id][d]; ok && x[1] != "" && (x[0] == "leave" || code == "PH") {
+		if sh, r, found := pl.ts.shiftOn(x[1], d); found {
+			return sh, r, p, true
+		}
+	}
+	if o := pl.other[id][d]; o != nil && code == otherCode { // other time for this day
+		return *o, otherRules(*o), p, true
+	}
+	sh, r, found := pl.ts.shiftOn(code, d)
+	return sh, r, p, found
 }
 
 // window is the span of punches that belong to the day; ok is false for a calendar day.
 func (pl *dayPlanner) window(id, d string) (lo, hi time.Time, ok bool) {
-	sh, r, found := pl.shiftFor(id, d)
-	if !found || !r.Windowed() {
+	sh, r, p, found := pl.shiftFor(id, d)
+	if !found {
 		return lo, hi, false
 	}
-	lo, hi = shiftWindow(d, sh, r)
+	early, late := attend.PunchLimits(&p.S)
+	if !r.Windowed(early, late) {
+		return lo, hi, false
+	}
+	lo, hi = shiftWindow(d, sh, early, late)
 	return lo, hi, true
 }
 
-// shiftWindow is [start − early-in max, end + late-out max] for a shift recorded on date d.
-func shiftWindow(d string, sh attend.Shift, r *attend.Rules) (time.Time, time.Time) {
+// shiftWindow is [start − early-in max, end of the last part + late-out max] for a shift recorded on date d; early
+// and late are the work policy's limits in minutes, 4 hours when 0 (no limit).
+func shiftWindow(d string, sh attend.Shift, early, late int) (time.Time, time.Time) {
 	day, _ := time.ParseInLocation("2006-01-02", d, ist)
-	off := 0
-	switch r.ShiftIn {
-	case "previous": // recorded the day before it starts
-		off = 1440
-	case "next": // recorded the day after it starts
-		off = -1440
-	}
-	start := sh.Start + off
-	end := sh.End + off
-	if sh.End <= sh.Start {
+	start, end := sh.Start, sh.LastEnd()
+	if end <= start {
 		end += 1440
 	}
-	early, late := 240, 240
-	if m, ok := attend.Dur(r.EarlyInMax); ok {
-		early = m
+	if early <= 0 {
+		early = 240
 	}
-	if m, ok := attend.Dur(r.LateOutMax); ok {
-		late = m
+	if late <= 0 {
+		late = 240
 	}
 	return day.Add(time.Duration(start-early) * time.Minute), day.Add(time.Duration(end+late) * time.Minute)
 }

@@ -187,24 +187,6 @@ func employeesReason(ctx context.Context, q store.Q, usedFor, name string) (stri
 	return str(r["name"]), true
 }
 
-// employeesShiftMapped says whether a shift's location_ids (null: every location) holds loc, as
-// `location_ids IS NULL OR loc = ANY(location_ids)`. known is false when SQL gave NULL (no match but a null entry).
-func employeesShiftMapped(locationIDs any, loc string) (mapped, known bool) {
-	l, ok := locationIDs.([]any)
-	if locationIDs == nil || !ok {
-		return true, true
-	}
-	null := false
-	for _, x := range l {
-		if x == nil {
-			null = true
-		} else if str(x) == loc {
-			return true, true
-		}
-	}
-	return false, !null
-}
-
 // ---------- Employee directory ----------
 
 func (s *Server) employeeList(r *http.Request, c *Ctx) (any, error) {
@@ -672,19 +654,24 @@ func ApplyJobChange(ctx context.Context, tx store.Q, c *Ctx, id string, b JobCha
 			return nil, bad("%s", msg)
 		}
 	}
-	// A shift can only be used at locations it is mapped to.
-	shiftCode, locID := e["shift_code"].(string), e["location_id"].(string)
+	// A shift can only be given to a department and location it applies to (its rows, shift_maps.go). Checked when the
+	// shift, the location or the department changes: someone already on a shift their mapping no longer allows keeps it.
+	shiftCode, locID, moved := e["shift_code"].(string), e["location_id"].(string), false
 	for _, x := range ch {
-		if x.f.column == "shift_code" {
-			shiftCode = x.value
-		}
-		if x.f.column == "location_id" {
-			locID = x.value
+		switch x.f.column {
+		case "shift_code":
+			shiftCode, moved = x.value, true
+		case "location_id":
+			locID, moved = x.value, true
+		case "department_id":
+			moved = true
 		}
 	}
-	if sh, err := tx.C("shift").FindOne(ctx, bson.M{"code": shiftCode}); err == nil && sh != nil {
-		if mapped, known := employeesShiftMapped(sh["location_ids"], locID); known && !mapped {
-			return nil, bad("Shift %s is not mapped to this location", shiftCode)
+	if sh, err := tx.C("shift").FindOne(ctx, bson.M{"code": shiftCode}); err == nil && sh != nil && moved {
+		if ok, err := shiftRowFor(ctx, tx, str(sh["id"]), deptID, locID); err != nil {
+			return nil, err
+		} else if !ok {
+			return nil, bad("%s", shiftNotForMsg(shiftCode, mbNameOf(ctx, tx, "department", deptID), mbNameOf(ctx, tx, "location", locID)))
 		}
 	}
 	if err := machineGate(ctx, tx, c, id, e["location_id"].(string), locID); err != nil { // into a full punch-machine cluster (machines.go)
@@ -938,12 +925,10 @@ func employeesMemo[T any](f func(string) T) func(string) T {
 	}
 }
 
-// employeesFound is a master value an import row names: its id (or the shift's location_ids), the designation's
-// grades, and whether it was found.
+// employeesFound is a master value an import row names: its id, the designation's grades, and whether it was found.
 type employeesFound struct {
 	id     string
 	grades []string
-	locs   any
 	ok     bool
 }
 
@@ -978,7 +963,7 @@ func (s *Server) employeeImport(r *http.Request, c *Ctx) (any, error) {
 			if err != nil || x == nil {
 				return employeesFound{}
 			}
-			return employeesFound{id: str(x["id"]), grades: strs(x["grades"]), locs: x["location_ids"], ok: true}
+			return employeesFound{id: str(x["id"]), grades: strs(x["grades"]), ok: true}
 		}
 		location := employeesMemo(func(name string) employeesFound {
 			return find("location", bson.M{"name": employeesFold(name), "status": "Active"})
@@ -1107,10 +1092,12 @@ func (s *Server) employeeImport(r *http.Request, c *Ctx) (any, error) {
 			}
 			if sh := shift(x.Shift); !sh.ok {
 				add("Shift “%s” not in master", x.Shift)
-			} else if mapped, known := employeesShiftMapped(sh.locs, locID); locID != "" && !known {
-				add("Shift “%s” not in master", x.Shift) // SQL gave NULL here, which failed the read
-			} else if locID != "" && !mapped {
-				add("Shift %s is not mapped to %s", x.Shift, x.Location)
+			} else if locID != "" && deptID != "" {
+				if ok, err := shiftRowFor(ctx, tx, sh.id, deptID, locID); err != nil {
+					return err
+				} else if !ok {
+					add("%s", shiftNotForMsg(strings.ToUpper(x.Shift), x.Department, x.Location))
+				}
 			}
 			if x.ManagerID != "" && !empIDs[x.ManagerID] {
 				add("Reporting manager %s not found", x.ManagerID)

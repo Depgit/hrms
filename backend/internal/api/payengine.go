@@ -261,7 +261,6 @@ type PayRowOut struct {
 	Edited     bool           `json:"edited"`
 	Reason     string         `json:"reason,omitempty"`
 	Flags      []string       `json:"flags"`
-	Nights     int            `json:"nights,omitempty"`
 	// VarMissing names the variable components of a designed structure due this month with no amount entered: not
 	// paid, and listed in the payroll checks.
 	VarMissing []string `json:"varMissing,omitempty"`
@@ -620,14 +619,8 @@ func (pc *payCtx) row(e *emp) *PayRowOut {
 	}
 	in := calc.RowIn{Days: calc.PayDays(ym, st.Denom), LOP: mo.LOP, Outside: float64(mo.Outside), DaysN: mo.DaysN, Gross: gross,
 		Lines: append([]calc.Line{}, pc.lines[e.ID]...), SalaryTds: pc.salaryTds[e.ID]}
-	// No overtime and no pay for off-day work: the company pays none. The night shift allowance stays.
-	nights := 0
-	if p != nil {
-		nights = pc.nightShifts(e, p)
-	}
-	if nights > 0 && p.S.Shift.NightAllow > 0 {
-		in.Lines = append(in.Lines, calc.Line{Kind: "earn", Label: "Night shift allowance (" + itoa(nights) + ")", Amount: float64(nights) * p.S.Shift.NightAllow})
-	}
+	// No overtime, no pay for off-day work and no night shift allowance (removed by the owner, 24 Nov 2026; it was ₹0
+	// in every live policy): the company pays none.
 	if o, ok := pc.ov[e.ID]; ok {
 		in.PaidOverride, in.OtherEarn, in.OtherDed = o.PaidDays, o.OtherEarn, o.OtherDed
 	}
@@ -657,7 +650,7 @@ func (pc *payCtx) row(e *emp) *PayRowOut {
 	row := calc.PayRow(in)
 	out := &PayRowOut{EmployeeID: e.ID, Name: e.Name, Type: e.Type, Grade: e.Grade, Dept: e.Dept, Desig: e.Desig, City: pc.cities[e.CityID], CityID: e.CityID,
 		Location: e.Location, LocID: e.LocID, DOJ: e.DOJ, Status: e.Status, Structure: pc.structNames[sid], Blended: len(parts) > 1,
-		Counts: mo.Counts, Missing: mo.Counts["Missing punch"] + mo.Counts["No punch"], Nights: nights, Row: row}
+		Counts: mo.Counts, Missing: mo.Counts["Missing punch"] + mo.Counts["No punch"], Row: row}
 	if e.ManagerID != nil {
 		out.ManagerID = *e.ManagerID
 	}
@@ -721,44 +714,4 @@ func loadRows(ctx context.Context, q store.Q, ym string) ([]*PayRowOut, error) {
 		out = append(out, o)
 	}
 	return out, nil
-}
-
-// nightShifts counts the days in the pay window whose punches touch the policy's night hours (Night shift
-// card: night hours and the allowance a night).
-func (pc *payCtx) nightShifts(e *emp, p *workPolicy) (nights int) {
-	nf, ok1 := attend.Min(p.S.Shift.NightFrom)
-	nt, ok2 := attend.Min(p.S.Shift.NightTo)
-	if !ok1 || !ok2 || p.S.Shift.NightAllow <= 0 {
-		return 0
-	}
-	for d := pc.from; d <= pc.to && d <= pc.md.today; d = policy.AddDays(d, 1) {
-		if d < e.DOJ || (e.LWD != nil && d > *e.LWD) {
-			continue
-		}
-		if r := pc.md.rec(e, p, d); r != nil && r.In != "" && r.Out != "" {
-			a, _ := attend.Min(r.In)
-			b, _ := attend.Min(r.Out)
-			if touchesNight(a, b, nf, nt) {
-				nights++
-			}
-		}
-	}
-	return nights
-}
-
-// touchesNight reports whether a worked span [a, b] (minutes, b past midnight when smaller)
-// overlaps the night window [nf, nt].
-func touchesNight(a, b, nf, nt int) bool {
-	if b <= a {
-		b += 1440
-	}
-	if nt <= nf {
-		nt += 1440
-	}
-	for _, shift := range []int{-1440, 0, 1440} {
-		if a < nt+shift && b > nf+shift {
-			return true
-		}
-	}
-	return false
 }

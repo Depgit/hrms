@@ -235,16 +235,58 @@ sign-ins, what each role sees, every page, the end-to-end flows, security, and t
   keeps two servers from sweeping together. The `att_alerts` job sweeps every 5 minutes; the card shows the last
   sweep, today's counts per type and why anything was held. **Send a test to me** puts a sample in the caller's bell.
   `GET|PUT /api/attendance/alerts`, `POST /api/attendance/alerts/test`. Test `TestAttendanceAlerts`.
-- **Set shift: attendance rules per shift, the work policy as the default** (Masters › Shifts). A shift keeps versions
-  by effective date (`shift_version`, migration 022); the engine uses the version in effect on each date and the
-  `shift` row mirrors today's (the maintenance sweep moves a future version on when its date arrives). A version
-  dated in a payroll-locked month is refused. Every rule is optional; an empty rule follows the employee's work
-  policy, so an existing shift behaves as before until someone sets a rule. A day whose planned shift ends the next
-  day, is counted on the previous or next day, or has early-in / late-out punch limits is built from the punches
-  inside the shift's window (4 hours either side by default) when punches arrive, and again when a shift version or
-  a past roster cell changes; the record is stored in `attendance_day` like any other day, so every screen,
+- **Set shift: timings by version; the work policy decides the attendance rules** (Masters › Shifts). A shift keeps
+  versions by effective date (`shift_version`, migration 022); the engine uses the version in effect on each date and
+  the `shift` row mirrors today's (the maintenance sweep moves a future version on when its date arrives). A version
+  dated in a payroll-locked month is refused. The shift's own Attendance rules card was removed on 24 Nov 2026 (see
+  below): a version keeps its timings and "ends next day" only. A day whose planned shift ends the next
+  day, or whose work policy sets a maximum early in / late out punch, is built from the punches inside the shift's
+  window (4 hours either side when no limit is set) when punches arrive, and again when a shift version, the policy's
+  limits or a past roster cell changes; the record is stored in `attendance_day` like any other day, so every screen,
   regularization and report reads the same in/out and month calculation stays as fast as before. Not built until
   the client explains them: Consider NA, Configurable Attendance Calculation, IS Consider First Entry In Last Entry Out.
+- **Shifts: punch rules moved to the work policy; split shifts (owner, 24 Nov 2026).** Masters › Shifts has no Punch
+  rules or Single punch rules card any more: the server refuses those rules (startFrom, endFrom, addMissingOut,
+  forcedOut, earlyInMax, lateOutMax, officeHours, shiftIn, singlePunch) on new versions and the engine ignores them on
+  old ones (no live version had one). The work policy decides: Attendance › Punching has **Maximum early in punch
+  allowed** and **Maximum late out punch allowed** (hours and minutes, 0 to 12 h; 0 = no limit, the old behaviour;
+  `att.earlyInMax` / `att.lateOutMax`, decimal hours); saving a change rebuilds the punch-machine days from its
+  "applies from" date (never in a payroll-locked month). "If out punch is missing" and "A day with a missing punch
+  counts as" (its Half day option now reads **Half day until regularized**, same behaviour) are the policy's alone.
+  A shift may have a **second part** (Second part start / end, `shift(_version).start2_time` / `end2_time`, no
+  migration): 06:00–10:00 + 15:00–19:00. Both parts are on one day (a split shift that ends the next day is refused),
+  the second starts after the first ends. Hours are in to out less the part of it inside the gap, so the gap never
+  counts (the engine has the first in and last out only: `attendance_day` keeps one pair, and MIS uploads and
+  regularizations give one pair too); the day's status follows the hour rules (one 4 h part is a half day on an 8 h
+  policy); the late mark is measured from the first part's start; a missing out auto-closes at the second part's end;
+  early exit and the rest gap use the second part's end. Shift list, Set shift, roster cells and legend, the shift
+  pickers and the Master update workbook (Second part start / end; "None" removes it) show both parts. Payroll is
+  unaffected. The **Night shift** card (night hours, night shift allowance, women at night) is gone from Working time
+  and the allowance from payroll and the full register (it was ₹0 in every live policy); "Night shift counts on"
+  stays. Tests `TestSplitShift*` (attend, api), `TestShiftPunchWindows`.
+- **Shifts: Attendance rules card removed; a shift applies to Department + Location rows, with bulk upload (owner, 24
+  Nov 2026).** Set shift has no Attendance rules card: Max hours, Attendance based on, the Absent / Half day / Full day
+  rules, the weekly and monthly adjustments and the shortfall inclusions are gone, so **those features no longer exist
+  in the product** (the adjustments, "attendance based on" and the max-hours cap existed only on shifts). The server
+  refuses them (400, unknown field) and the engine ignores them on old versions (no live version had one set); every
+  day follows the work policy's full-day and half-day hours. A shift keeps its timings, second part, next day and break.
+  **Where it applies** replaces "Locations: All / Selected locations only": a list of Department + Location rows
+  (`shift_map`, migration 029), either side All ("Front Office at Gurgaon office", "All departments at Noida", "All
+  departments at all locations"). A shift is offered to, and valid for, an employee only when a switched-on row matches
+  their department and location: roster codes and the cell picker, the roster upload, the Onboarding and joining
+  verification shift pickers, an employee's job and Bulk update, Import employees, transfers (a shift that no longer
+  applies moves to the first that does), Called to work and Master update. On Set shift each row is added, switched on
+  or off, or removed at once (no effective date), audited and shown under "Applies to: history" (`config_history`,
+  entity shift); the same pair twice is refused (409) and the last switched-on row cannot go (make the shift inactive
+  instead). Add shift needs at least one row; a shift added through the masters API (`POST /api/masters/shift`) or the Master update
+  workbook gets "All departments at all locations". Migration 029 changed no one's shifts: All locations became All departments at all
+  locations, each selected location All departments at that location. People already on a shift their rows no longer
+  cover keep it (their default shift and planned roster cells do not change, the roster warns); a new assignment is
+  refused with "Shift N does not apply to <department> at <location>". **Masters › Shifts › Bulk upload** (and Bulk
+  update › Shift mapping, `shiftmap`): Shift Code, Department, Location (blank or All = all), Active (Yes / No, blank
+  Yes), with current-data download. The Master update Shifts sheet shows the rows read-only in place of Locations.
+  `POST /api/shifts/{id}/maps`, `PUT|DELETE /api/shifts/{id}/maps/{mapId}`. Tests `TestShiftMapping`,
+  `TestBulkShiftMapping`, `TestShiftMapsFromLocations`, `TestShiftRunsFor`, `TestEmptyRulesAreToday`.
 - **Work policies clean-up (owner, 8 Nov 2026).** No overtime, comp-off credit or pay for holiday or week-off work
   (comp-off already credited stays usable until used or expired; published and locked months are unchanged); no
   break is taken off and there is no late half day; extra hours, short rest and work on an off day are not
@@ -782,7 +824,7 @@ Two payroll downloads next to the bank advice and the register, which are unchan
   reads "DRAFT: October 2026 not yet approved; figures may change". Columns: the employee (ID, name, designation,
   department, grade, type, city, location, joining and last working day, PAN, UAN, ESIC, bank, account, IFSC), days
   (in month, paid, LOP, outside employment), monthly gross and CTC a month (the engine on the full gross, as on the
-  employee record), each earning (Basic, HRA, Special allowance, Bonus, Variable pay, Night shift allowance, Arrears,
+  employee record), each earning (Basic, HRA, Special allowance, Bonus, Variable pay, Arrears,
   Reimbursements, Salary advance, Uniform refund, Held salary released, Other earnings: other pay lines plus
   Payroll's adjustment), each deduction (PF, ESI, LWF, TDS, Meal, Accommodation, Advance, Uniform and Asset
   recovery, Other recoveries: other lines plus Payroll's adjustment), totals, rounding off and net (the register's
@@ -1372,6 +1414,218 @@ Two payroll downloads next to the bank advice and the register, which are unchan
 - Tests: `calc.TestReimbursementInFixedPay`, `api.TestReimbRoom`, `api.TestOfferReimbursementToEmployee`, `leave.TestShortLeaveRules`,
   `attend.TestShortLeaveExcusesLate`, `api.TestShortLeave`, `api.TestLeaveHalfDayBalanceAndLop`. Manual steps: Part AB
   of [docs/manual_test.md](docs/manual_test.md).
+
+### Hiring IDs from the Employee code; blank nomination forms (owner, 24 Nov 2026)
+
+- **Hiring IDs of imported staff come from the Employee code** (replaces the 18 Nov "next number of the series" for
+  them): only the prefix changes, the digits stay exactly: EMP-000004 → SI-000004 · OI-000004 · JI-000004, EMP-1050 →
+  SI-1050, a code of digits only (1050) → SI-1050 (the code's trailing digits; `employee.hire_no` the number,
+  `employee.hire_digits` the digits). If a candidate (`candidate.no`) or another employee already has that number (two
+  series, EMP-0005 and CON-0005), or the code has no digits, the person takes the next number of the candidate series
+  as before and the timeline entry says why ("SI-0005 is already used by employee EMP-0005, so the next number…").
+  Import employees raises `candidate_seq` past the numbers used, so a later shortlist never repeats one (after
+  importing EMP-1050 the next shortlist is SI-1051 or later). Hires through Onboarding are unchanged (SI/OI/JI the
+  candidate's number, the Employee code from its own series). `hireIds.via` is `candidate`, `code` or `import`.
+  Migration `025_hire_ids_from_code` re-derives the IDs of every existing employee without a candidate record and
+  rewrites their "Hiring IDs: …" timeline entry (the old IDs kept in its reason); hires via candidates are untouched;
+  it runs again safely.
+- **Blank form soft copy for a nomination document** (Policies › Nominations › Nomination policy › Edit, "Documents
+  needed to enrol", column Blank form): HR Admin attaches a PDF, Word (.doc/.docx), JPG or PNG of up to 5 MB to a saved
+  document row (e.g. Signed nomination form → Form 2.pdf), replaces or removes it at once (audited "Blank form
+  attached / replaced / removed …"; removing marks the file replaced, nothing is deleted; a switched-off row keeps its
+  form). The employee sees "Download blank form" next to that document in My pay › Nominations, fills it and uploads
+  it as before. Stored as a company document (`owner_kind` company, `owner_id` `nomination/<id>`, `doc_key` the row's
+  id; Google Drive folder Company, "Blank form Signed nomination form (Provident fund (EPF) nomination).pdf"). Download
+  (`GET /api/files/{id}`): HR Admin, Payroll (`pay.claims`) and active employees the nomination applies to; anyone
+  else 403. `POST` / `DELETE /api/nominations/schemes/{id}/blank/{doc}`; the schemes carry `docs[].blank`.
+- Tests: `api.TestHireIDsFromCodeImport`, `api.TestHireIDsFromCodeMigration`, `api.TestNomBlankForm`. Manual steps:
+  Part AC of [docs/manual_test.md](docs/manual_test.md).
+
+### Leave earned by working days (owner, 24 Nov 2026)
+
+- **Why:** with Upfront (or Monthly) credit an employee could take a whole year's leave at once. A leave plan now has
+  a tab **Earn by working days** (Policies › Leave plans › a plan) with rules: **Paid days** (typed by the admin)
+  and under it one or more rows **Leave type** (any type with a balance in the plan) + **Days earned** (halves
+  allowed); Add rule, Add leave type, Remove. Nothing is filled in: every number is the admin's. Example an admin might
+  enter: Paid days 7 → Casual leave 1, Privilege leave 1. Stored as `lv.earn` (`[{days, types:[{type, days}]}]`),
+  saved with the plan (plan history "Earn by working days", audit). A leave type can be in only one rule ("… is
+  already in the rule for every 7 paid days. A leave type can be in only one rule"); rules need paid days, at
+  least one type and days earned (whole or half), and only balance types of the plan (`leave.EarnProblem`).
+- **Meaning (owner, 24 Nov evening: "Working days means Paid days for leaves", credited as soon as the days are
+  complete, "accrued only on active employee"):** every time the employee completes that many **paid days**, each
+  listed type is credited its days earned **from the day after the Nth paid day**, not at the month end. Example:
+  joined 15 Jan, a rule of 30 paid days, nothing lost: the 30th paid day is 13 Feb and the leave is there on 14 Feb.
+  Whole blocks only; the leftover counts toward the next block. The count runs through the leave year (a block can
+  span months) and starts again with the next leave year (balances carry forward as the type says; a block completed
+  on the year's last day is credited the next day and counts in the old year's balance). A type in a rule is earned
+  **only** this way: no monthly or upfront credit. Its Credit on the Leave types tab reads "By working days (see Earn
+  by working days)"; **Days a year** becomes an optional cap (blank or 0: no cap; with an opening balance, the share
+  of the year left).
+- **Paid days** = paid days (present, half day 0.5, paid leave, weekly off and holiday; loss of pay days do not
+  count): each day counts 1 less its loss of pay as the attendance engine settles it for payroll
+  (`attend.DayOut.Paid`, replacing `DayOut.Worked`). Present, Late and Called to work 1; Half day 0.5; paid leave 1
+  (half a day of paid leave plus the other half worked 1); Weekly off and Holiday 1 (worked or not); Absent, loss of
+  pay leave and a No punch day once it has turned to loss of pay 0. A No punch day still inside the regularization
+  window has no loss of pay yet, so it counts until it turns to loss of pay; a day beyond a deviation allowance counts
+  by its loss of pay. Days before joining, after the last working day, today and later count 0. The month's late-mark
+  half days (`Month.LateOver`, tied to no day) are not taken off, so a month's paid days for leave can be higher than
+  payroll's by those half days.
+- **When:** counted day by day from the type's accrual start (joining, or the day probation ends; all of it once
+  probation is over when "Back-date at confirmation" is Yes, credited when probation ends) up to the day before the
+  balance date, never today or later (`leave.Through`); a leave request is checked against the balance on its first
+  day (for a future date: days over by today). Nothing is stored: balances are worked out live, so a regularization
+  to present raises the count and a No punch day turning to loss of pay lowers it.
+- **Only active employees earn:** status Active; someone on notice up to the last working day; a leaver (Inactive)
+  up to the last working day (F&F encashment on the last working day counts that day once it has passed); an Inactive
+  record without a last working day (an offer declined before joining) and a joiner not active yet (Pre-boarding)
+  earn nothing. Months before the first punch or approved leave on record (from before the HRMS) are left out; the
+  count starts on the 1st of that month.
+- **Unchanged:** Monthly and Upfront types (and plans without rules) give exactly the same balances; employment types,
+  carry forward, opening balances and the negative balance limit apply as before. No migration. A plan saved with the
+  short-lived per-type "By days worked" (`credit: worked`, `perDays`) reads as its own rule (N paid days → 1 day,
+  `leave.Normalize` when plans are loaded and saved).
+- **Shown on:** the plan's type summaries and list, the policy's Leave lines and Leave simulator (type the paid days
+  in a month, empty until typed; spread evenly over each month, it shows each credit's date in "Credited on"), My leave
+  (earned so far, paid days counted up to yesterday, days to the next block, last credit date; open it for the paid
+  days by month and each credit's date), the balance line in the leave dialogs, the employee file's Privilege leave
+  line, the offer's leave text and the leave request rules. Every balance (My leave, leave checks, F&F encashment,
+  leave report) goes through `leaveBalOf`. `GET /api/leave/balances/{id}` types carry `balance.worked` (`every`,
+  `per`, `days`, `blocks`, `left`, `toNext`, `earned`, `cap`, `credit`, `through`, `credits` [{`on`, `blocks`,
+  `credit`}], `months` [{`month`, `days`}]).
+- Tests: `leave.TestEarnBlocks`, `leave.TestEarnCreditedTheDayAfter`, `leave.TestEarnStopsAtLastWorkingDay`,
+  `leave.TestEarnAcrossMonthsAndYears`, `leave.TestEarnOnlyAndCap`, `leave.TestEarnRulesChecked`,
+  `leave.TestEarnOldShape`, `leave.TestWorkedThrough`, `leave.TestEarnAfterProbation`, `leave.TestEarnCarryAndOpening`,
+  `leave.TestWorkedLeavesOtherCreditsAlone`, `attend.TestPaidDays`, `api.TestLeaveByDaysWorked`. Manual steps: Part AE
+  of [docs/manual_test.md](docs/manual_test.md).
+
+### Deviation allowances (owner, 24 Nov 2026)
+
+- **Where:** Policies › a work policy › Attendance › **Deviation allowances**: Early check-in, Late check-in and Early
+  check-out, each with On/Off, **Minutes allowed** and **Times allowed in a month**. Every rule is off on every policy
+  and both numbers are empty until the admin types them (no defaults); saving a rule that is On without both is
+  refused ("Late check-in is on: enter the minutes allowed and the times allowed in a month, or switch it off"); 1–720
+  minutes, 1–31 times. Stored as `settings.dev` (`{earlyIn, lateIn, earlyOut}`, each `{on, mins, n}`), with the
+  policy's history and audit. For one person, give them their own rules from the roster (below), or map a policy to
+  them (Applies to › Individual).
+- **Late check-in** (later than the shift start + the late-mark grace, at most M minutes): on the first N such days of
+  the calendar month the day is no late mark (Present, not counted in "Late marks allowed in a month" or its half
+  day), note "Late check-in allowed, 1 h (2 of 5)". No hours are credited: the full-day hours still decide the day.
+- **Early check-in** (earlier than the policy's early check-in allowance `rs.earlyIn` and at most M minutes before the
+  start, so ordinary early arrivals do not use up the count): on the first N days the shift runs that much earlier,
+  so hours count from the in punch whatever "Time worked before the planned start" says (08:00–16:00 on a 10:00–18:00
+  shift is 8 h) and the end moves too.
+- **Early check-out** (more than the early-out grace `att.early` and at most M minutes before the end, the slid end
+  when the same day had an allowed early check-in): on the first N days a note only and no Early exit deviation. Only
+  days that are over count (the last out punch of today may still change). No hours are credited.
+- **Counting:** per employee and calendar month, in date order; only days within the minutes use up the count. A day
+  of leave (full or half), a regularized day, a day called to work, a week off or a holiday is never a deviation day.
+  Allowed days are not roster deviations (the Shift / Early exit kind is dropped: `attend.Allow.Trim`) and get no
+  late-arrival alert. While any active policy has a rule on, the engine reads each month from its 1st (`loadMonth`).
+- **Beyond the allowance** (the N+1th day, or more than M minutes): the rule's **Action** decides the day (next
+  sections; No action = the rules exactly as before) and HR is told:
+  a bell message to every active HR Admin and the employee's reporting manager, once per employee, date and rule
+  (`notice.ref` `att-dev:<rule>:<date>:<employee>`), e.g. "Karan Khan (EMP-1020): late check-in 2 h 10 min on 24 Nov
+  2026, 6th this month (allowed 5)". The sweep runs every 5 minutes on the job queue (`att_dev`), whatever the
+  attendance alert settings say, and looks at today and the two days before, so switching a rule on does not flood the
+  bell with the month so far. The day's note says "… : beyond the allowance".
+- **Shown on:** the month register (Attendance › Records › one employee, My time › My attendance: Note column) and its
+  counts ("Late check-in allowed", "Early check-in allowed", "Early check-out allowed", "Beyond the deviation
+  allowance" in `month.counts`, shown as pills when there are any).
+- Tests: `attend.TestDevLateIn`, `attend.TestDevEarlyIn`, `api.TestDevAllowLateIn`. Manual steps: Part AG of
+  [docs/manual_test.md](docs/manual_test.md).
+
+### Called to work on a holiday or leave day (owner, 24 Nov 2026)
+
+- **Where:** Attendance › **Called to work** (HR views): the month's calls with the result, and **Call to work**: one or
+  more employees, a date and a reason (required). The date must be a holiday on the person's calendar or a day of their
+  approved leave (week offs are not covered yet; a working day is refused). Right: **att.records at Edit** (the right HR
+  uses to change attendance, as for the MIS upload), within the caller's data scope; the list needs View. Audited; a
+  leave request gets a history line "Called to work on … : <reason>". Refused in a payroll month already approved or
+  published, and, like an MIS upload, in a month locked by payroll unless an exception is open. Removable (with a
+  history line) on the same terms. `GET /api/attendance/called?ym=`, `POST /api/attendance/called`
+  (`{employeeIds, date, reason}`), `DELETE /api/attendance/called/{id}`. Stored in `work_call` (migration 027).
+- **Came** = the day has a punch (owner's rule "if they come then present": hours, a late arrival or a missing out
+  punch do not matter; hours counted under the roster's shift that day, else the employee's own). Then the day is **Present** with the note "Called
+  to work, worked 8:05" (`DayOut.called`): no loss of pay; on a leave day the date's leave is returned in every balance
+  (`leaveBalOf` → `calledReturns`: 1 day, 0.5 for a half-day leave), the request stays approved and gets the line
+  "Worked on a leave day … 1 day of Casual leave returned" (the 5-minute sweep, once); an unpaid (loss of pay) leave
+  day loses its loss of pay; paid leave pays the same. Earn by working days counts the day 1, even on a holiday.
+- **No punch**: the holiday or leave stays exactly as it was, with the note "Called to work, no punch: the holiday
+  stands". A call never adds loss of pay.
+- A call on a date that has since stopped being a holiday or leave day (roster changed, leave cancelled) does nothing
+  ("No longer a holiday or leave day" in the list).
+- Tests: `attend.TestCalledToWork`, `api.TestCalledToWork`. Manual steps: Part AG of
+  [docs/manual_test.md](docs/manual_test.md).
+
+### Individual roster changes: cell picker, called to work, other time, own deviation allowances (owner, 24 Nov 2026)
+
+- **Where:** Shift and roster › Roster. A click on a cell opens a small picker instead of cycling the codes: each shift
+  with its timing, WO, PH, **Other time for this day**, and on a holiday (PH on the employee's calendar) or a leave
+  cell **Called to work** with a shift and a reason. The employee's name opens their **Deviation allowances**. Pattern,
+  publish, alerts, deviations, discipline and the bulk upload work as before.
+- **Called to work from the roster:** choosing a shift on a holiday or approved-leave cell calls the person to work with
+  that shift: the same `work_call` record, engine, right (**att.records at Edit**), scope and refusals as Attendance ›
+  Called to work (paid month; payroll-locked month without an exception), with the reason required. The shift is
+  stored on the call (`work_call.shift_code`) and the day is measured against it (hours, late mark, the punch window).
+  Came (any punch) = Present; on a leave day the leave comes back and an unpaid leave loses its loss of pay; no punch =
+  the holiday or leave stays, no penalty; Earn by working days counts it 1. The cell shows the shift with a `*`
+  (dashed border) and the tooltip "Called to work (…): G 09:00–18:00. <reason>. By …"; the On duty count counts it.
+  "Remove the call" in the picker (`DELETE /api/attendance/called/{id}`) puts the holiday or leave back; another shift
+  in the picker changes the call's shift. A roster change on a called day is refused until the call is removed. A
+  plain shift on a calendar holiday (roster cell, roster upload) is now refused with "… is a holiday … A shift on a
+  holiday calls them to work": it no longer makes an ordinary working day. Week offs work as before. A PH that came
+  from a roster change (not the calendar) takes a shift as a plain roster change.
+  `POST /api/roster/cell {employeeId, date, code: <shift>, call: true, reason}`.
+- **Other time for this day (code OT):** a start and end with an optional second part, checked like a split shift in
+  Masters › Shifts (second part after the first, same day; a day in one part may end after midnight and is then
+  recorded like a night shift). No shift master is needed: the times are stored on the roster entry
+  (`roster_entry.start_time/end_time/start2_time/end2_time`, the log's `from_time/to_time`). The engine treats the day
+  exactly like a shift with those timings: hours (the split gap never counts), late mark from the first part's start,
+  the punch window, deviation allowances; attendance rules are the work policy's (no shift master, no shift rules).
+  It obeys the roster's lock of past dates, the late-change reason and the rest rules like any shift change, shows as
+  "OT" with the times in the tooltip and an "Other time" row in the footer, and counts in On duty. OT is now a roster
+  code: no shift master can take it (none had it). `POST /api/roster/cell {employeeId, date, code: "OT", time: {start,
+  end, start2?, end2?}, why}`.
+- **Deviation allowances for one employee:** Early check-in, Late check-in and Early check-out each **Use the policy's
+  rule** (default), **On** with Minutes allowed + Times allowed in a month (both empty until typed; On refused without
+  both; 1–720 minutes, 1–31 times, as on the policy) or **Off for this employee**, with an **Applies from** date and an
+  optional note. Kept as versions (`emp_dev_allow`, migration 028; same date replaces), audited; a date in an approved
+  or published payroll month is refused. The engine uses, for each day, the version in effect laid over the policy's
+  rules (`attend.DevIn.Rules`); a rule's count runs on through the calendar month. Notes, counts and the bell alerts
+  follow. Right to change: **pol.policies at Edit** (the right that edits work policies' allowances: giving one person
+  an allowance must not need less than giving it to a policy); view: pol.policies, ros.roster or att.records at View;
+  both within the caller's scope. `GET/POST /api/attendance/dev-allow/{id}`. The roster row says "own deviation rules"
+  when the employee has their own in effect.
+- Tests: `api.TestRosterCalledToWork`, `api.TestRosterOtherTime`, `api.TestDevOwnRules`. Manual steps: Part AH of
+  [docs/manual_test.md](docs/manual_test.md).
+
+### Deviation allowances: the Action beyond the allowance (owner, 24 Nov 2026)
+
+- **Where:** the **Action** column of Policies › a work policy › Attendance › Deviation allowances, and of the
+  employee's own rules (roster › click the name; "Use the policy's rule" takes the policy's action too). Choices: **No
+  action**, **Absent**, **Half day until regularized**, **Present until regularized**. No default: the dropdown says
+  "Select" until the admin picks; a rule saved On without minutes, times and an action is refused ("Late check-in is
+  on: choose the action for a day beyond the allowance, or switch it off"). Stored as `act` (`none`, `absent`, `half`,
+  `present`) on `settings.dev.<rule>` and on `emp_dev_allow.rules.<rule>` (with `use: on`). A rule saved On before the
+  Action existed reads as No action, so nothing changes (hrms had no rule saved on 24 Nov 2026; no migration).
+- **What a day beyond the allowance gets:** No action: the usual rules (late mark, "Late marks allowed in a month",
+  hours). **Absent**: "Absent until regularized", loss of pay 1. **Half day until regularized**: loss of pay 0.5 (as the
+  missing-punch option of that name). **Present until regularized**: no loss of pay, flagged. With these three the
+  action replaces the day's late mark (no late mark, not counted in the late-mark limit: no double penalty). The hours
+  rules still apply: when they give more loss of pay (5 h late and 3 h worked is Absent (short hours) even with Half
+  day), the hours stand, with the larger loss of pay, never both. Two rules beyond on one day: the harsher action wins
+  (Absent > Half day > Present > No action).
+- **Regularizing:** such a day carries `reg` (the action) in the month register; My time › My attendance shows
+  **Regularize** on it and Attendance › Issues lists it. The usual regularization flow applies (employee request →
+  approval; the window `rr.back`, the payroll cycle cut-off, the monthly limit, exceptions). Once approved the date is
+  a regularized day: never a deviation day, settled by the corrected times like any regularized day.
+- **Display:** the note says "Late check-in 2 h 10 min, more than the 2 h allowed: beyond the allowance → Half day
+  until regularized" (plus "the hours or punches give more loss of pay: …" when they decide); counts "Absent / Half day / Present
+  until regularized" (days beyond with that action) beside "Beyond the deviation allowance"; the absent days count with
+  No punch, the half days with Half day, the present days with Present (payroll register). The bell ends with "→ Half
+  day until regularized". The payroll cut-off reminder includes Half day until regularized days.
+- Tests: `attend.TestDevAction`, `api.TestDevAllowAction`. Manual steps: Part AI of
+  [docs/manual_test.md](docs/manual_test.md).
 
 ## Built so far (spec 22.1)
 

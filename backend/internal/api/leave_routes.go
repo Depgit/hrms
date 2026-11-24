@@ -139,13 +139,15 @@ func (s *Server) leaveBalances(r *http.Request, c *Ctx) (any, error) {
 			continue
 		}
 		row := map[string]any{"type": name, "kind": lt.Kind, "paid": lt.Paid, "applyBy": cfg.ApplyBy, "docAfter": cfg.DocAfter, "docLabel": cfg.DocLabel,
-			"rules": ruleText(*cfg, lt)}
+			"rules": ruleText(*cfg, lt, pl.LV, name)}
 		if lt.Kind == leave.KindBalance {
 			ap, pe, err := takenOf(ctx, s.st.DB, id, name)
 			if err != nil {
 				return nil, err
 			}
-			row["balance"] = leave.Compute(*cfg, pl.LV, p.S.ProbMonths(e.Grade), e.DOJ, on, openingOf(ctx, s.st.DB, id, name, on), ap, pe)
+			if row["balance"], err = leaveBalOf(ctx, s.st.DB, ts, e, p, cfg, name, on, ap, pe); err != nil {
+				return nil, err
+			}
 		}
 		if name == "Comp-off" { // no new comp-off is earned; what was credited stays usable until used or expired
 			row["compoff"] = compoffBalance(ctx, s.st.DB, id, on)
@@ -166,11 +168,15 @@ func (s *Server) leaveBalances(r *http.Request, c *Ctx) (any, error) {
 		"optHol": optHol, "short": short}, nil
 }
 
-func ruleText(c leave.TypeCfg, lt leaveType) string {
+func ruleText(c leave.TypeCfg, lt leaveType, lv leave.LV, name string) string {
 	parts := []string{}
 	switch lt.Kind {
 	case leave.KindBalance:
-		parts = append(parts, fmt.Sprintf("%v days a year", c.Days))
+		if blk, in := lv.BlockFor(name, c); in {
+			parts = append(parts, "earned by working days: "+blk.Text(c.Days))
+		} else {
+			parts = append(parts, fmt.Sprintf("%v days a year", c.Days))
+		}
 	case leave.KindEvent:
 		parts = append(parts, fmt.Sprintf("up to %v days an occasion", c.Days))
 	}
@@ -356,7 +362,10 @@ func leaveErrors(ctx context.Context, q store.Q, c *Ctx, empID string, p *reques
 		if err != nil {
 			return append(er, err.Error())
 		}
-		b := leave.Compute(*cfg, ts.plan(pol).LV, pol.S.ProbMonths(e.Grade), e.DOJ, p.From, openingOf(ctx, q, e.ID, p.LType, p.From), ap, pe)
+		b, err := leaveBalOf(ctx, q, ts, e, pol, cfg, p.LType, p.From, ap, pe)
+		if err != nil {
+			return append(er, err.Error())
+		}
 		if b.InProbBlock {
 			er = append(er, p.LType+" cannot be used during probation under this leave plan")
 		} else if days > b.Bal+b.Neg {

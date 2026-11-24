@@ -203,6 +203,8 @@ export const ROUTES = [
   ['GET /api/attendance/pull-config', () => ['/api/attendance/pull-config']],
   ['GET /api/attendance/realtime', () => ['/api/attendance/realtime']],
   ['GET /api/attendance/alerts', () => ['/api/attendance/alerts']],
+  ['GET /api/attendance/called', (c) => c.months.map((m) => `/api/attendance/called?ym=${m}`)],
+  ['GET /api/attendance/dev-allow/{id}', perEmp('/api/attendance/dev-allow/{id}')],
   ['GET /api/attendance/realtime/match', () => ['/api/attendance/realtime/match', '/api/attendance/realtime/match?level=All&q=emp&page=1&size=20']],
   ['GET /api/attendance/realtime/match/download', () => ['/api/attendance/realtime/match/download?format=csv', '/api/attendance/realtime/match/download?what=portal&format=csv']],
   ['GET /api/attendance/machines', () => ['/api/attendance/machines']],

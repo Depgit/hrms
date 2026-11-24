@@ -26,6 +26,8 @@ type nomDoc struct {
 	Per   string `json:"per"` // nominee | employee
 	Req   bool   `json:"req"`
 	On    *bool  `json:"on,omitempty"` // switched off documents are kept, not asked; nil = on
+	// Blank is the blank form HR attached (nom_blank.go): read from the document rows, never stored in docs.
+	Blank *nomBlank `json:"blank,omitempty" bson:"-"`
 }
 
 type nomScheme struct {
@@ -80,7 +82,7 @@ func loadSchemes(ctx context.Context, q store.Q, onlyOn bool) ([]nomScheme, erro
 		}
 		out = append(out, sc)
 	}
-	return out, nil
+	return out, nomBlanks(ctx, q, out)
 }
 
 // nominationsIDFilter matches the document whose integer id reads as id (WHERE id::text=$1): anything but the
@@ -178,6 +180,7 @@ func (s *Server) nomSchemeSave(r *http.Request, c *Ctx) (any, error) {
 		}
 		on := docOn(b.Docs[i])
 		b.Docs[i].On = &on
+		b.Docs[i].Blank = nil // attached on its own (nom_blank.go)
 	}
 	if b.Verify == nil {
 		v := true

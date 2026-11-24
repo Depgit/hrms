@@ -224,7 +224,7 @@ func TestMasterUpdateWorkbook(t *testing.T) {
 			t.Fatalf("States header %v", head[0])
 		}
 		sh, _ := f.GetRows("Shifts")
-		if strings.Join(sh[0][:6], "|") != "Name|Code|Start (HH:MM)|End (HH:MM)|Break minutes|Locations (All locations, or names separated by ;)" {
+		if strings.Join(sh[0][:6], "|") != "Name|Code|Start (HH:MM)|End (HH:MM)|Break minutes|Applies to (read-only: Department at Location, separated by ;)" {
 			t.Fatalf("Shifts header %v", sh[0])
 		}
 		regions, _ := f.GetRows("Regions")
@@ -237,7 +237,11 @@ func TestMasterUpdateWorkbook(t *testing.T) {
 				spl = r
 			}
 		}
-		if len(spl) < 9 || spl[6] != "Inactive" || spl[7] != "2026-04-01" || spl[8] != "Discontinued" {
+		// A split shift's second part (24 Nov 2026) comes after Applies to (the old Locations): blank for a shift in one part.
+		if strings.Join(sh[0][6:8], "|") != "Second part start (HH:MM, None for no second part)|Second part end (HH:MM, None for no second part)" {
+			t.Fatalf("Shifts header %v", sh[0])
+		}
+		if len(spl) < 11 || spl[6] != "" || spl[7] != "" || spl[8] != "Inactive" || spl[9] != "2026-04-01" || spl[10] != "Discontinued" {
 			t.Fatalf("the retired Split shift: %v", spl)
 		}
 		dvs, _ := f.GetDataValidations("States")

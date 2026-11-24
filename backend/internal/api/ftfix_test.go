@@ -957,7 +957,7 @@ func TestFtShiftReservedCodes(t *testing.T) {
 	c := setup(t)
 	c.signIn("EMP-1002")
 	for _, code := range []string{"WO", "PH", "L", "wo"} {
-		body := map[string]any{"code": code, "name": "Odd " + code, "effectiveFrom": "", "startTime": "09:00", "endTime": "18:00", "breakMinutes": 30, "locationIds": nil, "rules": map[string]any{}}
+		body := map[string]any{"code": code, "name": "Odd " + code, "effectiveFrom": "", "startTime": "09:00", "endTime": "18:00", "breakMinutes": 30, "maps": []map[string]any{{"departmentId": "", "locationId": ""}}, "rules": map[string]any{}}
 		if s, r := c.do("POST", "/api/shifts", "EMP-1002", "HR Admin", body); s != 400 {
 			t.Errorf("shift %s created: %d %v", code, s, r)
 		}
@@ -1007,7 +1007,9 @@ func TestFtPolicyChecks(t *testing.T) {
 	}
 	cals := c.mustList(t, "/api/calendars")
 	calID := cals[0].(map[string]any)["id"].(string)
-	h := map[string]any{"holiday": map[string]any{"date": time.Now().Format("2006") + "-11-12", "name": "QA Holiday", "kind": "Regional"}}
+	// A date in the calendar's own year (a holiday in another year is refused since 24 Nov 2026).
+	yr := ftJSON(cals[0].(map[string]any)["year"]) // 2026
+	h := map[string]any{"holiday": map[string]any{"date": yr + "-11-12", "name": "QA Holiday", "kind": "Regional"}}
 	c.do("PUT", "/api/calendars/"+calID, "EMP-1002", "HR Admin", h)
 	h["holiday"].(map[string]any)["name"] = "QA Holiday again"
 	if s, _ := c.do("PUT", "/api/calendars/"+calID, "EMP-1002", "HR Admin", h); s != 400 {

@@ -20,6 +20,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
+	"github.com/saltstayz/hrms/internal/attend"
 	"github.com/saltstayz/hrms/internal/policy"
 	"github.com/saltstayz/hrms/internal/store"
 	"github.com/xuri/excelize/v2"
@@ -50,7 +51,8 @@ func ui2AttendanceIn(city, dept string) func(*emp) bool {
 	return func(e *emp) bool { return (city == "" || e.CityID == city) && (dept == "" || e.Dept == dept) }
 }
 
-// codesAt is the roster codes usable at any of the locations: the shifts mapped there, then WO and PH.
+// codesAt is the roster codes usable at any of the locations (for some department): the shifts mapped there, then WO
+// and PH. One employee's codes are codesFor (shift_maps.go).
 func (t *timeSet) codesAt(locs ...string) []string {
 	out := []string{}
 	for _, sh := range t.list {
@@ -127,7 +129,7 @@ func (s *Server) rosterPattern(r *http.Request, c *Ctx) (any, error) {
 			hol := ts.holidays(p, e.CityID)
 			ops := []string{}
 			for _, code := range []string{"M", "E", "N"} {
-				if sh, ok := ts.shifts[code]; ok && sh.RunsAt(e.LocID) {
+				if ts.shiftFor(code, e) {
 					ops = append(ops, code)
 				}
 			}
@@ -207,6 +209,7 @@ func (m *monthData) attCategory(e *emp, p *workPolicy, d string) string {
 		}
 	}
 	st, _ := m.status(e, p, d)
+	st = attend.BaseStatus(st) // "Present until regularized" (a deviation allowance's action) is present
 	switch {
 	case st == "Present", st == "Late", st == "Half day", st == "Week off", st == "Holiday":
 		return st
@@ -331,10 +334,13 @@ func (s *Server) rosterDownload(w http.ResponseWriter, r *http.Request) {
 		fail(err)
 		return
 	}
-	// Rows grouped by property, so each property's drop-down covers one block of rows.
+	// Rows grouped by property and department, so each pair's drop-down (the shifts mapped to it) covers one block of rows.
 	sort.SliceStable(emps, func(i, j int) bool {
 		if emps[i].Location != emps[j].Location {
 			return emps[i].Location < emps[j].Location
+		}
+		if emps[i].Dept != emps[j].Dept {
+			return emps[i].Dept < emps[j].Dept
 		}
 		return emps[i].ID < emps[j].ID
 	})
@@ -374,10 +380,10 @@ func (s *Server) rosterDownload(w http.ResponseWriter, r *http.Request) {
 		}
 		row = append(row, nil)
 		_ = f.SetSheetRow(sh, fmt.Sprintf("A%d", i+2), &row)
-		if b := blocks[e.LocID]; b != nil {
+		if b := blocks[e.LocID+"|"+e.DeptID]; b != nil {
 			b.last = i + 2
 		} else {
-			blocks[e.LocID], order = &block{i + 2, i + 2}, append(order, e.LocID)
+			blocks[e.LocID+"|"+e.DeptID], order = &block{i + 2, i + 2}, append(order, e.LocID+"|"+e.DeptID)
 		}
 	}
 	// Drop-downs from a hidden sheet: the reasons, then the codes valid at each property.
@@ -392,19 +398,19 @@ func (s *Server) rosterDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	firstDay, _ := excelize.ColumnNumberToName(5)
 	lastDay, _ := excelize.ColumnNumberToName(4 + n)
-	for i, locID := range order {
-		b := blocks[locID]
-		name := ""
+	for i, key := range order {
+		b := blocks[key]
+		var first *emp
 		for _, e := range emps {
-			if e.LocID == locID {
-				name = e.Location
+			if e.LocID+"|"+e.DeptID == key {
+				first = e
 				break
 			}
 		}
 		dv := excelize.NewDataValidation(true)
 		dv.Sqref = fmt.Sprintf("%s%d:%s%d", firstDay, b.first, lastDay, b.last)
-		dv.SetSqrefDropList(list(i+2, name, ts.codesAt(locID)))
-		dv.SetError(excelize.DataValidationErrorStyleStop, "Not a code for this property", "Choose a shift mapped to the property, WO or PH.")
+		dv.SetSqrefDropList(list(i+2, first.Dept+" at "+first.Location, ts.codesFor(first)))
+		dv.SetError(excelize.DataValidationErrorStyleStop, "Not a code for this department and property", "Choose a shift mapped to the department and property, WO or PH.")
 		_ = f.AddDataValidation(sh, dv)
 	}
 	dv := excelize.NewDataValidation(true)
@@ -527,7 +533,7 @@ func bulkRosterWide(s *Server, ctx context.Context, tx store.Q, c *Ctx, r bulkRo
 	if err != nil {
 		return res, err
 	}
-	codes := ts.codesAt(e.LocID)
+	codes := ts.codesFor(e)
 	// Every cell is checked first, against the roster as the cells before it in the row leave it (ov); a row with
 	// any problem changes nothing. Then the changes are made.
 	ov := *m
@@ -550,7 +556,7 @@ func bulkRosterWide(s *Server, ctx context.Context, tx store.Q, c *Ctx, r bulkRo
 		case x.v == "L":
 			res.Errors = append(res.Errors, lab+": leave is set by a leave request")
 		case !containsStr(codes, x.v):
-			res.Errors = append(res.Errors, fmt.Sprintf("%s: “%s” is not a shift mapped to %s", lab, x.v, e.Location))
+			res.Errors = append(res.Errors, fmt.Sprintf("%s: “%s” is not a shift mapped to %s at %s", lab, x.v, e.Dept, e.Location))
 		case x.d < e.DOJ || (e.LWD != nil && x.d > *e.LWD):
 			res.Errors = append(res.Errors, lab+": outside the employment dates")
 		case lead < 0 && p.S.RS.Past == "lock":

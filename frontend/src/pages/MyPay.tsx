@@ -4,7 +4,7 @@ import { api, fmtD, inr, uploadDoc, today } from '../api';
 import { useAuth } from '../auth';
 import { Chain, Field, Loading, Modal, Pill, toast, useLoad } from '../components/ui';
 import PersonPicker from '../components/PersonPicker';
-import { SHORT, TeamCover, leaveCountLine, leavePayload, shortHrs } from './Approvals';
+import { PAID_DAYS, SHORT, TeamCover, leaveCountLine, leavePayload, shortHrs, workedLine } from './Approvals';
 import { TYPE_RULES } from './Compensation';
 import { MyNominations } from './Nominations';
 import { MyAttendance, MyDiscipline } from './MyTime';
@@ -77,7 +77,11 @@ function MyLeave({ e, bal, reloadBal, canLeave }: { e: any; bal: any; reloadBal:
       <div className="grid g3" style={{ marginBottom: 14 }}>
         {shown.map((x) => !x.balance ? <div key={x.type} className="card stat"><div className="l">{x.type}</div><div className="n" style={{ fontSize: 16 }}>Not credited</div></div>
           : <div key={x.type} className="card stat"><div className="l">{x.type}</div><div className="n">{x.balance.bal}<span className="mute" style={{ fontSize: 13, fontWeight: 500 }}> days left</span></div>
-            <div className="mute" style={{ fontSize: 12 }}>Credited {x.balance.credit} · taken {x.balance.used}{x.balance.pending ? ` · waiting ${x.balance.pending}` : ''}{x.balance.inProbBlock ? ' · not usable in probation' : ''}</div></div>)}
+            <div className="mute" style={{ fontSize: 12 }}>Credited {x.balance.credit} · taken {x.balance.used}{x.balance.pending ? ` · waiting ${x.balance.pending}` : ''}{x.balance.inProbBlock ? ' · not usable in probation' : ''}</div>
+            {x.balance.worked && <details className="mute" style={{ fontSize: 12, marginTop: 4 }}><summary style={{ cursor: 'pointer' }}>{workedLine(x.balance.worked)}</summary>
+              <div>Counted on {PAID_DAYS}, once each day is over, while you are active.</div>
+              {x.balance.worked.months.length ? x.balance.worked.months.map((m: any) => <div key={m.month}>{fmtD(m.month + '-01').replace(/^\d+ /, '')}: {m.days} paid days{(x.balance.worked.credits ?? []).filter((c: any) => c.on.slice(0, 7) === m.month).map((c: any) => `; ${c.credit} credited on ${fmtD(c.on)}`).join('')}</div>) : <div>No paid day counted yet this leave year.</div>}
+              {(x.balance.worked.credits ?? []).filter((c: any) => !x.balance.worked.months.some((m: any) => m.month === c.on.slice(0, 7))).map((c: any) => <div key={c.on}>{c.credit} credited on {fmtD(c.on)}</div>)}</details>}</div>)}
       </div>
       <div className="card">
         <div className="row sp" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
@@ -157,7 +161,7 @@ function LeaveDialog({ e, bal, onClose, onDone }: { e: any; bal: any; onClose: (
       {p.half && <select value={p.halfOf} onChange={(x) => setP({ ...p, halfOf: x.target.value })}><option value="first">First half on leave</option><option value="second">Second half on leave</option></select>}</div>}
     {isShort && <p className="mute" style={{ fontSize: 12.5, margin: '10px 0 0' }}>Up to {bal.short.maxHours} hours, {bal.short.perMonth} a month. No balance is used; once approved the time is not counted as late, early or short hours.</p>}</div>
     {cur && <div className="card" style={{ marginTop: 14 }}>
-      {!isShort && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>{cur.type} balance on {fmtD(p.from || today())}: <b>{curBal ? curBal.bal : 'not applicable'}</b>{curBal ? ` (credited ${curBal.credit}, used ${curBal.used}, waiting ${curBal.pending || 0})` : ''}</p>}
+      {!isShort && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>{cur.type} balance on {fmtD(p.from || today())}: <b>{curBal ? curBal.bal : 'not applicable'}</b>{curBal ? ` (credited ${curBal.credit}, used ${curBal.used}, waiting ${curBal.pending || 0})` : ''}{curBal?.worked && <><br /><span className="mute" style={{ fontSize: 12 }}>{workedLine(curBal.worked)}</span></>}</p>}
       {sim?.days != null && !isShort && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>{leaveCountLine(cur.type, sim.days, sim.offs ?? 0, sim.range ?? 0)}</p>}
       {sim?.team != null && <TeamCover from={p.from} to={to} teamOff={sim.teamOff} team={sim.team} location={sim.location} dept={sim.department} />}
       {sim && <><h3>Approval route</h3>

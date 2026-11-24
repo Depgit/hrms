@@ -679,7 +679,10 @@ func repLeave(s *Server, ctx context.Context, c *Ctx, f repFilter) ([]string, []
 			if err != nil {
 				return nil, nil, err
 			}
-			b := leave.Compute(*cfg, pl.LV, p.S.ProbMonths(e.Grade), e.DOJ, on, openingOf(ctx, s.st.DB, e.ID, name, on), ap, pe)
+			b, err := leaveBalOf(ctx, s.st.DB, ts, e, p, cfg, name, on, ap, pe)
+			if err != nil {
+				return nil, nil, err
+			}
 			row, some = append(row, b.Bal, b.Used), true
 		}
 		// The prototype's canLeave: the employment type takes leave, or some leave type applies.

@@ -732,6 +732,21 @@ func (s *Server) driveLabel(ctx context.Context, d driveDoc) string {
 		}
 	case "approval":
 		return d.Key + " " + driveDay(d.UploadedAt)
+	case "company":
+		// A nomination's blank form (nom_blank.go): "Blank form Signed nomination form (Provident fund (EPF) nomination)".
+		if scheme, ok := strings.CutPrefix(d.Owner, "nomination/"); ok {
+			if id, ok := driveNumericID(scheme); ok {
+				var docs []nomDoc
+				if x, _ := onboardingOne(ctx, q, "nomination_scheme", id); x != nil && onboardingDecodeJSON(x["docs"], &docs) == nil {
+					for _, n := range docs {
+						if n.ID == d.Key {
+							return "Blank form " + n.Label + " (" + str(x["name"]) + ")"
+						}
+					}
+				}
+			}
+			return "Blank nomination form"
+		}
 	}
 	if x, _ := q.C("onb_document").FindOne(ctx, bson.D{{Key: "key", Value: d.Key}}); x != nil && strings.TrimSpace(str(x["label"])) != "" {
 		return str(x["label"])

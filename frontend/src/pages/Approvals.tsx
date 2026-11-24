@@ -6,6 +6,7 @@ import { Chain, Field, Loading, Modal, Pill, Switch, Tabs, download, toast, useL
 import PersonPicker, { type Person } from '../components/PersonPicker';
 import { CandidateBlock, InterviewForm } from './Onboarding';
 import { SkipApprovalButton, SkipWaitingButton } from '../components/SkipApproval';
+import { shiftOffered } from './ShiftForm';
 
 /** Request types, in the prototype's order (WFS). */
 export const WORKFLOWS: Record<string, string> = {
@@ -484,6 +485,22 @@ export function leavePayload(cur: any, p: any, to: string) {
 }
 
 /** The prototype's leave count line: how many days the leave type counts, and the weekly offs and holidays inside. */
+/** What a paid day is for leave earned by working days (owner, 24 Nov 2026, evening: "Working days means Paid days for leaves"). */
+export const PAID_DAYS = 'paid days (present, half day 0.5, paid leave, weekly off and holiday; loss of pay days do not count)';
+/** 7 → "7th", 1 → "1st", 22 → "22nd"; a half number as it is ("10.5th"). */
+export const ordinal = (v: number) => `${v}${Number.isInteger(v) && (v % 100 < 11 || v % 100 > 13) ? (['th', 'st', 'nd', 'rd'][v % 10] ?? 'th') : 'th'}`;
+/** How a balance earned by working days was earned (owner, 24 Nov 2026; evening: paid days, credited the day after the
+ *  Nth paid day), from the balance's `worked`; '' for others. */
+export function workedLine(w: any): string {
+  if (!w) return '';
+  const n = (v: number, x: string) => `${v} ${x}${v === 1 ? '' : 's'}`;
+  const capped = w.earned > w.credit ? `, capped at ${w.cap} for the leave year` : '';
+  const upto = w.through ? `${n(w.days, 'paid day')} up to ${fmtD(w.through)}` : 'no paid day counted yet';
+  const last = w.credits?.length ? `, last credited on ${fmtD(w.credits[w.credits.length - 1].on)}` : '';
+  return `Earned by working days, ${n(w.per, 'day')} for every ${n(w.every, 'paid day')}, credited the day after the ${ordinal(w.every)} paid day: `
+    + `${w.credit} earned from ${upto}${last}${capped}; ${n(w.toNext, 'more paid day')} to the next block`;
+}
+
 export function leaveCountLine(ltype: string, days: number, offs: number, range: number): ReactNode {
   const hide = range - days;
   return <><b>{days === 0.5 ? 'Half a day' : `${days} day${days === 1 ? '' : 's'}`}</b> will be counted as {ltype.toLowerCase()}{offs ? `. ${offs} weekly off or holiday day${offs > 1 ? 's are' : ' is'} inside these dates${hide > 0 ? ` and ${hide > 1 ? 'are' : 'is'} not counted` : ' and counted'}` : ''}.</>;
@@ -512,11 +529,16 @@ async function openVerifyDoc(id: string, doc: string) {
 function useVerifyLists(on: boolean) {
   const get = (path: string) => (on ? api<any>(path).catch(() => null) : Promise.resolve(null));
   const shifts = useLoad(() => get('/masters/shift?status=Active'), [on]);
+  const depts = useLoad(() => get('/masters/department'), [on]);
   const modes = useLoad(() => get('/masters/attendance_mode?status=Active'), [on]);
   const quals = useLoad(() => get('/masters/qualification?status=Active'), [on]);
-  return (f: VField): [string, string][] | null => {
+  return (f: VField, d: Record<string, string>): [string, string][] | null => {
     switch (f.key) {
-      case 'shift': return shifts.data ? (shifts.data as any[]).map((s) => [s.code, `${s.name} (${s.start_time}–${s.end_time})`]) : null;
+      case 'shift': { // the shifts mapped to the joiner's department and location (shift_maps.go)
+        if (!shifts.data) return null;
+        const deptId = ((depts.data as any[]) ?? []).find((x) => x.name === d.dept)?.id ?? '';
+        return (shifts.data as any[]).filter((s) => shiftOffered(s, deptId, d.loc ?? '')).map((s) => [s.code, `${s.name} (${s.start_time}–${s.end_time}${s.start2_time ? ` + ${s.start2_time}–${s.end2_time}` : ''})`]);
+      }
       case 'attMode': return modes.data ? (modes.data as any[]).map((x) => [x.name, x.name]) : null;
       case 'qual': return quals.data ? (quals.data as any[]).map((x) => [x.name, x.name]) : null;
     }
@@ -557,7 +579,7 @@ function VerifyPanel({ id, o, canEdit, onSaved }: { id: string; o: any; canEdit:
     const set = (x: string) => setD({ ...d, [f.key]: x });
     // Reporting managers: any active employee, found by typing (PersonPicker).
     if (f.key === 'l1' || f.key === 'l2') return <PersonPicker label={f.label} value={val} onChange={(id) => set(id)} search="&status=Active" placeholder="Select" />;
-    const opts = lists(f);
+    const opts = lists(f, d);
     if (opts) {
       const list = val && !opts.some(([k]) => k === val) ? [[val, val] as [string, string], ...opts] : opts;
       return <select aria-label={f.label} value={val} onChange={(e) => set(e.target.value)} style={{ width: '100%' }}><option value="">Select</option>{list.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>;
@@ -889,7 +911,7 @@ export function NewRequest({ wf, title, onClose, onDone }: { wf: string; title?:
       </div>
       <div className="card" style={{ marginTop: 14 }}>
         {wf === 'leave' && isShort && bal.data?.short && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>Short leave: up to {bal.data.short.maxHours} hours, {bal.data.short.perMonth} a month. No balance is used.</p>}
-        {wf === 'leave' && lt && !isShort && p.from && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>{lt.type} balance on {fmtD(p.from)}: <b>{lt.balance?.on ? lt.balance.bal : 'not applicable'}</b>{lt.balance?.on ? ` (credited ${lt.balance.credit}, used ${lt.balance.used}, waiting ${lt.balance.pending})` : ''}</p>}
+        {wf === 'leave' && lt && !isShort && p.from && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>{lt.type} balance on {fmtD(p.from)}: <b>{lt.balance?.on ? lt.balance.bal : 'not applicable'}</b>{lt.balance?.on ? ` (credited ${lt.balance.credit}, used ${lt.balance.used}, waiting ${lt.balance.pending})` : ''}{lt.balance?.worked && <><br /><span className="mute" style={{ fontSize: 12 }}>{workedLine(lt.balance.worked)}</span></>}</p>}
         {noLeave && !solo && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>No leave in this employee's plan.</p>}
         {wf === 'leave' && preview?.days != null && lt && !isShort && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>{leaveCountLine(lt.type, preview.days, preview.offs ?? 0, preview.range ?? 0)}</p>}
         {wf === 'leave' && preview?.team != null && p.from && <div style={{ marginBottom: 12 }}><TeamCover from={p.from} to={p.to || p.from} teamOff={preview.teamOff} team={preview.team} location={preview.location} dept={preview.department} /></div>}

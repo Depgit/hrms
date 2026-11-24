@@ -407,7 +407,7 @@ func TestUI2PeoplePolicies(t *testing.T) {
 		}
 	})
 
-	t.Run("mapping moves between policies on the server; counts per mapping and grade", func(t *testing.T) {
+	t.Run("a mapping on another policy is refused; Edit moves it; counts per mapping and grade", func(t *testing.T) {
 		put := func(id string, maps []map[string]any) {
 			t.Helper()
 			// Contract staff in Housekeeping get their policy through the employment type: keep them there (policy
@@ -417,8 +417,21 @@ func TestUI2PeoplePolicies(t *testing.T) {
 			}
 		}
 		put(aid, []map[string]any{{"level": "department", "ref": "Housekeeping", "on": true}})
-		put(bid, []map[string]any{{"level": "department", "ref": "Housekeeping", "on": true}})
+		// Mapping it again on B is refused (owner, 24 Nov 2026): it moves only by Edit › Work policy.
+		hkB := map[string]any{"maps": []map[string]any{{"level": "department", "ref": "Housekeeping", "on": true}}, "resolution": map[string]any{"mode": "keep"}}
+		if s, r := c.do("PUT", "/api/policies/"+bid+"/maps", "EMP-1002", "HR Admin", hkB); s != 409 || !strings.HasPrefix(fmt.Sprint(r["error"]), "Already applied to ") {
+			t.Fatalf("the same mapping on a second policy: %d %v", s, r)
+		}
 		_, ga := c.do("GET", "/api/policies/"+aid, "EMP-1002", "HR Admin", nil)
+		for _, m := range u7list(u7map(ga["policy"])["maps"]) {
+			if x := u7map(m); x["ref"] == "Housekeeping" && x["on"] == true {
+				body := map[string]any{"policyId": bid, "resolution": map[string]any{"mode": "keep"}}
+				if s, r := c.do("PUT", fmt.Sprintf("/api/policies/%s/maps/%v", aid, x["id"]), "EMP-1002", "HR Admin", body); s != 200 {
+					t.Fatalf("edit › move: %d %v", s, r)
+				}
+			}
+		}
+		_, ga = c.do("GET", "/api/policies/"+aid, "EMP-1002", "HR Admin", nil)
 		for _, m := range u7list(u7map(ga["policy"])["maps"]) {
 			if x := u7map(m); x["ref"] == "Housekeeping" && x["on"] != false {
 				t.Fatalf("not moved off policy A: %v", x)

@@ -1,6 +1,6 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { api, fmtD, inr, today } from '../api';
+import { addMonths, api, fmtD, inr, today, ymOf } from '../api';
 import { useAuth, type Me } from '../auth';
 import { Loading, Modal, Pill, toast, useLoad } from '../components/ui';
 import PersonPicker from '../components/PersonPicker';
@@ -25,7 +25,6 @@ const ECREL = ['Spouse', 'Father', 'Mother', 'Son', 'Daughter', 'Brother', 'Sist
 const PLAB: Record<string, string> = { mobile: 'Mobile', email: 'Email', address: 'Address', ecName: 'Emergency contact', ecRelation: 'Relation', ecMobile: 'Emergency mobile' };
 
 const ymLabel = (ym: string) => new Date(+ym.slice(0, 4), +ym.slice(5, 7) - 1, 1).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
-const prevYm = (ym: string) => { const d = new Date(+ym.slice(0, 4), +ym.slice(5, 7) - 2, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
 const mask = (v?: string | null) => (v ? String(v).replace(/\s/g, '').replace(/.(?=.{4})/g, '•') : '—');
 const rnd2 = (n: number) => Math.round(n * 100) / 100;
 const reqTone = (s: string): Tone => (s === 'Approved' ? 'ok' : s === 'Rejected' ? 'bad' : s === 'Pending' ? 'warn' : 'n');
@@ -39,11 +38,11 @@ export default function EmployeeFile() {
   const [qs, setQs] = useSearchParams();
   const id = qs.get('id') ?? '';
   const [tab, setTab] = useState<FTab>('ov');
-  const [m, setM] = useState('');
-  const [open, setOpen] = useState('');
-  const d = useLoad(() => (id ? api(`/employees/${id}/file${m ? `?ym=${m}` : ''}`) : Promise.resolve(null)), [id, m]);
-  useEffect(() => { if (d.data && !m) setOpen(d.data.ym); }, [d.data, m]);
-  const pick = (x: string) => { setTab('ov'); setM(''); setQs(x ? { id: x } : {}); };
+  // Opens on the current month (owner, 24 Nov 2026); the dropdown goes back a year.
+  const [m, setM] = useState(ymOf());
+  const d = useLoad(() => (id ? api(`/employees/${id}/file?ym=${m}`) : Promise.resolve(null)), [id, m]);
+  const pick = (x: string) => { setTab('ov'); setM(ymOf()); setQs(x ? { id: x } : {}); };
+  const months = Array.from({ length: 13 }, (_, i) => addMonths(ymOf(), -i));
   return (
     <>
       <div className="card" style={{ marginBottom: 14 }}><div className="row" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -52,7 +51,7 @@ export default function EmployeeFile() {
       </div></div>
       {!id ? <div className="card"><h3 style={{ margin: '0 0 6px' }}>Employee payroll file</h3><p className="ink2" style={{ margin: 0 }}>Pick an employee to see everything payroll needs about them in one place: personal details, bank, tax, attendance and leave requests, and what will be paid. You can also open it from the Employees list or from a row in the payroll run.</p></div>
         : !d.data ? <Loading error={d.error} />
-        : <File key={id} x={d.data} tab={tab} setTab={setTab} months={[open || d.data.ym, prevYm(open || d.data.ym)]} onMonth={setM} reload={d.reload} />}
+        : <File key={id} x={d.data} tab={tab} setTab={setTab} months={months} onMonth={setM} reload={d.reload} />}
     </>
   );
 }
@@ -71,8 +70,8 @@ function File({ x, tab, setTab, months, onMonth, reload }: { x: any; tab: FTab; 
           <div className="mute" style={{ fontSize: 13 }}>{f.ID} · {f.Type} · {f.Desig}, {f.Dept} · {f.Location}{e ? `, ${e.city}` : ''}</div>
           {e?.hireIds && <div className="mute mono" style={{ fontSize: 12 }}>{e.hireIds.si} · {e.hireIds.oi} · {e.hireIds.ji}</div>}</div>
       </div>
-      <div style={{ textAlign: 'right' }}><div className="mute" style={{ fontSize: 12 }}>Payroll month</div>
-        <select value={ym} onChange={(ev) => onMonth(ev.target.value === months[0] ? '' : ev.target.value)} aria-label="Payroll month">{months.map((mo) => <option key={mo} value={mo}>{ymLabel(mo)}</option>)}</select>{' '}
+      <div style={{ textAlign: 'right' }}><div className="mute" style={{ fontSize: 12 }}>Month</div>
+        <select value={ym} onChange={(ev) => onMonth(ev.target.value)} aria-label="Month">{months.map((mo) => <option key={mo} value={mo}>{ymLabel(mo)}</option>)}</select>{' '}
         <span style={{ marginLeft: 6 }}><Pill k={x.overall[1]}>{x.overall[0]}</Pill></span></div>
     </div></div>
     <div className="tabs">{tabs.map(([k, l]) => <button key={k} className={`tab ${tab === k ? 'on' : ''}`} onClick={() => setTab(k)}>{l}</button>)}</div>
@@ -277,7 +276,7 @@ function Tax({ x }: { x: any }) {
 }
 
 const CODE: Record<string, string> = { Present: 'P', Late: 'LT', 'Half day': 'H', 'No punch': 'N', 'Week off': 'W', Holiday: 'PH', 'On leave': 'L' };
-const dayCode = (s: string) => CODE[s] ?? (/^Absent/.test(s) ? 'A' : /^Missing/.test(s) ? 'M' : /leave/i.test(s) ? 'L' : '');
+const dayCode = (s: string) => CODE[s.replace(/ until regularized$/, '')] ?? (/^Absent/.test(s) ? 'A' : /^Missing/.test(s) ? 'M' : /leave/i.test(s) ? 'L' : '');
 
 function Attendance({ x }: { x: any }) {
   const ym = x.ym as string, r = x.row, id = x.employee.ID;

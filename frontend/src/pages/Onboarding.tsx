@@ -10,6 +10,7 @@ import { typeNames } from './Dashboard';
 import { DocWindowSetting } from './DocCollection';
 import { PortalCard } from '../components/PortalCard';
 import { SkipApprovalButton } from '../components/SkipApproval';
+import { shiftOffered } from './ShiftForm';
 import { BgvPanel, EarlyExit, HireSettings, JoiningOutcomes, OfferVersions, Timeline, WaitingPanel } from './Hiring';
 
 /* Onboarding in stages (owner's process, 11 Nov 2026; hiring lifecycle 16 Nov 2026): every new hire starts as a
@@ -104,7 +105,10 @@ function useLookups(d: Data) {
       case 'grade': return (desig?.grades ?? []).map((g: string) => [g, g]);
       case 'city': return (cities.data ?? []).map((x) => [x.id, x.name]);
       case 'loc': return (locs.data ?? []).filter((x) => x.city_id === d.city).map((x) => [x.id, x.name]);
-      case 'shift': return (shifts.data ?? []).filter((s) => !s.location_ids || s.location_ids.includes(d.loc)).map((s) => [s.code, `${s.name} (${s.start_time}–${s.end_time})`]);
+      case 'shift': { // the shifts mapped to the department and location (shift_maps.go)
+        const deptId = (depts.data ?? []).find((x) => x.name === d.dept)?.id ?? '';
+        return (shifts.data ?? []).filter((s) => shiftOffered(s, deptId, d.loc ?? '')).map((s) => [s.code, `${s.name} (${s.start_time}–${s.end_time}${s.start2_time ? ` + ${s.start2_time}–${s.end2_time}` : ''})`]);
+      }
       case 'attMode': return (modes.data ?? []).map((x) => [x.name, x.name]);
       case 'qual': return (quals.data ?? []).map((x) => [x.name, x.name]);
       case 'structId': return (structs.data ?? []).filter((x) => x.status === 'Active').map((x) => [x.id, x.name + (x.is_default ? ' (default)' : '')]);

@@ -55,7 +55,12 @@ var mbSheets = []mbSheet{
 		{Key: "grades", Head: "Grades (comma separated)", Width: 26}}},
 	{Key: "shift", Sheet: "Shifts", Right: "mas.job", Cols: []mbCol{{Key: "code", Head: "Code", Width: 10}, {Key: "start", Head: "Start (HH:MM)", Width: 14},
 		{Key: "end", Head: "End (HH:MM)", Width: 14}, {Key: "break", Head: "Break minutes", Width: 14},
-		{Key: "locs", Head: "Locations (All locations, or names separated by ;)", Width: 48}}},
+		// Where the shift applies (owner, 24 Nov 2026): Department + Location rows, changed on Set shift or by Bulk update ›
+		// Shift mapping. Shown here only, in the place the Locations column had.
+		{Key: "locs", Head: "Applies to (read-only: Department at Location, separated by ;)", Width: 48, Read: true},
+		// A split shift's second part (24 Nov 2026), after the older columns so their order stays as it was.
+		{Key: "start2", Head: "Second part start (HH:MM, None for no second part)", Width: 26},
+		{Key: "end2", Head: "Second part end (HH:MM, None for no second part)", Width: 26}}},
 	{Key: "qualification", Sheet: "Qualifications", Right: "mas.job"},
 	{Key: "employment_type", Sheet: "Employment types", Right: "mas.job"},
 	{Key: "attendance_mode", Sheet: "Attendance modes", Right: "mas.job"},
@@ -108,7 +113,7 @@ func canEditMasters(c *Ctx) bool { return c.Level("mas.org") >= 2 || c.Level("ma
 
 type mbItem struct{ ID, Name, Parent, Status string }
 
-// mbItemMasters are the masters a parent column (or a shift's Locations) names.
+// mbItemMasters are the masters a parent column names.
 var mbItemMasters = []string{"region", "state", "city", "cluster", "location", "department"}
 
 // mbItems lists the items of master t that match filter, in master order, with the name of each one's parent (""
@@ -357,14 +362,10 @@ func (s *Server) masterBookRows(ctx context.Context, sh mbSheet, disp map[string
 	if err != nil {
 		return nil, err
 	}
-	locName := map[string]string{}
+	applies := map[string][]string{}
 	if sh.Key == "shift" {
-		l, err := s.st.DB.C("location").Find(ctx, nil, options.Find().SetProjection(bson.M{"name": 1}))
-		if err != nil {
+		if applies, _, err = shiftApplies(ctx, s.st.DB); err != nil {
 			return nil, err
-		}
-		for _, x := range l {
-			locName[str(x["id"])] = str(x["name"])
 		}
 	}
 	out := [][]any{}
@@ -386,18 +387,14 @@ func (s *Server) masterBookRows(ctx context.Context, sh mbSheet, disp map[string
 				v = str(x["start_time"])
 			case "end":
 				v = str(x["end_time"])
+			case "start2": // a split shift's second part (24 Nov 2026); blank for a shift in one part
+				v = str(x["start2_time"])
+			case "end2":
+				v = str(x["end2_time"])
 			case "break":
 				v, _ = num64(x["break_minutes"])
 			case "locs":
-				if x["location_ids"] == nil {
-					v = "All locations"
-				} else {
-					names := []string{}
-					for _, id := range strs(x["location_ids"]) {
-						names = append(names, locName[id])
-					}
-					v = strings.Join(names, "; ")
-				}
+				v = strings.Join(applies[str(x["id"])], "; ")
 			case "since":
 				v = str(x["inactive_since"])
 			case "reason":
@@ -433,8 +430,8 @@ func howTo(f *excelize.File, sheet string, sheets []string, partial bool) {
 		{"", "• These cannot change: an employment type's name and a shift's code. The change reasons the app writes itself (Transfer, Excess payment recovery, Absent without notice, the separation reasons) and the attendance mode Biometric can be renamed, but what they are used for cannot change."},
 		{"", "• A designation cannot move to another department while active employees hold it: move them first with Bulk update, or add a new designation. Moving a location, cluster, city or state is allowed; its employees move with it."},
 		{"", "• A location linked to a CMS property takes its name and status from the CMS: rename or reactivate it in the CMS. Link a location in Masters › Locations. With “Properties come from the CMS” on, a new location is added there by picking its CMS property, not in this workbook."},
-		{"", "• A shift's new timing applies from today as a new version (earlier days keep the old timing). Its attendance rules are set in Masters › Shifts › Set shift."},
-		{"", "• Not in this workbook: city and location budgets (Bulk update › Budgets), shift attendance rules (Set shift) and company details."},
+		{"", "• A shift's new timing applies from today as a new version (earlier days keep the old timing). The work policy decides its attendance rules. A new shift added here applies to all departments at all locations."},
+		{"", "• Not in this workbook: city and location budgets (Bulk update › Budgets), where a shift applies (Set shift, or Masters › Shifts › Bulk upload) and company details."},
 		{"", "• Upload this Excel file (.xlsx). A CSV file holds one sheet only, so it cannot carry every master. Up to 5,000 rows and 10 MB."},
 		{"", ""},
 		{"b", "Columns"},
@@ -442,7 +439,7 @@ func howTo(f *excelize.File, sheet string, sheets []string, partial bool) {
 		{"", "Regions: Name. States: Region. Cities: State. Clusters: City. Locations: Cluster, and CMS property (read-only, ignored on upload)."},
 		{"", "Departments: Approval flow, Operations or Corporate. Grades: Name."},
 		{"", "Designations: Department, and Grades separated by commas (at least one; each an active grade)."},
-		{"", "Shifts: Code (cannot change), Start and End as 24-hour HH:MM, Break minutes, and Locations: “All locations” or location names separated by “;”."},
+		{"", "Shifts: Code (cannot change), Start and End as 24-hour HH:MM, Break minutes, Applies to (read-only, ignored on upload), and the second part of a split shift."},
 		{"", "Qualifications, Employment types, Attendance modes, Roles, Skills: Name. Change reasons: Used for, one of " + strings.Join(reasonUses, ", ") + "."},
 	}
 	if partial {
@@ -849,13 +846,17 @@ func (s *Server) mbRow(ctx context.Context, tx store.Q, c *Ctx, sh *mbSheet, lin
 		if code != "" {
 			body["code"] = code
 		}
-		for k, f := range map[string]string{"start": "start_time", "end": "end_time"} {
+		for k, f := range map[string]string{"start": "start_time", "end": "end_time", "start2": "start2_time", "end2": "end2_time"} {
 			if v[k] == "" {
+				continue
+			}
+			if (k == "start2" || k == "end2") && strings.EqualFold(strings.TrimSpace(v[k]), "None") {
+				body[f] = nil // no second part
 				continue
 			}
 			hm, ok := clockTime(v[k])
 			if !ok {
-				return fail("%s must be a time as HH:MM, for example 09:30", map[string]string{"start": "Start", "end": "End"}[k])
+				return fail("%s must be a time as HH:MM, for example 09:30", map[string]string{"start": "Start", "end": "End", "start2": "Second part start", "end2": "Second part end"}[k])
 			}
 			body[f] = hm
 		}
@@ -865,27 +866,6 @@ func (s *Server) mbRow(ctx context.Context, tx store.Q, c *Ctx, sh *mbSheet, lin
 				return fail("Break minutes must be a whole number, 0 or more")
 			}
 			body["break_minutes"] = n
-		}
-		if l := v["locs"]; l != "" {
-			if strings.EqualFold(l, "All locations") || strings.EqualFold(l, "All") {
-				body["location_ids"] = nil
-			} else {
-				ids := []any{}
-				for _, x := range strings.Split(l, ";") {
-					if x = strings.TrimSpace(x); x == "" {
-						continue
-					}
-					id, msg, err := st.resolve(ctx, tx, "location", x)
-					if err != nil {
-						return res, nil, err
-					}
-					if msg != "" {
-						return fail("%s", msg)
-					}
-					ids = append(ids, id)
-				}
-				body["location_ids"] = ids
-			}
 		}
 	case "change_reason":
 		if usedFor != "" {
@@ -1094,7 +1074,7 @@ func mbFind(ctx context.Context, q store.Q, t, name, parentID, usedFor, code str
 	return rows[0], "", nil
 }
 
-// resolve finds an item named in a parent column (or a shift's Locations): its name; "Name (Parent)" where the
+// resolve finds an item named in a parent column: its name; "Name (Parent)" where the
 // name repeats; or a name it had before it was renamed earlier in this file.
 func (st *mbState) resolve(ctx context.Context, q store.Q, t, text string) (string, string, error) {
 	m := masters[t]
@@ -1177,18 +1157,6 @@ func mbDescribe(ctx context.Context, q store.Q, t string, m master, saved master
 	for _, f := range m.fields {
 		label[f.name] = f.label()
 	}
-	locNames := func(v any) (string, error) {
-		if v == nil {
-			return "All locations", nil
-		}
-		l, err := q.C("location").Find(ctx, bson.M{"_id": bson.M{"$in": strs(v)}},
-			options.Find().SetSort(bson.D{{Key: "name", Value: 1}}).SetProjection(bson.M{"name": 1}))
-		names := make([]string, 0, len(l))
-		for _, x := range l {
-			names = append(names, str(x["name"]))
-		}
-		return strings.Join(names, "; "), err
-	}
 	out := []bulkChange{}
 	for _, k := range ch {
 		from, to := saved.Before[k], saved.After[k]
@@ -1216,16 +1184,10 @@ func mbDescribe(ctx context.Context, q store.Q, t string, m master, saved master
 			c.From, c.To = map[bool]string{true: "Corporate", false: "Operations"}[from == true], map[bool]string{true: "Corporate", false: "Operations"}[to == true]
 		case k == "grades":
 			c.From, c.To = strings.Join(strs(from), ", "), strings.Join(strs(to), ", ")
-		case k == "location_ids":
-			var err error
-			if c.From, err = locNames(from); err != nil {
-				return nil, err
-			}
-			if c.To, err = locNames(to); err != nil {
-				return nil, err
-			}
 		case k == "start_time" || k == "end_time" || k == "break_minutes":
 			c.From, c.To, c.Note = fmt.Sprint(from), fmt.Sprint(to), "from today, as a new shift version"
+		case k == "start2_time" || k == "end2_time": // a split shift's second part; none when cleared
+			c.From, c.To, c.Note = or(str(from), "none"), or(str(to), "none"), "from today, as a new shift version"
 		default:
 			c.From, c.To = "—", fmt.Sprint(to)
 			if from != nil {

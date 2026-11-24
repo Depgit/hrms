@@ -299,7 +299,7 @@ func weekOffLine(s policy.Settings) string {
 func days(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
 
 // leaveLine is the prototype's plText and clText for the plan's leave type.
-func leaveLine(cfg *leave.TypeCfg, typ, short string, pl bool) string {
+func leaveLine(cfg *leave.TypeCfg, lv leave.LV, name, typ, short string, pl bool) string {
 	if cfg == nil || !cfg.On || (len(cfg.Types) > 0 && !containsStr(cfg.Types, typ)) || !calc.RulesFor(calc.EmploymentType(typ)).Leave {
 		return short + " not applicable"
 	}
@@ -312,7 +312,13 @@ func leaveLine(cfg *leave.TypeCfg, typ, short string, pl bool) string {
 		if cfg.Catchup {
 			back = " with back-dated credit"
 		}
+		if blk, in := lv.BlockFor(name, *cfg); in {
+			return fmt.Sprintf("%s earned by working days, %s, accrues %s%s", short, blk.Text(cfg.Days), from, back)
+		}
 		return fmt.Sprintf("%s %s a year, accrues %s%s", short, days(cfg.Days), from, back)
+	}
+	if blk, in := lv.BlockFor(name, *cfg); in {
+		return fmt.Sprintf("%s earned by working days, %s", short, blk.Text(cfg.Days))
 	}
 	credit := "credited upfront"
 	if cfg.Credit == "monthly" {
@@ -347,8 +353,12 @@ func candidatePolicy(ctx context.Context, q store.Q, empID string, j offerJob) *
 	}
 	p, via := ts.policyFor(e)
 	out := &offerPolicy{ID: p.ID, Name: p.Name, Via: via, WeekOff: weekOffLine(p.S), Probation: p.S.ProbMonths(e.Grade)}
-	out.PL = leaveLine(ts.typeCfg(p, "Privilege leave"), typ, "PL", true)
-	out.CL = leaveLine(ts.typeCfg(p, "Casual leave"), typ, "CL", false)
+	var lv leave.LV
+	if pl := ts.plan(p); pl != nil {
+		lv = pl.LV
+	}
+	out.PL = leaveLine(ts.typeCfg(p, "Privilege leave"), lv, "Privilege leave", typ, "PL", true)
+	out.CL = leaveLine(ts.typeCfg(p, "Casual leave"), lv, "Casual leave", typ, "CL", false)
 	return out
 }
 
@@ -729,12 +739,14 @@ func bulkNewEmp(s *Server, ctx context.Context, tx store.Q, c *Ctx, r bulkRow, a
 	shift := strings.ToUpper(or(V("Shift"), "G"))
 	var shiftStatus string
 	var shiftOK bool
-	if sh, _ := tx.C("shift").FindOne(ctx, bson.M{"code": ui2CompSameText(shift)}, options.FindOne().SetProjection(compFields("status", "location_ids"))); sh == nil {
+	if sh, _ := tx.C("shift").FindOne(ctx, bson.M{"code": ui2CompSameText(shift)}, options.FindOne().SetProjection(compFields("id", "status"))); sh == nil {
 		add("Shift “%s” not in master", V("Shift"))
 	} else if shiftStatus = str(sh["status"]); shiftStatus != "Active" {
 		add("Shift is inactive")
-	} else if shiftOK = locID == "" || sh["location_ids"] == nil || containsStr(compStrs(sh["location_ids"]), locID); !shiftOK {
-		add("Shift %s is not mapped to %s", shift, locName)
+	} else if shiftOK = locID == "" || deptID == ""; !shiftOK {
+		if shiftOK, _ = shiftRowFor(ctx, tx, str(sh["id"]), deptID, locID); !shiftOK {
+			add("%s", shiftNotForMsg(shift, deptName, locName))
+		}
 	}
 	l1, l2 := "", ""
 	if v := V("Reporting Manager L1"); v == "" {

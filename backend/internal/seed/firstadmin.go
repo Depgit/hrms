@@ -151,6 +151,9 @@ func FirstAdmin(ctx context.Context, st *store.Store, in FirstAdminInput) (strin
 			bson.M{"start_time": "09:00", "end_time": "18:00", "break_minutes": 30, "created_by": "System", "note": "First admin"}); err != nil {
 			return err
 		}
+		if _, err := store.ShiftMapsFromLocations(ctx, tx); err != nil { // G applies to all departments at all locations
+			return err
+		}
 		sd.ins("employee", bson.M{"id": code, "name": in.Name, "type": "Permanent", "doj": time.Now().Format("2006-01-02"),
 			"department_id": dept, "designation_id": desig, "grade": "G6", "location_id": location, "shift_code": "G",
 			"status": "Active", "verified": true, "attendance_mode": "Manager marked"})

@@ -370,8 +370,6 @@ func earnKind(l calc.Line) string {
 		return "unirefund"
 	case strings.HasPrefix(l.Label, "Held salary released"):
 		return "held"
-	case strings.HasPrefix(l.Label, "Night shift allowance"):
-		return "night"
 	case l.Label == "Salary advance":
 		return "advance"
 	case l.Label == incentiveLabel:
@@ -450,7 +448,6 @@ var regCols = func() []regCol {
 		m("Bonus", func(x *regRow) float64 { return x.f.Bonus }),
 		m("Variable pay", func(x *regRow) float64 { return x.f.VarPay }),
 		m("Incentive", func(x *regRow) float64 { return x.earn["incentive"] }),
-		m("Night shift allowance", func(x *regRow) float64 { return x.earn["night"] }),
 		m("Arrears", func(x *regRow) float64 { return x.earn["arrear"] }),
 		m("Reimbursements", func(x *regRow) float64 { return x.earn["reimb"] }),
 		m("Salary advance", func(x *regRow) float64 { return x.earn["advance"] }),

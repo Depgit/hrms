@@ -74,7 +74,8 @@ type timeSet struct {
 	list   []attend.Shift
 	vers   map[string][]shiftVer // each active shift's versions, oldest first
 	types  map[string]leaveType
-	order  []string // leave type names in catalogue order
+	order  []string            // leave type names in catalogue order
+	own    map[string][]ownDev // employees' own deviation allowances, oldest version first (dev_own.go)
 }
 
 // shiftVer is a shift's timings and attendance rules from a date (Set shift).
@@ -90,11 +91,10 @@ func parseRules(raw []byte) *attend.Rules {
 	if len(raw) == 0 {
 		return nil
 	}
-	r := &attend.Rules{}
+	r := &attend.Rules{} // the removed rules of an older version are not read (attend.Rules)
 	if json.Unmarshal(raw, r) != nil {
 		return nil
 	}
-	r.Normalize()
 	if r.Empty() {
 		return nil
 	}
@@ -165,6 +165,7 @@ func loadTimeSet(ctx context.Context, q store.Q) (*timeSet, error) {
 				return nil, fmt.Errorf("leave plan %s: %w", p.Name, err)
 			}
 		}
+		leave.Normalize(&p.LV, p.Types) // a plan saved with the per-type "By days worked" of 24 Nov reads as a rule
 		t.plans[p.ID] = p
 	}
 	// Holidays on the list, of calendars that exist, in the order they were added.
@@ -198,11 +199,13 @@ func loadTimeSet(ctx context.Context, q store.Q) (*timeSet, error) {
 	rowVer := map[string]shiftVer{}
 	codeOf := map[string]string{} // active shift id → code
 	shiftIDs := []string{}
+	applies, err := shiftMapsOn(ctx, q, shifts) // where each shift applies (shift_maps.go)
+	if err != nil {
+		return nil, err
+	}
 	for _, r := range shifts {
 		code := str(r["code"])
-		s, _ := attend.Min(str(r["start_time"]))
-		e, _ := attend.Min(str(r["end_time"]))
-		sh := attend.Shift{Code: code, Start: s, End: e, Locations: timectxStrs(r["location_ids"])}
+		sh := shiftOf(code, str(r["start_time"]), str(r["end_time"]), str(r["start2_time"]), str(r["end2_time"]), applies[str(r["id"])])
 		t.shifts[code] = sh
 		t.list = append(t.list, sh)
 		rowVer[code] = shiftVer{from: "2000-01-01", sh: sh, brk: timectxInt(r["break_minutes"]), rules: parseRules(timectxJSON(r["rules"]))}
@@ -217,10 +220,8 @@ func loadTimeSet(ctx context.Context, q store.Q) (*timeSet, error) {
 	}
 	for _, r := range vers {
 		code := codeOf[str(r["shift_id"])]
-		s, _ := attend.Min(str(r["start_time"]))
-		e, _ := attend.Min(str(r["end_time"]))
-		t.vers[code] = append(t.vers[code], shiftVer{from: str(r["effective_from"]), sh: attend.Shift{Code: code, Start: s, End: e, Locations: t.shifts[code].Locations},
-			brk: timectxInt(r["break_minutes"]), rules: parseRules(timectxJSON(r["rules"]))})
+		sh := shiftOf(code, str(r["start_time"]), str(r["end_time"]), str(r["start2_time"]), str(r["end2_time"]), t.shifts[code].Maps)
+		t.vers[code] = append(t.vers[code], shiftVer{from: str(r["effective_from"]), sh: sh, brk: timectxInt(r["break_minutes"]), rules: parseRules(timectxJSON(r["rules"]))})
 	}
 	for code, v := range rowVer { // a shift written without versions (older seed, direct writes) stands as it is
 		if len(t.vers[code]) == 0 {
@@ -236,13 +237,16 @@ func loadTimeSet(ctx context.Context, q store.Q) (*timeSet, error) {
 		t.types[lt.Name] = lt
 		t.order = append(t.order, lt.Name)
 	}
+	if t.own, err = loadOwnDev(ctx, q); err != nil {
+		return nil, err
+	}
 	return t, nil
 }
 
 // emp is what the time rules need about an employee.
 type emp struct {
 	ID, Name, Type, Grade, Status, DOJ, LocID, ClusterID, CityID, StateID string
-	Dept, Desig, Shift, Gender, Location                                  string
+	Dept, DeptID, Desig, Shift, Gender, Location                          string
 	LWD, Exit, ManagerID                                                  *string
 	Corporate                                                             bool
 }
@@ -320,7 +324,7 @@ next:
 		}
 		e := &emp{ID: str(r["id"]), Name: str(r["name"]), Type: str(r["type"]), Grade: str(r["grade"]), Status: str(r["status"]), DOJ: str(r["doj"]),
 			LocID: str(r["location_id"]), ClusterID: str(l["cluster_id"]), CityID: str(k["city_id"]), StateID: str(c["state_id"]),
-			Dept: str(d["name"]), Desig: str(g["name"]), Shift: str(r["shift_code"]), Gender: gender[str(r["id"])], Location: str(l["name"]),
+			DeptID: str(r["department_id"]), Dept: str(d["name"]), Desig: str(g["name"]), Shift: str(r["shift_code"]), Gender: gender[str(r["id"])], Location: str(l["name"]),
 			LWD: timectxStrPtr(r["lwd"]), Exit: timectxStrPtr(r["exit_status"]), ManagerID: timectxStrPtr(r["manager_id"]), Corporate: d["corporate"] == true}
 		for _, k := range keep {
 			if !k(e) {
@@ -344,12 +348,15 @@ func loadEmp(ctx context.Context, q store.Q, id string) (*emp, error) {
 }
 
 var levelNames = map[string]string{"employee": "Employee", "location": "Location", "cluster": "Cluster", "department": "Department", "designation": "Designation",
-	"grade": "Grade", "type": "Employment type", "city": "City", "state": "State"}
+	"grade": "Grade", "type": "Employment type", "city": "City", "state": "State",
+	"dept_location": "Department + Location", "dept_cluster": "Department + Cluster", "dept_city": "Department + City", "dept_state": "Department + State"}
 
 // policyLevels is the order in which a person's mappings are tried when they match more than one work policy:
-// the individual, then the place from the narrowest (location) to the widest (state), then department,
-// designation, grade and employment type.
-var policyLevels = []string{"employee", "location", "cluster", "city", "state", "department", "designation", "grade", "type"}
+// the individual, then a department together with a place (policy_combo.go) from the narrowest place to the widest,
+// then the place alone from the narrowest (location) to the widest (state), then department, designation, grade and
+// employment type (owner, 24 Nov 2026).
+var policyLevels = []string{"employee", "dept_location", "dept_cluster", "dept_city", "dept_state", "location", "cluster", "city", "state",
+	"department", "designation", "grade", "type"}
 
 // levelRef is the employee's value at a mapping level ("" for an unknown level).
 func (e *emp) levelRef(level string) string {
@@ -373,7 +380,7 @@ func (e *emp) levelRef(level string) string {
 	case "type":
 		return e.Type
 	}
-	return ""
+	return e.comboLevelRef(level)
 }
 
 // policyFor resolves the policy (spec 10): the first level in policyLevels with a mapping that matches,
@@ -439,9 +446,11 @@ func (t *timeSet) typeCfg(p *workPolicy, name string) *leave.TypeCfg {
 	return nil
 }
 
-// baseShift is the employee's shift if it runs at their location, else G.
+// baseShift is the employee's shift when it is an active shift, else G. Whether the shift's mapping still allows them
+// does not matter here (owner, 24 Nov 2026): their past and planned days keep their shift; only a new assignment is
+// refused.
 func (t *timeSet) baseShift(e *emp) string {
-	if s, ok := t.shifts[e.Shift]; ok && s.RunsAt(e.LocID) {
+	if _, ok := t.shifts[e.Shift]; ok {
 		return e.Shift
 	}
 	return "G"
@@ -452,6 +461,7 @@ func (t *timeSet) baseShift(e *emp) string {
 type rosterCell struct {
 	Code, Why, From, By, At string
 	Late, Dev               bool
+	Other                   *attend.Shift // "Other time for this day" (code OT): the day's own timings (roster_day.go)
 }
 
 type leaveSpan struct {
@@ -476,6 +486,8 @@ type monthData struct {
 	regs   map[string]map[string]string // pending regularization request id by date
 	shorts map[string]map[string][]shortSpan
 	today  string
+	calls  map[string]map[string]*callDoc       // called to work, by employee and date (work_call.go)
+	dev    map[string]map[string]*attend.DevDay // deviation allowances, by employee|month and date (dev_allow.go)
 }
 
 // shortSpan is a short leave on a date (short_leave.go): its window in minutes and its status (Approved or Pending).
@@ -493,6 +505,9 @@ func loadMonth(ctx context.Context, q store.Q, ts *timeSet, ids []string, from, 
 		ids = []string{}
 	}
 	pre := policy.AddDays(from, -1)
+	if ts.anyDev() { // the deviation allowances count from the 1st of the month (dev_allow.go)
+		pre = min(pre, policy.AddDays(from[:7]+"-01", -1))
+	}
 	who := bson.E{Key: "employee_id", Value: bson.D{{Key: "$in", Value: ids}}}
 	rows, err := q.C("roster_entry").Find(ctx, bson.D{who, {Key: "date", Value: timectxBetween(pre, policy.AddDays(to, 1))}})
 	if err != nil {
@@ -504,7 +519,7 @@ func loadMonth(ctx context.Context, q store.Q, ts *timeSet, ids []string, from, 
 			m.roster[id] = map[string]rosterCell{}
 		}
 		m.roster[id][str(r["date"])] = rosterCell{Code: str(r["code"]), Why: str(r["why"]), From: str(r["from_code"]), By: str(r["by_name"]),
-			At: timectxStamp(r["at"], "02 Jan 2006 15:04"), Late: r["late"] == true, Dev: r["by_dev"] == true}
+			At: timectxStamp(r["at"], "02 Jan 2006 15:04"), Late: r["late"] == true, Dev: r["by_dev"] == true, Other: otherOfRow(r)}
 	}
 	rows, err = q.C("attendance_day").Find(ctx, bson.D{who, {Key: "date", Value: timectxBetween(pre, to)}},
 		options.Find().SetProjection(bson.D{{Key: "_id", Value: 0}, {Key: "employee_id", Value: 1}, {Key: "date", Value: 1}, {Key: "in_time", Value: 1},
@@ -544,6 +559,9 @@ func loadMonth(ctx context.Context, q store.Q, ts *timeSet, ids []string, from, 
 		m.leaves[id] = append(m.leaves[id], l)
 	}
 	if err := m.loadShorts(ctx, q, who, pre, to); err != nil {
+		return nil, err
+	}
+	if err := m.loadCalls(ctx, q, who, pre, to); err != nil {
 		return nil, err
 	}
 	rows, err = q.C("deviation_decision").Find(ctx, bson.D{who, {Key: "date", Value: timectxBetween(from, to)}})
@@ -621,6 +639,10 @@ func (m *monthData) planned(e *emp, p *workPolicy, d string) attend.Plan {
 // shiftPlan is the day's roster plan whatever leave there is, with the approved short leave windows.
 func (m *monthData) shiftPlan(e *emp, p *workPolicy, d string) attend.Plan {
 	c := m.rosterCode(e, p, d)
+	if x, ok := m.roster[e.ID][d]; ok && x.Other != nil && c == otherCode { // other time for this day: a shift of its own (roster_day.go)
+		sh := *x.Other
+		return attend.Plan{Code: c, Shift: &sh, Rules: otherRules(sh), Short: m.shortWindows(e.ID, d)}
+	}
 	if rosterCodes[c] { // a week off, holiday or leave, even if an old shift took the same code (TIME-042)
 		return attend.Plan{Code: c}
 	}
@@ -639,7 +661,9 @@ func (m *monthData) deviation(e *emp, p *workPolicy, d string) (*attend.Deviatio
 	if d > m.today {
 		return nil, nil
 	}
-	v := attend.Deviate(p.S, m.planned(e, p, d), m.rec(e, p, d), d, e.LocID, m.ts.list)
+	al := m.devOn(e, p, d).Allowed() // what the deviation allowances cover is no roster deviation (dev_allow.go)
+	plan, _, _ := al.Apply(m.planned(e, p, d), nil, false)
+	v := al.Trim(attend.Deviate(p.S, plan, m.rec(e, p, d), d, e.LocID, m.ts.listFor(e)))
 	if x, ok := m.decide[e.ID][d]; ok {
 		if v == nil {
 			v = &attend.Deviation{Planned: x.Planned, Actual: x.Actual, Kinds: x.Kinds}
@@ -651,9 +675,13 @@ func (m *monthData) deviation(e *emp, p *workPolicy, d string) (*attend.Deviatio
 
 // status is the day's attendance status, with the late mark following a Shift deviation.
 func (m *monthData) status(e *emp, p *workPolicy, d string) (string, string) {
+	if m.calledWorked(e, p, d) { // called to work on a holiday or leave day and worked (work_call.go)
+		return "Present", "ok"
+	}
 	v, _ := m.deviation(e, p, d)
 	ls, ov := attend.LateStartFor(v, m.ts.list)
-	return attend.Status(p.S, m.planned(e, p, d), m.rec(e, p, d), ls, ov)
+	// The deviation allowance, or the action of a rule beyond it (dev_allow.go).
+	return m.devOn(e, p, d).Status(p.S, m.planned(e, p, d), m.rec(e, p, d), ls, ov)
 }
 
 // month runs FinalMonth for one employee and calendar month.
@@ -681,6 +709,10 @@ func (m *monthData) span(e *emp, p *workPolicy, from, to string) attend.Month {
 			in.Plan, in.Rec = m.planned(e, p, d), m.rec(e, p, d)
 			v, _ := m.deviation(e, p, d)
 			in.LateFrom, in.Override = attend.LateStartFor(v, m.ts.list)
+			in.Dev = m.devOn(e, p, d)
+		}
+		if !in.Before && !in.After && !in.Future && m.callIn(e, p, d) { // called to work (work_call.go)
+			in.Called, in.CallPlan, in.Rec = true, m.callPlan(e, p, d), m.rec(e, p, d)
 		}
 		days = append(days, in)
 	}

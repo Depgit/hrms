@@ -23,7 +23,7 @@ func oldPolicy(t *testing.T) policy.Settings {
 
 func TestOldPolicyStillParses(t *testing.T) {
 	p := oldPolicy(t)
-	if p.Shift.NightAllow != 150 || p.Att.MinRest != 11 || p.Shift.Rest != 11 || p.Shift.Change != 2 || p.RS.Pts != 5 || !p.Hol.Prob {
+	if p.Att.MinRest != 11 || p.Shift.Rest != 11 || p.Shift.Change != 2 || p.RS.Pts != 5 || !p.Hol.Prob {
 		t.Errorf("kept settings read as stored: %+v %+v %+v", p.Shift, p.Att, p.RS)
 	}
 }
@@ -37,9 +37,6 @@ func TestNoBreakDeducted(t *testing.T) {
 	if h := Effective(&p, nil).Hours(540, 1080, g); h != 9 {
 		t.Errorf("Effective hours, no break: %v", h)
 	}
-	if h := Effective(&p, &Rules{FullAbove: "8:00"}).Hours(540, 1080, g); h != 9 {
-		t.Errorf("with shift rules, no break: %v", h)
-	}
 	// An 8 h day stays a full day (with the old 60 min break it was 7 h, a half day).
 	if st, _, _ := run(p, "M", "06:00", "14:00"); st != "Present" {
 		t.Errorf("8 h day: %s", st)
@@ -50,10 +47,6 @@ func TestNoLateHalfDay(t *testing.T) {
 	p := oldPolicy(t) // lateHalf 30, as stored
 	if st, _, _ := run(p, "M", "06:45", "15:00"); st != "Late" {
 		t.Errorf("45 min late is a late mark, not a half day: %s", st)
-	}
-	r := &Rules{FullAbove: "8:00"}
-	if ev := Effective(&p, r).Eval(Plan{Code: "M", Shift: shiftOf("M"), Rules: r}, &Rec{In: "06:45", Out: "15:00"}, nil, false); ev.Status != "Late" {
-		t.Errorf("with shift rules: %s", ev.Status)
 	}
 }
 

@@ -1,92 +1,66 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { ApiError, api, fmtD, today } from '../api';
-import { Loading, Modal, Pill, toast } from '../components/ui';
+import { Loading, Modal, Pill, Switch, toast } from '../components/ui';
 
-// Set shift (Masters › Shifts): a shift's timings and attendance rules from an effective date, drawn section by
-// section after the client's "Set Shifts" screen. Every rule is optional: left empty it follows the employee's
-// work policy, shown under the field. Saving writes a version from the effective date; earlier days keep theirs.
+// Set shift (Masters › Shifts): a shift's timings from an effective date, and where it applies. Saving the timings
+// writes a version from the effective date; earlier days keep theirs. A shift may have a second part (a split shift).
+// The punch rules, the single punch rule (24 Nov 2026) and the attendance rules card (owner, 24 Nov 2026) were removed:
+// the work policy decides them. Where it applies is a list of Department + Location rows (either may be All), changed
+// row by row (Add, switch on or off, Remove) and kept in the mapping history.
 
-type Adj = { on: boolean; hours?: string };
-type Incl = { wo?: boolean; hol?: boolean; optHol?: boolean };
-export type Rules = {
-  nextDay?: boolean; startFrom?: string; endFrom?: string; addMissingOut?: boolean; forcedOut?: string; earlyInMax?: string; lateOutMax?: string;
-  officeHours?: string; shiftIn?: string; singlePunch?: string; maxHours?: string; basedOn?: string; absentBelow?: string; halfBelow?: string;
-  fullAbove?: string; weeklyAdj?: Adj; monthlyAdj?: Adj; shortfall?: Incl;
-};
-type Form = { code: string; name: string; effectiveFrom: string; startTime: string; endTime: string; breakMinutes: string; locMode: 'all' | 'some'; locIds: string[]; rules: Rules };
+/** What a shift version keeps beyond its timings: only whether it ends the next day (set from the times). */
+export type Rules = { nextDay?: boolean };
+/** Shift rules that were removed (8 and 24 Nov 2026); an older version may still carry them. */
+const REMOVED_RULES = ['otAbove', 'withoutBreak', 'startFrom', 'endFrom', 'addMissingOut', 'forcedOut', 'earlyInMax', 'lateOutMax', 'officeHours', 'shiftIn', 'singlePunch',
+  'maxHours', 'basedOn', 'absentBelow', 'halfBelow', 'fullAbove', 'weeklyAdj', 'monthlyAdj', 'shortfall'];
+type Pair = { departmentId: string; locationId: string };
+type Form = { code: string; name: string; effectiveFrom: string; startTime: string; endTime: string; start2Time: string; end2Time: string; breakMinutes: string; maps: Pair[]; rules: Rules };
+
+/** A shift's timings as text: "09:00–18:00", or "06:00–10:00 + 15:00–19:00" for a split shift. */
+export const timingText = (start?: string, end?: string, start2?: string | null, end2?: string | null) =>
+  `${start ?? ''}–${end ?? ''}${start2 && end2 ? ` + ${start2}–${end2}` : ''}`;
+
+/** Whether a shift of the master list (its switched-on rows, maps) is offered to someone of the department at the location
+ *  (ids; "" when not chosen yet, which only a row for All matches). The server checks the same. */
+export const shiftOffered = (s: { maps?: Pair[] }, deptId: string, locId: string) =>
+  (s.maps ?? []).some((m) => (!m.departmentId || m.departmentId === deptId) && (!m.locationId || m.locationId === locId));
 
 const mins = (t?: string) => { const m = /^(\d{1,2}):(\d{2})$/.exec(t || ''); return m ? +m[1] * 60 + +m[2] : null; };
 const crosses = (a: string, b: string) => { const x = mins(a), y = mins(b); return x != null && y != null && y <= x; };
-const DUR = /^\d{1,2}:[0-5]\d$/, DUR3 = /^\d{1,3}:[0-5]\d$/, TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
-const CHOICES: Record<string, [string, string][]> = {
-  startFrom: [['shift', 'Shift start time'], ['punch', 'In punch']],
-  endFrom: [['shift', 'Shift end time'], ['punch', 'Out punch']],
-  shiftIn: [['current', 'Current day'], ['previous', 'Previous day'], ['next', 'Next day']],
-  singlePunch: [['absent', 'Absent full day'], ['half', 'Present half day'], ['present', 'Present full day']],
-  basedOn: [['hours', 'Hours'], ['shift', 'Shift'], ['punch', 'Punch']],
-};
-const choice = (k: string, v?: string) => CHOICES[k]?.find((c) => c[0] === v)?.[1] ?? v ?? '';
-const yn = (v?: boolean) => (v ? 'Yes' : 'No');
+const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-/** Each rule's label and how its value reads (in the summary and the version history). */
-const LABELS: [keyof Rules, string, (v: any) => string][] = [
-  ['nextDay', 'Ends next day', yn], ['startFrom', 'Start from', (v) => choice('startFrom', v)], ['endFrom', 'End from', (v) => choice('endFrom', v)],
-  ['addMissingOut', 'Add missing out', yn], ['forcedOut', 'Forced out', String], ['earlyInMax', 'Early in max', String], ['lateOutMax', 'Late out max', String],
-  ['officeHours', 'Office hours', String], ['shiftIn', 'Counted on', (v) => choice('shiftIn', v)], ['singlePunch', 'Single punch', (v) => choice('singlePunch', v)],
-  ['maxHours', 'Max hours', String], ['basedOn', 'Based on', (v) => choice('basedOn', v)], ['absentBelow', 'Absent <', String], ['halfBelow', 'Half day <', String],
-  ['fullAbove', 'Full day ≥', String], ['weeklyAdj', 'Weekly adjustment', (v: Adj) => v?.on ? v.hours || 'on' : 'off'],
-  ['monthlyAdj', 'Monthly adjustment', (v: Adj) => v?.on ? v.hours || 'on' : 'off'],
-  ['shortfall', 'Shortfall includes', (v: Incl) => [v?.wo && 'weekly off', v?.hol && 'holiday', v?.optHol && 'optional holiday'].filter(Boolean).join(', ') || 'none'],
-];
-
-/** Short summary of a shift's rules for the list ("Policy rules" when none is set). */
-export const rulesSummary = (r?: Rules | null): string[] => {
-  const out: string[] = [];
-  for (const [k, l, f] of LABELS) {
-    const v = r?.[k];
-    if (v === undefined || v === null || v === '' || (k === 'nextDay' && v === false)) continue;
-    out.push(k === 'nextDay' ? 'Ends next day' : `${l} ${f(v)}`);
-  }
-  return out;
-};
-
-/** What changed from the version before (timings and rules). */
+/** What changed from the version before (timings). */
 function changes(v: any, prev: any): string[] {
   if (!prev) return ['First version'];
   const out: string[] = [];
   if (v.startTime !== prev.startTime) out.push(`Start ${prev.startTime} → ${v.startTime}`);
   if (v.endTime !== prev.endTime) out.push(`End ${prev.endTime} → ${v.endTime}`);
+  const p2 = (x: any) => (x.start2Time && x.end2Time ? `${x.start2Time}–${x.end2Time}` : 'none');
+  if (p2(v) !== p2(prev)) out.push(`Second part ${p2(prev)} → ${p2(v)}`);
   if (v.breakMinutes !== prev.breakMinutes) out.push(`Break ${prev.breakMinutes} → ${v.breakMinutes} min`);
-  for (const [k, l, f] of LABELS) {
-    const a = prev.rules?.[k], b = v.rules?.[k];
-    if (JSON.stringify(a ?? null) === JSON.stringify(b ?? null)) continue;
-    out.push(`${l}: ${a === undefined ? 'policy' : f(a)} → ${b === undefined ? 'policy' : f(b)}`);
-  }
+  if (!!v.rules?.nextDay !== !!prev.rules?.nextDay) out.push(`Ends next day: ${prev.rules?.nextDay ? 'Yes' : 'No'} → ${v.rules?.nextDay ? 'Yes' : 'No'}`);
   return out.length ? out : ['No change'];
 }
 
-const blank = (): Form => ({ code: '', name: '', effectiveFrom: today(), startTime: '09:00', endTime: '18:00', breakMinutes: '30', locMode: 'all', locIds: [], rules: {} });
+const blank = (): Form => ({ code: '', name: '', effectiveFrom: today(), startTime: '09:00', endTime: '18:00', start2Time: '', end2Time: '', breakMinutes: '30', maps: [], rules: {} });
 const formOf = (v: any): Form => {
   const c = v.current, s = v.shift;
-  // The OT rule and "Actual hours without break" were removed (8 Nov 2026); an older version may still carry them.
-  const { otAbove: _ot, withoutBreak: _wb, ...rules } = c.rules || {};
-  return { code: s.code, name: s.name, effectiveFrom: today(), startTime: c.startTime, endTime: c.endTime, breakMinutes: String(c.breakMinutes ?? 0),
-    locMode: s.locationIds ? 'some' : 'all', locIds: s.locationIds || [], rules };
+  // Removed rules (REMOVED_RULES) are left out: the server no longer accepts them.
+  const rules: Record<string, any> = { ...(c.rules || {}) };
+  for (const k of REMOVED_RULES) delete rules[k];
+  return { code: s.code, name: s.name, effectiveFrom: today(), startTime: c.startTime, endTime: c.endTime, start2Time: c.start2Time ?? '', end2Time: c.end2Time ?? '',
+    breakMinutes: String(c.breakMinutes ?? 0), maps: [], rules: rules as Rules };
 };
 
-/** What the field components need from the form. */
-type Ctx = { r: Rules; pol: Record<string, string>; err: { msg: string; field?: string } | null; edit: boolean; setR: (k: keyof Rules, v: any) => void };
+type Err = { msg: string; field?: string } | null;
 
-/** One field: label, control, help, and the policy value it falls back to with a way back to it. */
-function Box({ c, k, label, req, help, children, wide, noPol }: { c: Ctx; k: string; label: string; req?: boolean; help?: ReactNode; children: ReactNode; wide?: boolean; noPol?: boolean }) {
-  const isSet = (c.r as any)[k] !== undefined, e = c.err?.field === k ? c.err.msg : '';
+/** One field: label, control, help and its error. */
+function Box({ err, k, label, req, help, children, wide }: { err: Err; k: string; label: string; req?: boolean; help?: ReactNode; children: ReactNode; wide?: boolean }) {
+  const e = err?.field === k ? err.msg : '';
   return <div className={`field${e ? ' err' : ''}`} style={wide ? { gridColumn: '1/-1' } : undefined}>
     <span>{label}{req ? ' *' : ''}</span>
     {children}
     {help && <small>{help}</small>}
-    {!noPol && <small>{isSet
-      ? <span className="row" style={{ gap: 6 }}>Work policy: {c.pol[k] ?? '—'}{c.edit && <button type="button" className="btn sm" style={{ padding: '1px 8px', fontSize: 11 }} onClick={() => c.setR(k as keyof Rules, undefined)}>Use work policy</button>}</span>
-      : <>Policy: <b>{c.pol[k] ?? '—'}</b></>}</small>}
     {e && <small style={{ color: 'var(--bad)' }} role="alert">{e}</small>}
   </div>;
 }
@@ -95,38 +69,33 @@ function Radios({ k, opts, value, onPick }: { k: string; opts: [string, string][
   return <div className="row" style={{ gap: 14 }}>{opts.map(([v, l]) => <label key={v} className="chkl"><input type="radio" name={`sf-${k}`} checked={value === v} onChange={() => onPick(v)} />{l}</label>)}</div>;
 }
 
-/** A duration (hours and minutes) rule. */
-function Dur({ c, k, three }: { c: Ctx; k: keyof Rules; three?: boolean }) {
-  return <input type="text" inputMode="numeric" placeholder={three ? 'HHH:MM' : 'HH:MM'} value={(c.r as any)[k] ?? ''} onChange={(e) => c.setR(k, e.target.value.trim())} style={{ maxWidth: 160 }} />;
-}
-
-function AdjBox({ c, k, label, help }: { c: Ctx; k: 'weeklyAdj' | 'monthlyAdj'; label: string; help: string }) {
-  const v = c.r[k];
-  return <Box c={c} k={k} label={label} help={help}>
-    <div className="row" style={{ gap: 8 }}>
-      <label className="chkl"><input type="checkbox" aria-label={label} checked={!!v?.on} onChange={(e) => c.setR(k, e.target.checked ? { on: true, hours: v?.hours || '' } : undefined)} />On</label>
-      <input type="text" placeholder="HHH:MM" aria-label={label + ' hours'} disabled={!v?.on} value={v?.hours ?? ''} onChange={(e) => c.setR(k, { on: true, hours: e.target.value.trim() })} style={{ maxWidth: 120 }} />
-    </div>
-  </Box>;
-}
-
-/** Active locations grouped by city, as checkboxes. */
-function LocChecks({ locs, sel, set }: { locs: any[]; sel: string[]; set: (v: string[]) => void }) {
+/** Department and Location pickers (All, or one active item) with an Add button. */
+function PairPicker({ depts, locs, onAdd, busy }: { depts: any[]; locs: any[]; onAdd: (p: Pair) => void; busy?: boolean }) {
+  const [p, setP] = useState<Pair | null>(null);
   const cities = [...new Set(locs.map((l) => l.city))];
-  return <>{cities.map((c) => <div key={c}>
-    <div className="mute" style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em' }}>{c}</div>
-    {locs.filter((l) => l.city === c).map((l) => <label key={l.id} className="chkl"><input type="checkbox" checked={sel.includes(l.id)} onChange={(e) => set(e.target.checked ? [...sel, l.id] : sel.filter((x) => x !== l.id))} />{l.name}</label>)}
-  </div>)}</>;
+  return <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+    <label className="field" style={{ minWidth: 200 }}><span>Department</span>
+      <select value={p?.departmentId ?? '-'} onChange={(e) => setP({ departmentId: e.target.value, locationId: p?.locationId ?? '-' })}>
+        <option value="-" disabled>Choose a department</option>
+        <option value="">All departments</option>{depts.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
+    <label className="field" style={{ minWidth: 220 }}><span>Location</span>
+      <select value={p?.locationId ?? '-'} onChange={(e) => setP({ departmentId: p?.departmentId ?? '-', locationId: e.target.value })}>
+        <option value="-" disabled>Choose a location</option>
+        <option value="">All locations</option>
+        {cities.map((c) => <optgroup key={c} label={c}>{locs.filter((l) => l.city === c).map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</optgroup>)}</select></label>
+    <button type="button" className="btn" disabled={busy || !p || p.departmentId === '-' || p.locationId === '-'} onClick={() => { onAdd(p!); setP(null); }}>Add row</button>
+  </div>;
 }
 
-export default function ShiftForm({ id, locs, edit, onBack }: { id: string | null; locs: any[]; edit: boolean; onBack: (changed: boolean) => void }) {
+export default function ShiftForm({ id, locs, depts, edit, onBack }: { id: string | null; locs: any[]; depts: any[]; edit: boolean; onBack: (changed: boolean) => void }) {
   const [sid, setSid] = useState(id);
   const [view, setView] = useState<any>(null);
   const [loadErr, setLoadErr] = useState('');
   const [f, setF] = useState<Form | null>(null);
-  const [err, setErr] = useState<{ msg: string; field?: string } | null>(null);
+  const [err, setErr] = useState<Err>(null);
   const [ask, setAsk] = useState<{ from: string; note: string } | null>(null);
   const [saved, setSaved] = useState(false);
+  const [busy, setBusy] = useState(false);
   useEffect(() => {
     let live = true;
     api(`/shifts/${sid ?? 'new'}`).then((v) => { if (!live) return; setView(v); setF(v.shift ? formOf(v) : blank()); }).catch((e) => live && setLoadErr(e.message));
@@ -135,37 +104,37 @@ export default function ShiftForm({ id, locs, edit, onBack }: { id: string | nul
   if (loadErr) return <div className="note bad">{loadErr}</div>;
   if (!view || !f) return <Loading />;
 
-  const pd = view.policyDefaults || { text: {}, value: {} };
-  const P: Record<string, string> = pd.text || {};
+  const pd = view.policyDefaults || {};
   const r = f.rules;
   const set = (patch: Partial<Form>) => { setF({ ...f, ...patch }); setErr(null); };
   const setR = (k: keyof Rules, v: any) => { const x = { ...r }; if (v === undefined || v === '') delete x[k]; else (x as any)[k] = v; set({ rules: x }); };
   const nextDay = r.nextDay ?? crosses(f.startTime, f.endTime);
-  // Fallbacks that depend on this shift's own values.
-  const pol: Record<string, string> = {
-    ...P, forcedOut: `Shift end (${f.endTime || '—'})`, officeHours: `Full day rule (${r.fullAbove || P.fullAbove})`,
-  };
+  const split = !!(f.start2Time || f.end2Time);
+  const deptName = (id: string) => (id ? depts.find((d) => d.id === id)?.name ?? id : 'All departments');
+  const locName = (id: string) => (id ? locs.find((l) => l.id === id)?.name ?? id : 'all locations');
+  const pairLabel = (p: Pair) => `${deptName(p.departmentId)} at ${locName(p.locationId)}`;
 
-  const c: Ctx = { r, pol, err, edit, setR };
   /** Checks on screen before the server's own (the server says the same and more). */
-  const check = (): { msg: string; field?: string } | null => {
+  const check = (): Err => {
     if (!f.name.trim()) return { field: 'name', msg: 'Enter the shift name' };
     if (!sid && !/^[A-Za-z0-9][A-Za-z0-9-]{0,9}$/.test(f.code.trim())) return { field: 'code', msg: 'Enter a short code: letters and digits, up to 10' };
     if (!TIME.test(f.startTime)) return { field: 'startTime', msg: 'Start time must be HH:MM' };
     if (!TIME.test(f.endTime)) return { field: 'endTime', msg: 'End time must be HH:MM' };
-    if (f.locMode === 'some' && !f.locIds.length) return { field: 'locationIds', msg: 'Pick at least one location' };
-    for (const k of ['earlyInMax', 'lateOutMax', 'officeHours', 'maxHours', 'absentBelow', 'halfBelow', 'fullAbove'] as (keyof Rules)[]) {
-      const v = r[k] as string | undefined;
-      if (v && !DUR.test(v)) return { field: k, msg: 'Enter hours and minutes, HH:MM, for example 4:30' };
+    if (split) {
+      if (!TIME.test(f.start2Time)) return { field: 'start2Time', msg: 'Second part start must be HH:MM. Leave both second part times empty for a shift in one part' };
+      if (!TIME.test(f.end2Time)) return { field: 'end2Time', msg: 'Second part end must be HH:MM. Leave both second part times empty for a shift in one part' };
+      if (nextDay || crosses(f.startTime, f.endTime)) return { field: 'end2Time', msg: 'A split shift must start and end on the same day: the first part must end after it starts' };
+      if (mins(f.start2Time)! <= mins(f.endTime)!) return { field: 'start2Time', msg: `The second part must start after the first part ends (${f.endTime})` };
+      if (mins(f.end2Time)! <= mins(f.start2Time)!) return { field: 'end2Time', msg: 'The second part must end after it starts, on the same day' };
     }
-    if (r.forcedOut && !TIME.test(r.forcedOut)) return { field: 'forcedOut', msg: 'Forced time out must be a time, HH:MM' };
-    for (const k of ['weeklyAdj', 'monthlyAdj'] as const) if (r[k]?.on && !DUR3.test(r[k]!.hours || '')) return { field: k, msg: 'Enter the hours it can cover, HHH:MM, for example 4:00' };
+    if (!sid && !f.maps.length) return { field: 'maps', msg: 'Add at least one row: the department and location the shift applies to (either may be All)' };
     return null;
   };
   const save = async () => {
     const a = ask!;
-    const body = { code: f.code.trim(), name: f.name.trim(), effectiveFrom: a.from, startTime: f.startTime, endTime: f.endTime, breakMinutes: +f.breakMinutes || 0,
-      locationIds: f.locMode === 'all' ? null : f.locIds, rules: { ...r, nextDay }, note: a.note.trim() };
+    const body: Record<string, any> = { code: f.code.trim(), name: f.name.trim(), effectiveFrom: a.from, startTime: f.startTime, endTime: f.endTime, start2Time: f.start2Time, end2Time: f.end2Time,
+      breakMinutes: +f.breakMinutes || 0, rules: { ...r, nextDay }, note: a.note.trim() };
+    if (!sid) body.maps = f.maps;
     try {
       const v = sid ? await api(`/shifts/${sid}`, { method: 'PUT', body }) : await api('/shifts', { body });
       toast(`Saved. The shift applies from ${fmtD(a.from)}`);
@@ -180,14 +149,30 @@ export default function ShiftForm({ id, locs, edit, onBack }: { id: string | nul
   };
   const askSave = () => { const e = check(); if (e) { setErr(e); return; } setAsk({ from: f.effectiveFrom || today(), note: '' }); };
 
+  // Rows of a saved shift change at once, each on its own (audited, in the mapping history).
+  const rowCall = async (path: string, method: string, body?: any, done?: string) => {
+    setBusy(true);
+    try {
+      const v = await api(`/shifts/${sid}/maps${path}`, { method, body });
+      setView(v); setSaved(true);
+      toast((done ?? 'Saved') + (v.outsideNow ? `. ${v.outsideNow} ${v.outsideNow === 1 ? 'person' : 'people'} on this shift ${v.outsideNow === 1 ? 'is' : 'are'} outside its rows now: their roster stays, a new assignment is refused` : ''));
+    } catch (x: any) { toast(x.message); } finally { setBusy(false); }
+  };
+  const addLocal = (p: Pair) => {
+    if (f.maps.some((m) => m.departmentId === p.departmentId && m.locationId === p.locationId)) { setErr({ field: 'maps', msg: `${pairLabel(p)} is already in the list` }); return; }
+    set({ maps: [...f.maps, p] });
+  };
+
   const vers: any[] = view.versions || [];
+  const rows: any[] = view.maps || [];
+  const hist: any[] = view.mapHistory || [];
   const t = today();
   return <>
     <div className="row sp" style={{ marginBottom: 14 }}>
       <div><h2 style={{ margin: 0 }}>{sid ? `Set shift: ${view.shift?.name ?? f.name}` : 'Add shift'}{sid && <span className="mono mute" style={{ fontSize: 14, marginLeft: 8 }}>{view.shift?.code}</span>}</h2>
         <div className="mute" style={{ fontSize: 12.5, marginTop: 4 }}>
-          {sid ? <>In effect today: {view.current?.startTime}–{view.current?.endTime}, from {view.current?.effectiveFrom === '2000-01-01' ? 'the start' : fmtD(view.current?.effectiveFrom)}. </> : null}
-          Empty rules follow the work policy{pd.policy ? <> (<b>{pd.policy}</b>{pd.employees ? `, ${pd.employees} on this shift` : ''})</> : null}.</div></div>
+          {sid ? <>In effect today: {timingText(view.current?.startTime, view.current?.endTime, view.current?.start2Time, view.current?.end2Time)}, from {view.current?.effectiveFrom === '2000-01-01' ? 'the start' : fmtD(view.current?.effectiveFrom)}. </> : null}
+          The work policy decides the attendance rules{pd.policy ? <> (<b>{pd.policy}</b>{pd.employees ? `, ${pd.employees} on this shift` : ''})</> : null}.</div></div>
       <div className="row"><button className="btn" onClick={() => onBack(saved)}>Back to shifts</button>{edit && <button className="btn primary" onClick={askSave}>Save</button>}</div>
     </div>
     {!edit && <div className="note" style={{ marginBottom: 14 }}>You can view this shift. Changing it needs the Masters: job right.</div>}
@@ -195,83 +180,74 @@ export default function ShiftForm({ id, locs, edit, onBack }: { id: string | nul
     <fieldset disabled={!edit} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
       <div className="card" style={{ marginBottom: 14 }}><h3>Shift</h3>
         <div className="form">
-          <Box c={c} k="name" label="Shift name" req noPol><input type="text" value={f.name} placeholder="Shift name" onChange={(e) => set({ name: e.target.value })} /></Box>
-          <Box c={c} k="code" label="Code" req noPol help={sid ? 'The code cannot change.' : 'Used on the roster, for example N2.'}><input type="text" value={f.code} disabled={!!sid} onChange={(e) => set({ code: e.target.value.toUpperCase() })} /></Box>
-          <Box c={c} k="effectiveFrom" label="Shift effective date" req noPol help={view.lockedUntil ? `Attendance is locked by payroll up to ${fmtD(view.lockedUntil)}.` : 'Days before this date keep the earlier version.'}>
+          <Box err={err} k="name" label="Shift name" req><input type="text" value={f.name} placeholder="Shift name" onChange={(e) => set({ name: e.target.value })} /></Box>
+          <Box err={err} k="code" label="Code" req help={sid ? 'The code cannot change.' : 'Used on the roster, for example N2.'}><input type="text" value={f.code} disabled={!!sid} onChange={(e) => set({ code: e.target.value.toUpperCase() })} /></Box>
+          <Box err={err} k="effectiveFrom" label="Shift effective date" req help={view.lockedUntil ? `Attendance is locked by payroll up to ${fmtD(view.lockedUntil)}.` : 'Days before this date keep the earlier version.'}>
             <input type="date" value={f.effectiveFrom} onChange={(e) => set({ effectiveFrom: e.target.value })} /></Box>
-          <Box c={c} k="startTime" label="Start time" req noPol><input type="time" value={f.startTime} onChange={(e) => set({ startTime: e.target.value })} /></Box>
-          <Box c={c} k="endTime" label="End time" req noPol><input type="time" value={f.endTime} onChange={(e) => set({ endTime: e.target.value })} /></Box>
-          <Box c={c} k="nextDay" label="Shift ending next day" noPol help={nextDay ? 'Yes: the day is built from the punches between the start and the next morning\'s end (4:00 either side unless the punch limits below are set).' : 'Set from the times. Yes needs an end at or before the start.'}>
+          <Box err={err} k="startTime" label="Start time" req><input type="time" value={f.startTime} onChange={(e) => set({ startTime: e.target.value })} /></Box>
+          <Box err={err} k="endTime" label={split ? 'End time (first part)' : 'End time'} req><input type="time" value={f.endTime} onChange={(e) => set({ endTime: e.target.value })} /></Box>
+          <Box err={err} k="start2Time" label="Second part start" help="Optional, for a split shift such as 06:00–10:00 and 15:00–19:00. The gap between the parts is the break and never counts as hours. Both parts are on the same day.">
+            <input type="time" value={f.start2Time} onChange={(e) => set({ start2Time: e.target.value })} /></Box>
+          <Box err={err} k="end2Time" label="Second part end" help={split ? <>Hours are the time worked in both parts added together. The late mark is measured from the first part's start. <button type="button" className="btn sm" style={{ padding: '1px 8px', fontSize: 11 }} onClick={() => set({ start2Time: '', end2Time: '' })}>No second part</button></> : 'Leave both second part times empty for a shift in one part.'}>
+            <input type="time" value={f.end2Time} onChange={(e) => set({ end2Time: e.target.value })} /></Box>
+          <Box err={err} k="nextDay" label="Shift ending next day" help={nextDay ? 'Yes: the day is built from the punches between the start and the next morning\'s end (4:00 either side unless the work policy sets a maximum early in or late out punch).' : 'Set from the times. Yes needs an end at or before the start.'}>
             <Radios k="nextDay" opts={[['yes', 'Yes'], ['no', 'No']]} value={nextDay ? 'yes' : 'no'} onPick={(v) => setR('nextDay', v === 'yes')} /></Box>
-          <Box c={c} k="breakMinutes" label="Break minutes" noPol help="Shown on the shift for information. No break is taken off the hours worked: they run from the in punch to the out punch."><input type="number" min={0} value={f.breakMinutes} onChange={(e) => set({ breakMinutes: e.target.value })} /></Box>
-          <Box c={c} k="locationIds" label="Locations" noPol wide help="Forms and rosters show only shifts valid for the location.">
-            <select value={f.locMode} onChange={(e) => set({ locMode: e.target.value as 'all' | 'some' })} style={{ maxWidth: 260 }}><option value="all">All locations</option><option value="some">Selected locations only</option></select>
-            {f.locMode === 'some' && <div className="chkgrp"><LocChecks locs={locs} sel={f.locIds} set={(ids) => set({ locIds: ids })} /></div>}
-          </Box>
+          <Box err={err} k="breakMinutes" label="Break minutes" help={split ? 'Shown on the shift for information. On a split shift only the gap between the parts is taken off the hours worked.' : 'Shown on the shift for information. No break is taken off the hours worked: they run from the in punch to the out punch.'}><input type="number" min={0} value={f.breakMinutes} onChange={(e) => set({ breakMinutes: e.target.value })} /></Box>
         </div>
       </div>
 
-      <div className="card" style={{ marginBottom: 14 }}><h3>Punch rules</h3>
-        <div className="form">
-          <Box c={c} k="startFrom" label="Consider shift start from" help="Shift start time: hours count from the shift start, so arriving early adds nothing. In punch: from the in punch.">
-            <Radios k="startFrom" opts={CHOICES.startFrom} value={r.startFrom} onPick={(v) => setR('startFrom', v)} /></Box>
-          <Box c={c} k="endFrom" label="Consider shift end from" help="Shift end time: hours stop at the shift end, so staying late adds nothing. Out punch: to the out punch.">
-            <Radios k="endFrom" opts={CHOICES.endFrom} value={r.endFrom} onPick={(v) => setR('endFrom', v)} /></Box>
-          <Box c={c} k="addMissingOut" label="Add missing last out entry" help="When the out punch is missing, the day gets an out time (the forced time out, else the shift end) instead of Missing out punch.">
-            <Radios k="addMissingOut" opts={[['yes', 'Yes'], ['no', 'No']]} value={r.addMissingOut === undefined ? undefined : r.addMissingOut ? 'yes' : 'no'} onPick={(v) => setR('addMissingOut', v === 'yes')} /></Box>
-          <Box c={c} k="forcedOut" label="Forced time out" help="The out time used by Add missing last out entry.">
-            <input type="time" value={r.forcedOut ?? ''} onChange={(e) => setR('forcedOut', e.target.value)} style={{ maxWidth: 160 }} /></Box>
-          <Box c={c} k="earlyInMax" label="Maximum early in punch allowed" help="A punch earlier than the shift start minus this is not taken as this shift's in punch. Setting it builds the day from the shift's punch window (4:00 when not set).">
-            <Dur c={c} k="earlyInMax" /></Box>
-          <Box c={c} k="lateOutMax" label="Maximum late out punch allowed" help="A punch later than the shift end plus this is not taken as this shift's out punch (4:00 when not set and the day uses a window).">
-            <Dur c={c} k="lateOutMax" /></Box>
-          <Box c={c} k="officeHours" label="Office hour time" help="The hours a day of this shift should have. Short and extra hours are measured against it."><Dur c={c} k="officeHours" /></Box>
-          <Box c={c} k="shiftIn" label="Consider shift in" help={<>Select if attendance needs to be considered in current day. Previous day: counted on the day before it starts (a 00:30–08:30 duty on the evening's date). Next day: on the day after it starts.</>}>
-            <Radios k="shiftIn" opts={CHOICES.shiftIn} value={r.shiftIn} onPick={(v) => setR('shiftIn', v)} /></Box>
-        </div>
-      </div>
-
-      <div className="card" style={{ marginBottom: 14 }}><h3>Single punch rules</h3>
-        <div className="form">
-          <Box c={c} k="singlePunch" label="Mark 'Single punch' as" wide help="A day with only one punch (and no forced out) counts as this. The day still shows the missing punch, so it can be regularized.">
-            <Radios k="singlePunch" opts={CHOICES.singlePunch} value={r.singlePunch} onPick={(v) => setR('singlePunch', v)} /></Box>
-        </div>
-      </div>
-
-      <div className="card" style={{ marginBottom: 14 }}><h3>Attendance rules</h3>
-        <div className="form">
-          <Box c={c} k="maxHours" label="Max Hrs:mins" help="Hours counted for a day are capped at this."><Dur c={c} k="maxHours" /></Box>
-          <Box c={c} k="basedOn" label="Attendance based on" help="Hours: worked hours against the rules below. Shift: only hours inside the shift count. Punch: any in punch on a working day makes it a full day; the hour rules are not used.">
-            <select value={r.basedOn ?? ''} onChange={(e) => setR('basedOn', e.target.value)}><option value="">Select attendance based on</option>{CHOICES.basedOn.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Box>
-          <Box c={c} k="absentBelow" label="Absent rule <" help="Worked less than this: Absent."><Dur c={c} k="absentBelow" /></Box>
-          <Box c={c} k="halfBelow" label="Half day rule <" help="Worked less than this (and not absent): Half day."><Dur c={c} k="halfBelow" /></Box>
-          <Box c={c} k="fullAbove" label="Full day rule >" help="Worked this or more: a full day. Between the half day and full day rules the day is Short hours: present, with the missing hours covered by the adjustments below, else a half day.">
-            <Dur c={c} k="fullAbove" /></Box>
-          <AdjBox c={c} k="weeklyAdj" label="Weekly adjustment" help="Extra hours in the same Monday–Sunday week cover Short hours days, oldest first, up to this many hours a week. A day not covered becomes a half day." />
-          <AdjBox c={c} k="monthlyAdj" label="Monthly adjustment" help="The same over the month, after the weekly adjustment, up to this many hours a month." />
-          <Box c={c} k="shortfall" label="Inclusion in shortfall hours" help="Hours worked on these days also count as extra hours for the adjustments.">
-            {([['wo', 'Weekly-off working hours'], ['hol', 'Holiday working hours'], ['optHol', 'Optional holiday working hours']] as [keyof Incl, string][]).map(([k, l]) =>
-              <label key={k} className="chkl"><input type="checkbox" checked={!!r.shortfall?.[k]} onChange={(e) => { const s = { ...(r.shortfall || {}), [k]: e.target.checked || undefined }; setR('shortfall', Object.values(s).some(Boolean) ? s : undefined); }} />{l}</label>)}</Box>
-        </div>
-        <p className="mute" style={{ fontSize: 12, margin: '12px 0 0' }}>Not here yet: Consider NA, Configurable attendance calculation and IS consider first entry in last entry out. The app always uses the first in and the last out.</p>
+      <div className="card" style={{ marginBottom: 14 }}><h3>Applies to</h3>
+        <p className="mute" style={{ fontSize: 12.5, marginTop: -6 }}>Department + Location rows; either may be All. Forms, rosters and uploads offer the shift to an employee only when a switched-on row matches their department and location. People already on the shift whom no row covers keep it: their roster stays, a new assignment is refused.</p>
+        {err?.field === 'maps' && <div className="note bad" role="alert" style={{ marginBottom: 10 }}>{err.msg}</div>}
+        {!sid ? <>
+          {f.maps.length ? <div className="tw" style={{ marginBottom: 10 }}><table>
+            <thead><tr><th>Department</th><th>Location</th><th></th></tr></thead>
+            <tbody>{f.maps.map((m, i) => <tr key={i}><td>{deptName(m.departmentId)}</td><td>{m.locationId ? locName(m.locationId) : 'All locations'}</td>
+              <td><button type="button" className="btn sm" onClick={() => set({ maps: f.maps.filter((_, j) => j !== i) })}>Remove</button></td></tr>)}</tbody>
+          </table></div> : <p className="mute" style={{ fontSize: 12.5 }}>No rows yet. Add at least one.</p>}
+          {edit && <PairPicker depts={depts} locs={locs} onAdd={addLocal} />}
+        </> : <>
+          {view.outside > 0 && <div className="note" style={{ marginBottom: 10 }}>{view.outside} {view.outside === 1 ? 'person' : 'people'} on this shift {view.outside === 1 ? 'is' : 'are'} outside its rows: their roster stays, a new assignment of the shift to them is refused.</div>}
+          <div className="tw" style={{ marginBottom: 10 }}><table>
+            <thead><tr><th>Department</th><th>Location</th><th>On</th><th>Added</th><th>Last switched</th>{edit && <th></th>}</tr></thead>
+            <tbody>{rows.map((m) => <tr key={m.id}>
+              <td>{m.department}</td><td>{m.location}</td>
+              <td><Switch on={!!m.on} disabled={!edit || busy} label={`${m.label} on`} onChange={() => rowCall(`/${m.id}`, 'PUT', { on: !m.on }, m.on ? 'Switched off' : 'Switched on')} /></td>
+              <td className="mute" style={{ fontSize: 12 }}>{m.createdBy || '—'}{m.createdAt ? ` · ${fmtD(m.createdAt)}` : ''}</td>
+              <td className="mute" style={{ fontSize: 12 }}>{m.changedBy ? `${m.changedBy} · ${fmtD(m.changedAt)}` : '—'}</td>
+              {edit && <td><button type="button" className="btn sm" disabled={busy} onClick={() => { if (window.confirm(`Remove ${m.label} from this shift? The history keeps it.`)) rowCall(`/${m.id}`, 'DELETE', undefined, 'Removed'); }}>Remove</button></td>}
+            </tr>)}</tbody>
+          </table></div>
+          {edit && <PairPicker depts={depts} locs={locs} busy={busy} onAdd={(p) => rowCall('', 'POST', p, `Added ${pairLabel(p)}`)} />}
+        </>}
       </div>
     </fieldset>
 
-    {sid && <div className="card"><h3>Version history</h3>
+    {sid && <div className="card" style={{ marginBottom: 14 }}><h3>Version history</h3>
       <div className="tw"><table>
         <thead><tr><th>Effective from</th><th>Timings</th><th>What changed</th><th>By</th><th>Saved</th><th>Note</th></tr></thead>
         <tbody>{vers.map((v, i) => <tr key={v.id ?? i}>
           <td className="mono">{v.effectiveFrom === '2000-01-01' ? 'The start' : fmtD(v.effectiveFrom)}{' '}{v.current ? <Pill k="ok">In effect</Pill> : v.effectiveFrom > t ? <Pill k="warn">Upcoming</Pill> : null}</td>
-          <td className="mono">{v.startTime}–{v.endTime}{v.breakMinutes ? ` · ${v.breakMinutes} min break` : ''}</td>
+          <td className="mono">{timingText(v.startTime, v.endTime, v.start2Time, v.end2Time)}{v.breakMinutes ? ` · ${v.breakMinutes} min break` : ''}</td>
           <td className="ink2" style={{ fontSize: 12.5 }}>{changes(v, vers[i + 1]).map((c, j) => <div key={j}>{c}</div>)}</td>
           <td>{v.createdBy || '—'}</td><td className="mute">{v.createdAt ? fmtD(v.createdAt) : '—'}</td><td className="ink2">{v.note || '—'}</td>
         </tr>)}</tbody>
       </table></div>
     </div>}
 
+    {sid && <div className="card"><h3>Applies to: history</h3>
+      {!hist.length ? <p className="mute" style={{ margin: 0 }}>No changes yet.</p> : <div className="tw"><table>
+        <thead><tr><th>When</th><th>By</th><th>Change</th></tr></thead>
+        <tbody>{hist.map((h, i) => <tr key={i}>
+          <td className="mute" style={{ whiteSpace: 'nowrap' }}>{h.at ? fmtD(h.at) : '—'}</td><td>{h.by || '—'}</td>
+          <td className="ink2" style={{ fontSize: 12.5 }}>{(h.changes || []).map((c: any, j: number) => <div key={j}>{String(c.field || '').replace(/^Applies to: /, '')}: {c.from || 'new'} → {c.to}{c.note ? <span className="mute"> · {c.note}</span> : null}</div>)}</td>
+        </tr>)}</tbody>
+      </table></div>}
+    </div>}
+
     {ask && <Modal onClose={() => setAsk(null)}>
       <h2>Save {f.name || 'the shift'}</h2>
-      <p className="ink2">The timings and rules apply from this date. Days before it keep the earlier version. A date in a month whose attendance is locked by payroll is refused.</p>
+      <p className="ink2">The timings apply from this date. Days before it keep the earlier version. A date in a month whose attendance is locked by payroll is refused.{!sid ? ' The rows under Applies to take effect at once.' : ''}</p>
       <div className="grid g2" style={{ margin: '10px 0' }}>
         <label className="field"><span>Effective from</span><input type="date" value={ask.from} onChange={(e) => setAsk({ ...ask, from: e.target.value })} /></label>
         <label className="field"><span>Note for the history (optional)</span><input type="text" value={ask.note} onChange={(e) => setAsk({ ...ask, note: e.target.value })} /></label>

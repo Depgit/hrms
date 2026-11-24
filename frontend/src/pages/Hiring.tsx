@@ -230,7 +230,8 @@ export function EmployeeLifecycle({ id }: { id: string }) {
           {' '}· Stage {data.stage ? <><Pill k="info">{data.stage}</Pill>{data.stageSince ? <span className="mute"> since {fmtD(data.stageSince)}</span> : null}</> : <span className="mute">not set</span>}
           {data.aliases?.length > 0 && <span className="mute"> · also found as {data.aliases.join(', ')}</span>}</div>
         {data.hireIds && <div className="ink2" style={{ fontSize: 13, marginTop: 4 }}>Shortlisting ID <b className="mono">{data.hireIds.si}</b> · Offer ID <b className="mono">{data.hireIds.oi}</b> · Joining ID <b className="mono">{data.hireIds.ji}</b>
-          {data.hireIds.via === 'import' && <span className="mute"> · one number from the candidate series, given at import</span>}</div>}</div>
+          {data.hireIds.via === 'code' && <span className="mute"> · from the Employee code</span>}
+          {data.hireIds.via === 'import' && <span className="mute"> · a number of the candidate series (the Employee code’s number was taken or missing)</span>}</div>}</div>
       {data.canSetStage && <label className="field" style={{ margin: 0 }}><span>Set the stage</span><select value={ask} onChange={(e) => setAsk(e.target.value)}><option value="">Choose</option>
         {(data.stages as string[]).filter((s) => s !== 'Joining' && s !== data.stage).map((s) => <option key={s}>{s}</option>)}</select></label>}
     </div>

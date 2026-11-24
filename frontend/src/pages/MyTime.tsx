@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { api, fmtD, recentYm, today } from '../api';
 import { useAuth } from '../auth';
 import { Field, Loading, Pill, toast, useLoad } from '../components/ui';
-import { RegularizeModal, hrs, ymLabel } from './Attendance';
+import { RegularizeModal, extraPills, hrs, ymLabel } from './Attendance';
 
 const tone = (t: string) => (t || 'n') as 'ok' | 'warn' | 'bad' | 'info' | 'n';
 const DN = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -15,16 +15,17 @@ export function MyAttendance() {
   const { data, error, reload } = useLoad(() => api(`/attendance/month/me?ym=${ym}`), [ym]);
   const m = data?.month, c = m?.counts ?? {};
   const pend = new Set<string>((data?.pending ?? []).map((x: string) => x.slice(0, 10)));
-  const fix = (d: any) => ['No punch', 'Late'].includes(d.status) || /Missing/.test(d.status) || /^Absent/.test(d.status);
+  const fix = (d: any) => ['No punch', 'Late'].includes(d.status) || /Missing/.test(d.status) || /^Absent/.test(d.status) || !!d.reg; // reg: beyond a deviation allowance with an action
   const stat = (l: string, v: number) => <div className="card stat"><div className="l">{l}</div><div className="n">{v}</div></div>;
   return <>
     <div className="row" style={{ marginBottom: 12, gap: 10, flexWrap: 'wrap' }}><Field label="Month"><input type="month" value={ym} max={today().slice(0, 7)} onChange={(e) => e.target.value && setYm(e.target.value)} /></Field></div>
     {!m ? <Loading error={error} /> : <>
       <div className="grid g4" style={{ marginBottom: 14 }}>{stat('Present', (c.Present || 0) + (c.Late || 0))}{stat('Late marks', c.Late || 0)}{stat('Leave', (c['Paid leave'] || 0) + (c['Loss of pay leave'] || 0))}{stat('Loss of pay days', m.lop)}</div>
+      {extraPills(c).length > 0 && <div className="row" style={{ gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>{extraPills(c)}</div>}
       <div className="card"><div className="tw"><table><thead><tr><th>Date</th><th>Day</th><th>Status</th><th>In</th><th>Out</th><th className="num">Hours</th><th>Note</th><th></th></tr></thead><tbody>
         {m.days.map((d: any) => <tr key={d.date}>
           <td>{fmtD(d.date)}</td><td>{DN[new Date(d.date + 'T00:00:00').getDay()]}</td><td><Pill k={tone(d.tone)}>{d.status}</Pill></td><td>{d.in || '—'}</td><td>{d.out || '—'}</td><td className="num">{hrs(d.in, d.out)}</td>
-          <td className="mute" style={{ fontSize: 12.5 }}>{d.leave || ''}{pend.has(d.date) ? 'Request waiting for approval' : ''}{d.src === 'Regularized' ? ' Regularized' : ''}</td>
+          <td className="mute" style={{ fontSize: 12.5 }}>{d.leave || ''}{pend.has(d.date) ? 'Request waiting for approval' : ''}{d.src === 'Regularized' ? ' Regularized' : ''}{d.note ? <div>{d.note}</div> : null}</td>
           <td>{fix(d) && !pend.has(d.date) && d.date <= today() && <button className="btn sm" onClick={() => setReg({ employeeId: me!.ctx.employeeId, name: me!.ctx.name, date: d.date, rec: d })}>Regularize</button>}</td></tr>)}
       </tbody></table></div></div>
     </>}
