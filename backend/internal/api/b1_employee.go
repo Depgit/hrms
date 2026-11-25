@@ -48,7 +48,7 @@ func applyOfferExtras(ctx context.Context, tx store.Q, empID string, o store.Row
 			return err
 		}
 	}
-	if err := applyJoinPfChoice(ctx, tx, empID, d); err != nil { // "Do you want PF deducted?" (pfuan.go)
+	if err := applyJoinPfChoice(ctx, tx, empID, str(o["candidate_id"]), d); err != nil { // "Do you want PF deducted?" (pfuan.go, pf_offer.go)
 		return err
 	}
 	pc, _ := o["pan_check"].(map[string]any)

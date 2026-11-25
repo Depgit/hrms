@@ -757,7 +757,7 @@ await step('Onboarding: HR raises offer v1 under the same number, prefilled from
   const told = (await apiAs(await tokenFor('EMP-1002'), 'HR Admin', 'GET', '/notices')).notices.some((n) => n.text.includes('Meera Joshi was selected')) ? 'HR told' : 'HR not told';
   await click(/^Raise offer v1$/);
   const pre = await page.evaluate(() => __field('Personal email ID')?.value || '');
-  await fill('Date of joining', todayS); await fill('Grade', 'G3'); await fill('Role', 'Sales'); await fill('Skill', 'Accounts'); await fill('Monthly gross (₹)', '32000');
+  await fill('Date of joining', todayS); await fill('Grade', 'G3'); await fill('Role', 'Sales'); await fill('Skill', 'Accounts'); await fill('Monthly gross (₹)', '32000'); await fill('Does the employee want PF?', 'Yes');
   const up = await uploadRow('Aadhaar card', 'bill.pdf');
   await click('Send offer for approval'); return `${await toast()} · ${pre} · ${up} · ${told}`; }, '^Offer v1 for SI-\\d{4} sent for approval · meera.joshi@example.com · Attached bill.pdf · HR told$');
 await step('Onboarding: offer approved by its approvers (API), released, HR records Accepted: the Offer ID (OI), no Employee ID yet', async () => {

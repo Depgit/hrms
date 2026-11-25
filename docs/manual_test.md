@@ -1133,6 +1133,19 @@ Sign in as Payroll (EMP-1011), Payroll Manager (EMP-1012) or HR Admin (EMP-1002)
    the rule" hands it back to the rule. No reason: refused.
 7. Someone already paid PF in an earlier month is not changed when their gross or UAN answer changes.
 
+**M1c. PF on the offer (26 Nov 2026)**
+1. Raise an offer (Permanent): "Provident Fund › Does the employee want PF?" shows with Select; sending without an
+   answer lists "Does the employee want PF? Choose Yes or No". Switch the type to Retainer: the card disappears.
+2. No with gross ₹25,000: red note and the error "Gross is up to ₹25,000: an employee who does not want PF must be a
+   Retainer. Change the employment type to Retainer."; sending refused.
+3. No with gross ₹30,000: breakup Basic ₹30,000, HRA/SA 0, no employee or employer PF; letter says PF not deducted.
+   Approve, release, accept, Mark joined: PF card shows PF exempt, "No PF: paid as all Basic", by Offer. Timeline has
+   "PF choice on the offer".
+4. Yes: normal Basic/HRA/SA with PF.
+5. Offer No, then joining details (HR or the joiner's link) "Do you want PF deducted?" prefilled No; change to Yes:
+   offer breakup returns to normal; after Mark joined the employee is a PF member (by Joining form); timeline "PF
+   choice changed on the joining details/form".
+
 **M1b. PF choice, UAN number and one medical plan (19 Nov 2026)**
 1. Payroll › PF for new joiners shows ₹25,000 when the company never saved a value (a saved value is kept).
 2. Joining details (HR form and the joiner's link) of a Permanent joiner with gross ₹30,000: Existing UAN available?

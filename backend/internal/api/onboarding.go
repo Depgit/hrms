@@ -244,7 +244,8 @@ func (f onbField) applies(typ string, data map[string]string) bool {
 }
 
 // asked: the fields asked only on an answer (owner, 19 Nov 2026): the UAN number when an existing UAN was declared,
-// the spouse's name when married, and the PF choice when there is no UAN and the gross is above the threshold.
+// the spouse's name when married, and the PF choice when there is no UAN and the gross is above the threshold, or
+// when the offer said No to PF (owner, 26 Nov 2026; pf_offer.go).
 func (f onbField) asked(d map[string]string) bool {
 	switch f.Key {
 	case "uan":
@@ -252,7 +253,7 @@ func (f onbField) asked(d map[string]string) bool {
 	case "spouse":
 		return d["marital"] == "Married"
 	case "pfChoice":
-		return pfChoiceAsked(d, f.Threshold)
+		return pfChoiceAsked(d, f.Threshold) || pfOfferNo(d)
 	}
 	return true
 }
@@ -736,6 +737,7 @@ func offerProblems(ctx context.Context, q store.Q, d map[string]string, docs map
 	}
 	checkFormat(d, &errs)
 	j := resolveJob(ctx, q, d, &errs)
+	offerPfProblems(ctx, q, j.Type, j.Gross, d, &errs)      // "Does the employee want PF?" (pf_offer.go)
 	jobMasterRequired(d, &errs)                             // Role and Skill, always, like the department (hirefix.go)
 	offerReimbProblems(ctx, q, j, d, &errs)                 // the Reimbursement: zero or more, on a structure that has it (reimb.go)
 	if err := accomProblems(ctx, q, d, &errs); err != nil { // Company accommodation: Yes needs a cluster with units (hst_auto.go)
@@ -817,8 +819,9 @@ func offerPay(ctx context.Context, q store.Q, j offerJob, d map[string]string) c
 	if j.LocID != "" {
 		in.Lwf = lwfFor(ctx, q, j.LocID, today())
 	}
-	// The candidate chose no PF (no UAN, gross above the threshold; pfuan.go): PF exempt, the fixed gross all Basic.
-	if t.Statutory && pfChoiceWord(d["pfChoice"]) == store.PfChoiceOptOut && pfChoiceAsked(d, loadPfRules(ctx, q).ExemptGross) {
+	// The candidate chose no PF (on the offer or the joining form, no existing UAN, gross above the threshold;
+	// pfuan.go, pf_offer.go): PF exempt, the fixed gross all Basic.
+	if t.Statutory && offerPfOptOut(d, j.Gross, loadPfRules(ctx, q).ExemptGross) {
 		in.PfExempt, in.AllBasic = true, true
 	}
 	if isDate(j.DOJ) {
@@ -1038,7 +1041,7 @@ func (s *Server) offerCheck(r *http.Request, c *Ctx) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]any{"errors": errs, "docs": docs}
+	out := map[string]any{"errors": errs, "docs": docs, "pfLimit": loadPfRules(ctx, s.st.DB).ExemptGross}
 	if j.Type != "" && j.Gross > 0 {
 		res := offerPay(ctx, s.st.DB, j, d)
 		out["breakup"], out["ctcYear"] = res, calc.Round2(res.CTC*12)
@@ -1131,6 +1134,7 @@ func (s *Server) offerCreate(r *http.Request, c *Ctx) (any, error) {
 	if len(errs) > 0 {
 		return nil, badD(fmt.Sprintf("%d thing%s to fix before sending", len(errs), map[bool]string{true: "", false: "s"}[len(errs) == 1]), errs)
 	}
+	offerPfData(j.Type, d) // the PF answer as saved, and the joining form's question prefilled (pf_offer.go)
 	band := bandOf(ctx, s.st.DB, j.CityID, j.Grade, j.Gross)
 	over := budgetOver(ctx, s.st.DB, j, "")
 	pos := "none"
@@ -1216,6 +1220,9 @@ func (s *Server) offerCreate(r *http.Request, c *Ctx) (any, error) {
 			Reason: fmt.Sprintf("%s, gross %s a month, joining %s", j.Type, rupees(j.Gross), longDate(j.DOJ))}); err != nil {
 			return err
 		}
+		if err := offerPfEvent(ctx, tx, c, b.Candidate, prev, d); err != nil { // the PF answer, or its change (pf_offer.go)
+			return err
+		}
 		req, err := s.createRequestTx(ctx, tx, c, "joining", id, offerFacts(j, band, over), map[string]string{"offerId": id, "candidateId": b.Candidate})
 		if err != nil {
 			return err
@@ -1228,7 +1235,8 @@ func (s *Server) offerCreate(r *http.Request, c *Ctx) (any, error) {
 		if b.AtJoining {
 			what = fmt.Sprintf("Raised offer v%d at joining for %s (%s)", version, j.Name, b.Candidate)
 		}
-		return audit(ctx, tx, c, what, "offer", id, nil, map[string]any{"type": j.Type, "gross": j.Gross, "budget": over, "band": pos, "candidate": b.Candidate, "atJoining": b.AtJoining})
+		return audit(ctx, tx, c, what, "offer", id, nil, map[string]any{"type": j.Type, "gross": j.Gross, "budget": over, "band": pos, "candidate": b.Candidate, "atJoining": b.AtJoining,
+			"pf": d["pfWant"]})
 	})
 	return out, err
 }
@@ -1629,14 +1637,19 @@ func offerBreakup(res calc.Result) string {
 			}
 		}
 	} else {
-		l = append(l, "Basic + DA: "+rupees(res.Basic)+" a month", "HRA: "+rupees(res.Hra)+" a month")
-		l = append(l, "Special allowance: "+rupees(res.Sa)+" a month")
+		l = append(l, "Basic + DA: "+rupees(res.Basic)+" a month")
+		if !res.PfExempt || res.Hra != 0 || res.Sa != 0 { // no PF by choice: the whole gross is Basic (pf_offer.go)
+			l = append(l, "HRA: "+rupees(res.Hra)+" a month", "Special allowance: "+rupees(res.Sa)+" a month")
+		}
 		if res.Reimb > 0 {
 			l = append(l, "Reimbursement (outside the gross): "+rupees(res.Reimb)+" a month")
 		}
 		if res.Variable > 0 {
 			l = append(l, "Variable pay: "+rupees(res.Variable)+" a month")
 		}
+	}
+	if res.PfExempt {
+		l = append(l, "Provident Fund: not deducted (the employee chose no PF)")
 	}
 	return strings.Join(l, "\n")
 }
@@ -1677,6 +1690,9 @@ func (s *Server) offerStep(r *http.Request, c *Ctx) (any, error) {
 			}
 			if o["at_joining"] == true { // offer_at_joining.go
 				return bad("An offer at joining is not released: Mark joined records the acceptance and gives the letter")
+			}
+			if err := offerPfRelease(ctx, tx, o); err != nil { // no PF on a gross up to the threshold (pf_offer.go)
+				return err
 			}
 			set := bson.D{{Key: "released_at", Value: now}}
 			if cand != "" {
@@ -1870,6 +1886,11 @@ func (s *Server) offerJoining(r *http.Request, c *Ctx) (any, error) {
 		mErrs = append(mErrs, rsErrs...)
 		if len(mErrs) > 0 {
 			return badD(mErrs[0], mErrs)
+		}
+		if v, ok := keep["pfChoice"]; ok { // the PF answer given in the joining details (pf_offer.go)
+			if err := joinPfEvent(ctx, tx, c, o, fmt.Sprint(v), "the joining details"); err != nil {
+				return err
+			}
 		}
 		// The details sent are merged into the offer's form data; the other keys stay.
 		merge := bson.D{}

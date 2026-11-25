@@ -71,7 +71,7 @@ async function joiner(n, last, place) {
   await api('EMP-1009', 'Line Manager', `/candidates/${sl.id}/interview`, { date: today, result: 'Selected', feedback: 'Good with guests' });
   await upload(sl.id, 'aadhaar');
   const of = await api('EMP-1004', 'HRBP', '/offers', { candidate: sl.id, data: { first, last, type: 'Permanent', doj: today, dept: 'Front Office',
-    desig: 'Front Office Supervisor', grade: 'G3', city: place.city, loc: place.loc, gross: 26000, phone, email, jobRole: 'Front desk', jobSkill: 'Guest service' } });
+    desig: 'Front Office Supervisor', grade: 'G3', city: place.city, loc: place.loc, gross: 26000, phone, email, jobRole: 'Front desk', jobSkill: 'Guest service', pfWant: 'Yes' } });
   await approveAll(of.request.id);
   await api('EMP-1004', 'HRBP', `/offers/${of.id}/release`, {});
   await api('EMP-1004', 'HRBP', `/offers/${of.id}/accept`, {});

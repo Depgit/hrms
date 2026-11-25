@@ -32,11 +32,12 @@ const STAGES = ['Shortlisted', 'Interview', 'Offer', 'Offer at joining', 'Waitin
 const STAGE_LABEL: Record<string, string> = { Joined: 'Joined, approvals pending' };
 const GENDERS = ['Male', 'Female', 'Other', 'Prefer not to say'];
 /** Fields asked only on other answers (as the server's onbField.asked): UAN number when an existing UAN is declared,
- *  spouse name when married, the PF choice when there is no UAN and the gross is above the threshold (₹25,000). */
+ *  spouse name when married, the PF choice when there is no UAN and the gross is above the threshold (₹25,000), or when
+ *  the offer said No to PF (owner, 26 Nov 2026). */
 const asked = (f: { key: string; threshold?: number }, d: Data) =>
   f.key === 'uan' ? d.uanAvail === 'Yes'
     : f.key === 'spouse' ? d.marital === 'Married'
-      : f.key === 'pfChoice' ? d.uanAvail === 'No' && Number(d.gross) > (f.threshold || 25000)
+      : f.key === 'pfChoice' ? (d.pfWant === 'No' && d.uanAvail !== 'Yes') || (d.uanAvail === 'No' && Number(d.gross) > (f.threshold || 25000))
         : true;
 const PF_CHOICE_HINT = 'Yes: 12% of Basic is deducted for PF and the company adds its share; the salary is split into Basic, HRA and special allowance. No: no PF from you or the company, and the whole fixed salary is paid as Basic.';
 const fieldApplies = (f: SetupField, d: Data) => f.on && f.types.includes(d.type || 'Permanent') && asked(f, d);
@@ -498,6 +499,7 @@ function OfferForm({ cand, onBack, onSent }: { cand: any; onBack: () => void; on
   };
   const band = res?.band, gross = +d.gross || 0;
   const variable = rules?.[d.type]?.variable ?? d.type !== 'Retainer';
+  const statutory = rules?.[d.type]?.statutory ?? d.type === 'Permanent'; // PF applies: "Does the employee want PF?" is asked
   const pos = !gross ? '' : band?.position;
   return (
     <div className="grid split">
@@ -518,6 +520,7 @@ function OfferForm({ cand, onBack, onSent }: { cand: any; onBack: () => void; on
             <small className="mute">Paid on top of the gross like variable pay; the gross split is unchanged. Goes to the employee at joining.</small></label></div>}
           {sec === 'Compensation' && <OfferCtcEntry d={d} set={set} variable={variable} />}</div> : null;
         })}
+        {statutory && <PfWantCard d={d} set={set} show={show} limit={res?.pfLimit} />}
         <AccomCard d={d} set={set} show={show} />
         <div className="card"><h3>Documents for offer release</h3>
           <p className="mute" style={{ marginTop: -6, fontSize: 12 }}>Documents needed before the offer goes out. The rest are collected at joining. They are kept with {cand.id}.</p>
@@ -1012,6 +1015,20 @@ function OfferCtcEntry({ d, set, variable }: { d: Data; set: (k: string, v: stri
 
 /** "Company accommodation: Yes / No" on the offer (backend hst_auto.go): Yes needs a cluster with accommodation units;
  *  the joiner gets a bed there automatically when marked joined. No pay effect. */
+/** "Does the employee want PF?" on the offer (owner, 26 Nov 2026): required, no default; only for a type PF applies to.
+ *  No above the threshold = the whole gross as Basic with no PF; No up to it is refused (the type must be Retainer). */
+function PfWantCard({ d, set, show, limit }: { d: Data; set: (k: string, v: string) => void; show?: boolean; limit?: number }) {
+  const lim = limit || 25000;
+  const low = d.pfWant === 'No' && Number(d.gross) > 0 && Number(d.gross) <= lim;
+  return <div className="card"><h3>Provident Fund</h3><div className="form">
+    <label className={`field ${(show && !d.pfWant) || low ? 'err' : ''}`}><span>Does the employee want PF?<Req /></span>
+      <select value={d.pfWant ?? ''} onChange={(e) => set('pfWant', e.target.value)}><option value="">Select</option><option>Yes</option><option>No</option></select>
+      <small className="mute">Yes: the normal structure (Basic, HRA, special allowance) with PF. No: no PF from the employee or the company, and the whole gross is paid as Basic; only above {inr(lim)} a month, else the type must be Retainer. The joining form asks again and its answer wins.</small></label>
+  </div>
+    {low && <div className="note bad" style={{ marginTop: 8, fontSize: 13 }}>Gross is up to {inr(lim)}: an employee who does not want PF must be a Retainer. Change the employment type to Retainer.</div>}
+  </div>;
+}
+
 function AccomCard({ d, set, show, plain }: { d: Data; set: (k: string, v: string) => void; show?: boolean; plain?: boolean }) {
   const cl = useLoad(() => api('/hst/clusters'), []);
   const list: any[] = cl.data?.clusters ?? [];

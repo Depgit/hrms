@@ -514,7 +514,7 @@ type VDoc = { key: string; label: string; state: 'Mandatory' | 'Optional' | 'Oth
 const vStr = (m: Record<string, unknown> | null | undefined): Record<string, string> => Object.fromEntries(Object.entries(m || {}).filter(([, v]) => v != null && typeof v !== 'object').map(([k, v]) => [k, String(v)]));
 const vApplies = (f: VField, d: Record<string, string>) => f.key === 'uan' ? d.uanAvail === 'Yes'
   : f.key === 'spouse' ? d.marital === 'Married'
-    : f.key === 'pfChoice' ? d.uanAvail === 'No' && Number(d.gross) > (f.threshold || 25000)
+    : f.key === 'pfChoice' ? (d.pfWant === 'No' && d.uanAvail !== 'Yes') || (d.uanAvail === 'No' && Number(d.gross) > (f.threshold || 25000))
       : true;
 
 /** Open a document of a joining verification in a new tab (through the request, so whoever may see it may open it). */

@@ -867,6 +867,18 @@ Two payroll downloads next to the bank advice and the register, which are unchan
   or HR Admin, reason ≥ 5 characters, audited "PF choice changed", stale run) applies from the open payroll month;
   refused when there is a UAN, Existing UAN? is not No, the gross is not above the threshold, or (to No) the person was
   already paid PF. `PUT /api/employees/{id}/pf-choice {choice: member | optout, reason}`; `GET …/pf-exempt` has `choice`.
+- **PF on the offer (owner, 26 Nov 2026; `api/pf_offer.go`).** The offer form (normal and offer at joining) asks
+  **"Does the employee want PF?"** (`offer.data.pfWant` Yes/No, required, no default; hidden and ignored for a Retainer
+  or any type without PF). **No** with gross above `pf_exempt_gross`: the breakup and letter are the whole gross as
+  Basic with no PF (employee or employer); at Mark joined the employee gets `pf_choice` optout, `all_basic`, PF exempt
+  (`pf_choice_by` "Offer"). **No** with gross up to the threshold: check, raise and release refused with "Gross is up to
+  ₹<limit>: an employee who does not want PF must be a Retainer. Change the employment type to Retainer." **Yes**: the
+  normal structure (both PF shares from the salary under the all-inclusive gross). The answer is copied to
+  `data.pfChoice`, so the joining form asks again whenever the offer said No (and no existing UAN), prefilled; the
+  joining form's answer wins (`pf_choice_by` "Joining form"). A joiner's No on a gross up to the threshold is recorded,
+  not blocked: bell to HR Admin and Payroll at Edit, red line on the PF card (PF still applies); HR can set them back
+  to PF there. Timeline/audit: "PF choice on the offer" / "… changed on the offer", "PF choice (changed) on the
+  joining form / joining details", employee "PF choice recorded" / "PF choice changed". No migration.
 - **UAN number**: the joining form's UAN field is named "UAN number"; shown and required (12 digits) only when
   Existing UAN available? = Yes; saved as `employee_gov_id.uan` (what the UAN hold checks). Bulk update › Personal
   details has **UAN** (12 digits, government ID right at Edit, change history masked) before Existing UAN?, and a UAN
