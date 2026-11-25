@@ -165,7 +165,7 @@ func TestDeepPayrollRules(t *testing.T) {
 	t.Run("retainer TDS and contractual pay", func(t *testing.T) {
 		r := c.row(t, open, "EMP-1021")
 		calc := r["r"].(map[string]any)
-		if !near(num(calc["tds"]), num(r["earned"])*0.10, 0.01) || num(calc["eePF"]) != 0 || num(calc["eeESI"]) != 0 {
+		if !near(num(calc["tds"]), num(r["earned"])*0.01, 0.01) /* 1% (owner, 25 Nov 2026) */ || num(calc["eePF"]) != 0 || num(calc["eeESI"]) != 0 {
 			t.Fatalf("retainer: tds %v on %v, pf %v", calc["tds"], r["earned"], calc["eePF"])
 		}
 		k := c.row(t, open, "EMP-1014")["r"].(map[string]any)

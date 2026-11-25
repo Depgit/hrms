@@ -296,6 +296,11 @@ Start the API with `OTP_DEV_ECHO=true` and no `SMTP_HOST` (emails go to the API 
 - [ ] After a change, Check a flow shows the new route for a real employee, and All flows at a glance lists the
       rules in use in order with Otherwise last.
 - [ ] Approver names: "No one mapped for…" lists the gaps. "Check overlaps" shows when two people hold one place.
+- [ ] Approval flow, red "Approver names missing" box › **Bulk upload names** (26 Nov): Download template lists every
+      missing name once (Role, Level, Place, Place Code, Where, Needed By, Employee). Employee is a drop-down of active
+      employees "Name (EMP-…)". Pick two, leave the rest blank, Check file: two rows to apply, blanks "No change"; an
+      inactive person is refused. Apply: the box loses those two, Access › Role mapping shows the place added to the
+      person's mapping (or a new one). A role without Role mapping Edit does not see the button.
 - [ ] **My view has no Approvals** (9 Nov): an employee's requests start from their own pages (D18, D19, D9) and are
       followed on the Dashboard (D2). Check a flow is no longer reachable in My view; each request form shows its
       own approval route instead.
@@ -1506,9 +1511,9 @@ Work on a copy of the data. Sign in as HR Admin (EMP-1002).
 Work on a copy of the data. Sign in as HR Admin (EMP-1002). Never test against the live portal: the first live write
 is a real joiner (README, "Sending employees to the Realtime portal").
 
-1. **Not switched on.** With `realtime.Spec` empty: mark a candidate joined. Their Realtime portal card says "Waiting
-   to send" and "Sending is not switched on yet"; Attendance › Punch machine setup › Realtime portal lists them under
-   Waiting. There is no Send button anywhere.
+1. **Switched off (trial build with `Spec.Send = false` only; sending is on since 25 Nov).** Mark a candidate joined:
+   their Realtime portal card says "Waiting to send" and "Sending is switched off"; Attendance › Punch machine setup ›
+   Realtime portal lists them under Waiting. There is no Send button anywhere.
 2. **Rights.** An Employee sees no card; a role with `att.portal` View sees the card and the list, without Retry.
 3. **Mapping hold (fake or trial portal only).** Leave the joiner's department unmapped and mark them joined: the
    card shows "Held: mapping needed" with "Map the department … first"; you get a bell. Map it: within a minute the
@@ -1517,7 +1522,15 @@ is a real joiner (README, "Sending employees to the Realtime portal").
    update). Make them inactive: they are marked left with the leaving date.
 5. **Failure.** Make the (fake) portal refuse: the card shows "Failed" and the portal's words, you get a bell, and
    nothing is sent again by itself (wait two minutes; "Writes" still lists one). Press **Retry**: one more write.
-6. **Backlog.** With items Waiting, switch sending on (trial build): press **Send waiting (n)** once; each goes out.
+6. **Backlog.** With items Waiting (left from before 25 Nov, or a build with sending off), press **Send waiting (n)**
+   once; each goes out.
+7. **Punch machine on a create (25 Nov; fake or trial portal only).** Map a machine (serial as on the portal's
+   "Select Devices" list, e.g. RSS20230761581) to the joiner's property and mark them joined: the card's "Writes" line
+   reads "create · code … · saved · punch machine RSS20230761581 / Gulmohar Marg"; on the portal the employee's Select
+   Devices shows that machine. With no machine mapped to the cluster, or the cluster full (capacity used up), or a
+   serial the portal's list does not have: the create still goes, without a device, and the line shows "No punch
+   machine chosen: …; HR adds them to a machine on the portal". Change their designation: the update leaves the
+   device as it is. No device button (Connect, Upload Name, Enable/Disable/Delete User) is pressed.
 
 ## Part Z. Company accommodation from the offer (19 Nov)
 
@@ -1602,7 +1615,7 @@ is a real joiner (README, "Sending employees to the Realtime portal").
 4. **Retainer fee.** On a test copy, a Retainer employee:
 - [ ] Salary calculator / Compensation preview with type Retainer: one "Retainer fee" line, no Basic/HRA/Special
       allowance, no PF/ESI; TDS as before.
-- [ ] Offer for a Retainer: breakup and letter `{{breakup}}` say "Retainer fee: ₹… a month (TDS under section 194J)".
+- [ ] Offer for a Retainer: breakup and letter `{{breakup}}` say "Retainer fee: ₹… a month (TDS 1% of gross)" (25 Nov; was "section 194J").
 - [ ] Payroll dry run: the payroll sheet, register and full salary register have a "Retainer fee" column (only when a
       retainer is paid); Basic/HRA/Special allowance are 0 for the retainer; the net is the same as before.
 - [ ] Employee file › Salary: "Retainer fee" line, TDS (194J), net pay unchanged.
@@ -1626,7 +1639,7 @@ is a real joiner (README, "Sending employees to the Realtime portal").
       mark, no deviation; without the short leave the same punches are a half day / late.
 - [ ] A short leave 16:00–18:00 and an out punch at 16:00: no early exit.
 - [ ] Reports › Attendance and roster › Short leave lists it with the hours and status. My leave shows date and times.
-3. **Reimbursement.** On a test copy, Employees › someone permanent on Version 1, gross ₹30,000 › Edit pay options.
+3. **Reimbursement.** (Superseded 25 Nov: the reimbursement is now outside the gross; test it with Part AK.) On a test copy, Employees › someone permanent on Version 1, gross ₹30,000 › Edit pay options.
 - [ ] Reimbursement 3,000: the preview shows Basic 15,000, HRA 7,500, Reimbursement 3,000, Special allowance 4,500,
       gross 30,000; employee PF on Basic only. Save, then the pay section shows "₹3,000 a month, inside the gross".
 - [ ] Reimbursement 7,600 is refused ("more than what is left after Basic and HRA (₹7500 …)").
@@ -1920,6 +1933,69 @@ Masters › Shifts, the roster, Onboarding. Use a copy of the data.
       Bulk update lists the same template under Leave and time › Shift mapping.
 - [ ] Master update workbook › Shifts: the old Locations column is "Applies to (read-only …)" listing the rows; edits
       in it are ignored. A shift added in the workbook applies to all departments at all locations.
+
+## Part AK. Retainer TDS 1%, reimbursement outside the gross, portal code = ID number, RET codes (25 Nov)
+
+Use a copy of the data (migration `030_retainer_tds_1pct` runs on it).
+1. **Retainer TDS.**
+- [ ] Compensation › Salary structure › Version 1: "Retainer TDS" shows **TDS, % of gross (editable)** = 1 (was 10;
+      Audit log has "Retainer TDS set to 1% (was the old default 10%)"). A structure set to anything other than 10 keeps it.
+- [ ] Salary calculator, type Retainer, gross ₹30,000: Retainer fee 30,000, TDS 300 ("1% of gross (editable: structure
+      or employee)"), net 29,700. No text says "section 194J" or 10%.
+- [ ] Employees › a retainer › pay section shows "TDS, % of gross (editable)": "1% of gross (the structure's rate)".
+      Edit pay options: type 3, choose a reason, save → "3% of gross (set for this employee)", Change history "TDS %:
+      Structure rate → 3% of gross". Payroll dry run: the retainer's TDS is 3% of the earned fee; payslip "TDS, 3% of
+      gross". Clear the box and save → back to the structure's rate. 60 is refused; a permanent employee has no box.
+2. **Reimbursement outside the gross.** A permanent employee on Version 1, gross ₹30,000 › Edit pay options.
+- [ ] Reimbursement, ₹ a month (outside the gross) 3,000: preview Basic 15,000, HRA 7,500, Special allowance 7,500,
+      Gross 30,000, then "Reimbursement, outside the gross" 3,000; PF on Basic only (1,800), ESI/bonus as without it; net
+      and CTC higher by 3,000. 12,000 is accepted too (no "what Basic and HRA leave" limit). Pay section says "₹3,000 a
+      month, paid on top of the gross".
+- [ ] Payroll dry run: payslip lists Basic, HRA, Special allowance, then "Reimbursement — Outside the gross"; a person
+      with 10 of 30 days LOP gets 2,000 (by days paid, like the gross). Payroll sheet column "Reimbursement (outside the
+      gross)" after Special allowance; full register the same; ESI/PF wages unchanged.
+- [ ] Cost and budget: the salary figure includes it (hover: "Plus reimbursement outside the gross"); Excel column
+      "Reimbursement (outside the gross)". My tax › Estimated tax shows "Reimbursement a month, outside the gross".
+- [ ] Offer › Compensation "Reimbursement, ₹ a month (outside the gross)" 3,000: the offer letter breakup has
+      "Reimbursement (outside the gross): ₹3,000 a month"; Mark joined carries it to the employee.
+3. **Realtime portal code = the ID's number, 6 digits** (rtfake / a test portal only; never the live portal).
+- [ ] Mark joined JI-0017 (mapped): the create sends Employee code **000017** (card 00000017); the employee's Attendance
+      code becomes 000017 and pulled punches with EmpCode 17 or 000017 match. EMP-1054 → 001054.
+- [ ] If another employee already has that Attendance code, the create is held with "Attendance code … is already …'s:
+      set …'s Attendance code by hand (Employees) if they are already on the portal".
+4. **Employee codes by type** (Employees › Employee codes: one series for everyone, EMP-, 4 digits, next 1055).
+- [ ] Give a Permanent an Employee ID → EMP-1055; then a Retainer → RET-1056; then a Permanent → EMP-1057 (one counter,
+      same width). Contractual → EMP-…. Import employees without a code: the same. "Next code" for type Retainer shows RET-….
+
+## Part AL. Offer at joining (26 Nov)
+
+1. **Choose.** Select a candidate (interview Selected), open it, Offer › **Offer at joining**: expected date today, note "UT hire".
+- [ ] Pipeline has an **Offer at joining** filter with a count; the row says "Offer at joining: waiting for the joining day, expected on …".
+- [ ] Timeline "Offer at joining chosen"; Mark joined is not offered. A past date is refused.
+- [ ] With a date in the future, "Raise offer at joining" is disabled until that day; **Raise offer v1 instead** switches back (timeline "Switched back to the usual offer").
+2. **Raise offer at joining** on the day: the usual offer form opens with the joining date prefilled; send it.
+- [ ] The candidate says "Offer at joining v1: waiting for offer approval"; Joining says "Mark joined: Waiting for offer approval…".
+- [ ] The offer screen has no Release button and explains the letter is given at joining.
+3. **Approve** the offer in Approvals as usual, then **Mark joined** today.
+- [ ] The candidate gets JI-…; the Offer ID (OI-…) appears; offer version v1 shows Accepted · frozen; the offer screen shows the letter "Released at joining on …".
+- [ ] Timeline: Offer at joining chosen → Offer v1 raised at joining → Offer v1 approved → Offer accepted at joining → Offer letter released at joining → Joined.
+4. **Outcomes.** Another offer-at-joining candidate: Reschedule joining moves the expected date; No show (on the day) starts the waiting window; Offer declined closes it.
+- [ ] The normal path (Raise offer v1 → approval → release → Accepted → Mark joined) works exactly as before.
+
+## Part AM. All-inclusive gross from a month (26 Nov)
+
+1. **Setting.** Compensation › Salary structure › All-inclusive gross from month: pick the open payroll month, Save.
+- [ ] Pill "On from …"; a month already approved or published is refused; Switch off is refused once a month on the rule is approved.
+- [ ] Someone without Payroll settings (Edit) sees the month but cannot change it. Audit log has the change.
+2. **Breakup.** Try an offer, Permanent, gross 18,000 (at or below the bonus ceiling), Haryana.
+- [ ] Basic 8,708.45, HRA 4,354.23, Special allowance 4,354.23, Statutory bonus 583.10, Gross salary 18,000.
+- [ ] Deductions: Employee PF 1,045, Employer PF 1,045, Employee ESI 131, Employer ESI 567, EDLI 43.54, LWF 34, Employer LWF 68; net 15,066.46.
+- [ ] CTC: 18,000 + admin 43.54 + gratuity 418.88 + PL encashment 362.85 = 18,825.27 (+ variable target + reimbursement).
+- [ ] Gross 28,000: no bonus line, no ESI; Basic 14,000.
+3. **Payroll.** Dry run the month: payslip lists Statutory bonus after Special allowance, Employer PF/ESI/EDLI/LWF under deductions, variable pay "Pro-rata, additional" with no amount entered.
+- [ ] Payroll › Variable pay for that month says variable pay is automatic; entering an amount (screen or bulk) is refused.
+- [ ] Sheet/register: Statutory bonus, Gross salary (G), employer shares deducted; cost console shows no employer PF/ESI for the month.
+- [ ] The earlier (published) month's payslip and register are unchanged.
 
 ## Part H. Known, deliberate differences from the prototype (not bugs)
 

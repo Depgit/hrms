@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { api, inr } from '../api';
 import { Bars, Field, Loading, Modal, Pill, Tabs, download, toast, useLoad } from '../components/ui';
 import { BulkModal } from './Bulk';
+import { useAllIn } from '../components/AllIn';
 
 /** Cost and budget console (workforce plan, module 6; backend cost.go). What the company spends in a month for the
  *  whole company or any state, city, cluster or property, with a drill-down to each person: salary paid (minimum-wage
@@ -11,7 +12,7 @@ import { BulkModal } from './Bulk';
 
 type Node = {
   kind: 'company' | 'state' | 'city' | 'cluster' | 'property'; id: string; name: string; active: boolean; people: number;
-  salary: number; topUp: number; pf: number; admin: number; esi: number; lwf: number; grat: number; bonus: number; med: number; contrib: number;
+  salary: number; reimb?: number; topUp: number; pf: number; admin: number; esi: number; lwf: number; grat: number; plEnc?: number; bonus: number; med: number; contrib: number;
   accomShare: number; accomEmpty: number; accom: number; total: number; perHead: number;
   budget: number; budgetOwn?: number; hcBudget: number; hcOwn?: number; diff: number; pct: number; over: boolean; children?: Node[];
 };
@@ -53,6 +54,7 @@ function CostView() {
   const toggle = (n: Node) => setOpen({ ...open, [keyOf(n)]: !open[keyOf(n)] });
   const dl = () => download(`/cost/export.xlsx?ym=${month}`, `cost-${month}.xlsx`).catch((e) => toast(e.message));
   const [bulk, setBulk] = useState(false); // budgets uploaded here, in a dialog (owner, 24 Nov 2026)
+  const allIn = useAllIn(); // the all-inclusive gross from a month (server allin.go)
 
   const rows: ReactNode[] = [];
   const walk = (n: Node, depth: number) => {
@@ -65,8 +67,8 @@ function CostView() {
         <b style={{ fontWeight: n.kind === 'property' ? 400 : 600 }}>{n.name}</b> <span className="mute" style={{ fontSize: 11.5 }}>{KIND[n.kind]}{!n.active ? ' · inactive' : ''}</span>
       </td>
       <td className="num">{n.people}</td>
-      <td className="num" title={n.topUp ? `Minimum-wage top-ups (meal and accommodation deductions) left out: ${inr(n.topUp)}` : undefined}>{inr(n.salary)}{n.topUp ? <sup className="mute">*</sup> : null}</td>
-      <td className="num" title={`Employer PF ${inr(n.pf)} · EPFO admin and EDLI ${inr(n.admin)} · ESI ${inr(n.esi)} · LWF ${inr(n.lwf)} · Gratuity ${inr(n.grat)} · Bonus ${inr(n.bonus)} · Medical insurance ${inr(n.med)}`}>{inr(n.contrib)}</td>
+      <td className="num" title={[n.topUp ? `Minimum-wage top-ups (meal and accommodation deductions) left out: ${inr(n.topUp)}` : '', n.reimb ? `Plus reimbursement outside the gross: ${inr(n.reimb)}` : ''].filter(Boolean).join('. ') || undefined}>{inr(n.salary + (n.reimb || 0))}{n.topUp ? <sup className="mute">*</sup> : null}</td>
+      <td className="num" title={`Employer PF ${inr(n.pf)} · EPFO admin and EDLI ${inr(n.admin)} · ESI ${inr(n.esi)} · LWF ${inr(n.lwf)} · Gratuity ${inr(n.grat)}${n.plEnc ? ` · PL encashment ${inr(n.plEnc)}` : ''} · Bonus ${inr(n.bonus)} · Medical insurance ${inr(n.med)}`}>{inr(n.contrib)}</td>
       <td className="num" title={`Staff shares ${inr(n.accomShare)} · empty units ${inr(n.accomEmpty)}`}>{inr(n.accom)}</td>
       <td className="num"><b>{inr(n.total)}</b></td>
       <td className="num">{n.people ? inr(n.perHead) : '—'}</td>
@@ -100,6 +102,7 @@ function CostView() {
       {x?.meta.mode === 'projected' && <div className="note warn" style={{ marginTop: 10 }}>Projected: everyone paid in {ymLabel(month)} on their current salary structure for the full month, with the pay lines already entered. Changes until the run is approved.</div>}
       {x?.meta.frozen && <p className="mute" style={{ fontSize: 12.5, margin: '10px 0 0' }}>Frozen when payroll was published{x.meta.frozenBy ? ` (${x.meta.frozenBy})` : ''}: these figures and budgets no longer change.</p>}
       {x?.meta.mode === 'none' && <div className="note" style={{ marginTop: 10 }}>No approved payroll run for {ymLabel(month)}.</div>}
+      {allIn && month >= allIn && <p className="mute" style={{ fontSize: 12, margin: '8px 0 0' }}>From {ymLabel(allIn)} pay is on the all-inclusive gross: the statutory bonus (gross at most the bonus ceiling) is inside the gross, and the employer PF, ESI, EDLI and LWF are deducted from the employee (still remitted), so company contributions are only EPFO admin, gratuity, PL encashment and medical insurance; variable pay and reimbursement are on top.</p>}
     </div>
     {!x ? <Loading error={d.error} /> : <div className="card" style={{ marginBottom: 14 }}>
       <div className="tw"><table><thead><tr><th>Place</th><th className="num">People</th><th className="num">Salary paid</th><th className="num">Company contributions</th>
@@ -123,7 +126,7 @@ function Trend({ node, ym, onClose }: { node: Node; ym: string; onClose: () => v
       <div style={{ margin: '12px 0' }}><Bars rows={m.map((x) => ({ label: ymLabel(x.ym).replace(/ \d{4}$/, '') + ' ' + x.ym.slice(2, 4), value: Math.round(x.total) }))} /></div>
       <div className="tw"><table><thead><tr><th>Month</th><th>Basis</th><th className="num">People</th><th className="num">Salary paid</th><th className="num">Contributions</th><th className="num">Accommodation</th><th className="num">Total cost</th><th className="num">Per head</th><th className="num">Budget</th></tr></thead>
         <tbody>{m.map((x) => <tr key={x.ym}><td>{ymLabel(x.ym)}</td><td>{x.frozen ? 'Frozen' : x.mode === 'projected' ? 'Projected' : x.mode === 'actual' ? 'Actual' : '—'}</td>
-          <td className="num">{x.people}</td><td className="num">{inr(x.salary)}</td><td className="num">{inr(x.contrib)}</td><td className="num">{inr(x.accom)}</td>
+          <td className="num">{x.people}</td><td className="num">{inr(x.salary + (x.reimb || 0))}</td><td className="num">{inr(x.contrib)}</td><td className="num">{inr(x.accom)}</td>
           <td className="num" style={x.over ? red : undefined}><b>{inr(x.total)}</b></td><td className="num">{x.people ? inr(x.perHead) : '—'}</td><td className="num">{x.budget > 0 ? inr(x.budget) : '—'}</td></tr>)}</tbody></table></div>
     </>}
   </div>;
@@ -138,7 +141,7 @@ function People({ node, ym, onClose }: { node: Node; ym: string; onClose: () => 
       <tbody>{d.data.people.length === 0 && <tr><td colSpan={6} className="mute">No one.</td></tr>}
         {d.data.people.map((p) => <tr key={p.employeeId}><td>{p.name} <span className="mono mute">{p.employeeId}</span>{!p.paid && <div className="mute" style={{ fontSize: 12 }}>Accommodation only (not on this month’s payroll)</div>}</td>
           <td>{p.location || '—'}</td>
-          <td className="num" title={p.topUp ? `Minimum-wage top-up left out: ${inr(p.topUp)}` : undefined}>{inr(p.salary)}{p.topUp ? <sup className="mute">*</sup> : null}</td>
+          <td className="num" title={[p.topUp ? `Minimum-wage top-up left out: ${inr(p.topUp)}` : '', p.reimb ? `Salary ${inr(p.salary)} + reimbursement outside the gross ${inr(p.reimb)}` : ''].filter(Boolean).join('. ') || undefined}>{inr(p.salary + (p.reimb || 0))}{p.topUp ? <sup className="mute">*</sup> : null}</td>
           <td className="num" title={`PF ${inr(p.pf)} · admin/EDLI ${inr(p.admin)} · ESI ${inr(p.esi)} · LWF ${inr(p.lwf)} · gratuity ${inr(p.grat)} · bonus ${inr(p.bonus)} · medical ${inr(p.med)}`}>{inr(p.contrib)}</td>
           <td className="num">{inr(p.accom)}</td><td className="num"><b>{inr(p.total)}</b></td></tr>)}</tbody></table></div>}
     <div className="row" style={{ justifyContent: 'flex-end', marginTop: 12 }}><button className="btn" onClick={onClose}>Close</button></div>

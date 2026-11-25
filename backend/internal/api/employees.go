@@ -384,7 +384,7 @@ func (s *Server) employeeGet(r *http.Request, c *Ctx) (any, error) {
 		if ok {
 			in := calc.Input{Type: calc.EmploymentType(e["type"].(string)), Gross: gross, Structure: withMedical(&st, p.Medical), VarPct: p.VarPct, VarCycle: p.VarCycle,
 				Meal: p.Meal, Accom: p.Accom, Lwf: lwfFor(ctx, s.st.DB, e["location_id"].(string), today()), PfExempt: p.PfExempt, AllBasic: p.allBasicIn(today()[:7]),
-				EmpAmts: p.CompAmts}
+				EmpAmts: p.CompAmts, AllIn: allInOn(ctx, s.st.DB, today()[:7])}
 			hasTarget := varTargetInput(ctx, s.st.DB, id, today()[:7], st, &in) // variable pay as a target (paycomp.go)
 			res := calc.Calc(in)
 			if st.Designed {
@@ -828,6 +828,36 @@ func employeesCodeKey(ctx context.Context, q store.Q, empType string) string {
 	return "All"
 }
 
+// employeesRetPrefix is the prefix a Retainer's code takes from the series for everyone: the Retainer series' own
+// prefix (RET- unless HR changed it), else RET-.
+func employeesRetPrefix(ctx context.Context, q store.Q, allPrefix string) string {
+	if r, _ := q.C("employee_code_series").FindOne(ctx, bson.M{"key": string(calc.Retainer)}); r != nil {
+		if p := str(r["prefix"]); p != "" && !strings.EqualFold(p, allPrefix) {
+			return p
+		}
+	}
+	if strings.EqualFold(allPrefix, "RET-") {
+		return "RT-"
+	}
+	return "RET-"
+}
+
+// employeesPrefixes are the prefix a person of empType gets from series key, and every prefix that shares the series'
+// numbers (owner, 25 Nov 2026): with one series for everyone ("All"), a Retainer gets RET-<next> and everyone else
+// the series' prefix (EMP-<next>), from the SAME numbers, so EMP-1060 and RET-1061 never share digits (the Realtime
+// portal code is the ID's number, portal_write.go). With a series per type, each type's own prefix as before.
+func employeesPrefixes(ctx context.Context, q store.Q, key, empType, seriesPrefix string) (string, []string) {
+	if key != "All" {
+		return seriesPrefix, []string{seriesPrefix}
+	}
+	ret := employeesRetPrefix(ctx, q, seriesPrefix)
+	all := []string{seriesPrefix, ret}
+	if calc.EmploymentType(empType) == calc.Retainer {
+		return ret, all
+	}
+	return seriesPrefix, all
+}
+
 func NextEmployeeCode(ctx context.Context, tx store.Q, empType string) (string, error) {
 	key := employeesCodeKey(ctx, tx, empType)
 	series, err := tx.C("employee_code_series").Lock(ctx, bson.M{"key": key})
@@ -837,11 +867,16 @@ func NextEmployeeCode(ctx context.Context, tx store.Q, empType string) (string, 
 	if series == nil {
 		return "", bad("No employee code series for %s", key)
 	}
-	prefix, pad, n := str(series["prefix"]), employeesInt(series["pad"]), employeesInt(series["next_no"])
+	pad, n := employeesInt(series["pad"]), employeesInt(series["next_no"])
+	prefix, shared := employeesPrefixes(ctx, tx, key, empType, str(series["prefix"]))
 	for {
 		code := fmt.Sprintf("%s%0*d", prefix, pad, n)
+		ids := bson.A{}
+		for _, p := range shared { // the number is free only when no prefix of the series has it
+			ids = append(ids, bson.M{"_id": employeesFold(fmt.Sprintf("%s%0*d", p, pad, n))})
+		}
 		n++
-		taken, err := tx.C("employee").Exists(ctx, bson.M{"_id": employeesFold(code)})
+		taken, err := tx.C("employee").Exists(ctx, bson.M{"$or": ids})
 		if err != nil {
 			return "", err
 		}
@@ -861,7 +896,8 @@ func (s *Server) nextCode(r *http.Request, c *Ctx) (any, error) {
 	if err != nil || series == nil {
 		return map[string]any{"next": nil}, nil
 	}
-	return map[string]any{"next": fmt.Sprintf("%s%0*d", str(series["prefix"]), employeesInt(series["pad"]), employeesInt(series["next_no"]))}, nil
+	prefix, _ := employeesPrefixes(r.Context(), s.st.DB, key, r.URL.Query().Get("type"), str(series["prefix"]))
+	return map[string]any{"next": fmt.Sprintf("%s%0*d", prefix, employeesInt(series["pad"]), employeesInt(series["next_no"]))}, nil
 }
 
 // ---------- Import existing employees (HR Admin only), checked row by row before anything is created ----------
@@ -1014,6 +1050,7 @@ func (s *Server) employeeImport(r *http.Request, c *Ctx) (any, error) {
 		type codeSeries struct {
 			prefix    string
 			pad, next int
+			shared    []string // every prefix on the series' numbers (employeesPrefixes)
 		}
 		series := map[string]*codeSeries{}
 		var seriesKeys []string
@@ -1029,13 +1066,19 @@ func (s *Server) employeeImport(r *http.Request, c *Ctx) (any, error) {
 					return "", bad("No employee code series for %s", key)
 				}
 				sr = &codeSeries{prefix: str(row["prefix"]), pad: employeesInt(row["pad"]), next: employeesInt(row["next_no"])}
+				_, sr.shared = employeesPrefixes(ctx, tx, key, "", sr.prefix)
 				series[key] = sr
 				seriesKeys = append(seriesKeys, key)
 			}
+			prefix, _ := employeesPrefixes(ctx, tx, key, typ, sr.prefix) // a Retainer: RET- on the shared numbers
 			for {
-				code := fmt.Sprintf("%s%0*d", sr.prefix, sr.pad, sr.next)
+				code := fmt.Sprintf("%s%0*d", prefix, sr.pad, sr.next)
+				free := true
+				for _, p := range sr.shared {
+					free = free && !takenUpper[strings.ToUpper(fmt.Sprintf("%s%0*d", p, sr.pad, sr.next))]
+				}
 				sr.next++
-				if !takenUpper[strings.ToUpper(code)] {
+				if free {
 					return code, nil
 				}
 			}

@@ -59,12 +59,22 @@ const (
 	FieldShift  = "shift"  // the portal's shift
 	FieldLeft   = "left"   // the leaving date (mark left)
 	FieldStatus = "status" // the employee's status on the portal (mark left: a "resigned/left" choice)
+	// 25 Nov 2026, from the live form (Employee.aspx):
+	FieldPolicy     = "policy"     // the portal's office time policy (as HR mapped the work policy)
+	FieldWeeklyOff  = "wo"         // the portal's first weekly off (as HR mapped the work policy)
+	FieldCompany    = "company"    // the portal's company (one choice on the live portal: left as the form has it)
+	FieldShiftStart = "shiftstart" // the shift start date (a create sends the date of joining)
+	// 25 Nov 2026 (owner): the punch machine a new employee's record goes on (the form's "Select Devices" list), the
+	// machine's serial number as the machine pool plans it (api/machines.go). Create only.
+	FieldDevice = "device"
 )
 
 // FieldLabels name the details for people.
 var FieldLabels = map[string]string{FieldCode: "Employee code", FieldCard: "Card number", FieldName: "Name", FieldFather: "Father's name",
 	FieldDOB: "Date of birth", FieldDOJ: "Date of joining", FieldGender: "Gender", FieldPhone: "Phone", FieldEmail: "Email",
-	FieldDept: "Department", FieldDesig: "Designation", FieldBranch: "Branch", FieldShift: "Shift", FieldLeft: "Leaving date", FieldStatus: "Status"}
+	FieldDept: "Department", FieldDesig: "Designation", FieldBranch: "Branch", FieldShift: "Shift", FieldLeft: "Leaving date", FieldStatus: "Status",
+	FieldPolicy: "Office time policy", FieldWeeklyOff: "Weekly off", FieldCompany: "Company", FieldShiftStart: "Shift start date",
+	FieldDevice: "Punch machine"}
 
 // roleRules find each detail's control by its label and name (lower case, letters and digits only). The first
 // rule that matches a control wins and a detail takes one control; skip words keep look-alikes apart (the
@@ -240,6 +250,22 @@ func ParseForm(page string) *Form {
 	return f
 }
 
+// applyRoles gives the controls their details by their exact names (FormSpec.Fields, the live form's controls)
+// instead of by label: every other control (the master page's OTP and search boxes, the "Auto Approved Gps Punch"
+// tick, the branch-access ticks…) takes none.
+func (f *Form) applyRoles(names map[string]string) {
+	if len(names) == 0 {
+		return
+	}
+	byName := map[string]string{}
+	for role, n := range names {
+		byName[n] = role
+	}
+	for i := range f.Fields {
+		f.Fields[i].Role = byName[f.Fields[i].Name]
+	}
+}
+
 // roleOf is the detail a control takes, by its label first, then its name.
 func roleOf(fl FormField, taken map[string]bool) string {
 	for _, key := range []string{norm(fl.Label), norm(fl.ID + " " + fl.Name[strings.LastIndex(fl.Name, "$")+1:])} {
@@ -349,6 +375,43 @@ func Message(page string) string {
 		}
 		t := textOf(m[2])
 		if t == "" || len(t) > 400 {
+			continue
+		}
+		parts = append(parts, t)
+	}
+	return strings.Join(parts, " ")
+}
+
+// NewMessage is what the portal says on the page after a save that it did not say on the form as opened: the
+// employee form carries its own script alerts ("Please Enter Employee Name"… inside validate()) and many label spans
+// ("lblEmployeeName"), which are the page, not a reply. Alerts new to the reply, and message spans whose text
+// changed, are the reply.
+func NewMessage(before, after string) string {
+	seen := map[string]int{}
+	for _, m := range reAlert.FindAllStringSubmatch(before, -1) {
+		seen[m[1]]++
+	}
+	for _, m := range reAlert.FindAllStringSubmatch(after, -1) {
+		if seen[m[1]] > 0 {
+			seen[m[1]]--
+			continue
+		}
+		if t := strings.TrimSpace(strings.NewReplacer(`\'`, "'", `\"`, `"`, `\n`, " ").Replace(html.UnescapeString(m[1]))); t != "" {
+			return t
+		}
+	}
+	was := map[string]string{}
+	for _, m := range reMsgSpan.FindAllStringSubmatch(before, -1) {
+		was[m[1]] = textOf(m[2])
+	}
+	var parts []string
+	for _, m := range reMsgSpan.FindAllStringSubmatch(after, -1) {
+		id := strings.ToLower(m[1])
+		if strings.Contains(id, "validator") && !strings.Contains(id, "summary") {
+			continue
+		}
+		t := textOf(m[2])
+		if t == "" || len(t) > 400 || t == was[m[1]] {
 			continue
 		}
 		parts = append(parts, t)

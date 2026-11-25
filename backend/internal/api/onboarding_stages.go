@@ -138,6 +138,7 @@ func onboardingStagesCandidates(ctx context.Context, q store.Q, filter bson.D, s
 			"joined_by": x["joined_by"], "employee_created_at": x["employee_created_at"], "closed_kind": x["closed_kind"], "closed_reason": x["closed_reason"],
 			"closed_at": x["closed_at"], "closed_by": x["closed_by"],
 			"offer_no": x["offer_no"], "offer_version": x["offer_version"], "waiting_window": x["waiting"], "bgv": x["bgv"], "ji_at": x["ji_at"], "approved_at": x["approved_at"],
+			"oaj_at": x["oaj_at"], "oaj_by": x["oaj_by"], "oaj_doj": x["oaj_doj"], "oaj_note": x["oaj_note"], "at_joining": onboardingCol(o, "at_joining"), // offer_at_joining.go
 			"expires_on": onboardingCol(o, "expires_on"), "query_at": onboardingCol(o, "query_at"), "query_text": onboardingCol(o, "query_text"), "lapsed_at": onboardingCol(o, "lapsed_at"),
 			"shortlist_status": onboardingCol(sr, "status"), "interview_status": onboardingCol(ir, "status"),
 			"offer_id": onboardingCol(o, "id"), "type": onboardingCol(o, "type"), "doj": onboardingCol(o, "doj"), "gross": onboardingCol(o, "gross"),
@@ -171,6 +172,9 @@ func bucket(x store.Row) string {
 	if x["stage"] != "Closed" && x["waiting_window"] != nil { // no-show or stopped coming (hiring.go)
 		return "Waiting"
 	}
+	if oajOpen(x) { // offer at joining: waiting for the joining day, the offer's approval or Mark joined (offer_at_joining.go)
+		return "Offer at joining"
+	}
 	if x["stage"] == "Joined" {
 		switch {
 		case x["ji_at"] != nil && x["approved_at"] == nil && x["verified_at"] != nil: // verified; the Employee ID waits (background check)
@@ -184,7 +188,7 @@ func bucket(x store.Row) string {
 	return str(x["stage"])
 }
 
-var pipelineBuckets = []string{"Shortlisted", "Interview", "Offer", "Waiting", "Joined", "With Payroll", "Done", "Closed"}
+var pipelineBuckets = []string{"Shortlisted", "Interview", "Offer", "Offer at joining", "Waiting", "Joined", "With Payroll", "Done", "Closed"}
 
 // waitingOn is the stage and the person a pending request waits on.
 func waitingOn(ctx context.Context, q store.Q, reqID string) (string, string) {
@@ -269,6 +273,19 @@ func describe(ctx context.Context, q store.Q, x store.Row, fs []onbField, ds []o
 			}
 		default:
 			status, waiting = fmt.Sprintf("Offer accepted (%s). Joining on %s", currentID(x), longDate(str(x["doj"]))), "HR"
+		}
+	case "Offer at joining":
+		v := max(1, toInt(x["offer_version"]))
+		switch {
+		case !oajOfferLive(x) && x["offer_id"] != nil:
+			status, waiting = fmt.Sprintf("Offer at joining v%d not approved. Revise it or close", v), "HR"
+		case x["offer_id"] == nil:
+			status, waiting = "Offer at joining: waiting for the joining day, expected on "+longDate(oajDOJ(x)), "HR"
+		case x["offer_status"] == "Pending":
+			st, who := waitingOn(ctx, q, str(x["offer_request_id"]))
+			status, waiting = fmt.Sprintf("Offer at joining v%d: waiting for offer approval", v), withName(st, who)
+		default:
+			status, waiting = fmt.Sprintf("Offer at joining v%d approved. Mark joined: joining is the acceptance", v), "HR"
 		}
 	case "Waiting":
 		if w := waitOf(x["waiting_window"], today()); w != nil {
@@ -1126,7 +1143,12 @@ func (s *Server) candidateJoined(r *http.Request, c *Ctx) (any, error) {
 		if err != nil {
 			return err
 		}
-		if x["stage"] != "Offer" || x["accepted_at"] == nil || x["declined_at"] != nil {
+		oaj := oajOpen(x) // offer at joining: the approved offer is accepted by joining (offer_at_joining.go)
+		if oaj {
+			if why := oajReady(x); why != "" {
+				return bad("%s", why)
+			}
+		} else if x["stage"] != "Offer" || x["accepted_at"] == nil || x["declined_at"] != nil {
 			return bad("Mark joined once the candidate has accepted the offer")
 		}
 		if w := waitOf(x["waiting_window"], today()); w != nil && b.Date < w.Since {
@@ -1148,6 +1170,11 @@ func (s *Server) candidateJoined(r *http.Request, c *Ctx) (any, error) {
 			}
 		}
 		id := str(x["id"])
+		if oaj {
+			if err := oajAccept(ctx, tx, c, x, b.Date); err != nil {
+				return err
+			}
+		}
 		// From the joining day the person is a normal employee on the Joining ID (hiring.go).
 		code, err := s.hireJoin(ctx, tx, c, x, b.Date)
 		if err != nil {
@@ -1185,6 +1212,9 @@ func (s *Server) candidateClose(kind string) authedFn {
 			}
 			if x["stage"] != "Offer" {
 				return bad("Only a candidate at the offer stage can be closed here")
+			}
+			if oajOpen(x) && kind == "Withdrawn" && oajOfferLive(x) {
+				return bad("The offer at joining is raised. Use Offer declined in Joining")
 			}
 			switch kind {
 			case "Not joined":
@@ -1374,6 +1404,9 @@ func (s *Server) candidateGet(r *http.Request, c *Ctx) (any, error) {
 			pre[k] = v
 		}
 	}
+	if oajOpen(x) && x["offer_id"] == nil { // the offer at joining starts on the expected joining date
+		pre["doj"] = x["oaj_doj"]
+	}
 	x["prefill"] = pre
 	if m, ok := x["data"].(map[string]any); ok {
 		x["experience"] = m["experience"]
@@ -1384,6 +1417,9 @@ func (s *Server) candidateGet(r *http.Request, c *Ctx) (any, error) {
 	can := map[string]bool{}
 	can["raiseOffer"] = edit && c.Level("onb.raise") >= 2 && x["stage"] == "Offer" && (x["offer_id"] == nil || x["offer_status"] == "Rejected" || x["offer_status"] == "Cancelled")
 	can["markJoined"] = edit && x["stage"] == "Offer" && x["accepted_at"] != nil && x["declined_at"] == nil
+	// Offer at joining (offer_at_joining.go): chosen instead of raising, and Mark joined once that offer is approved.
+	can["offerAtJoining"] = edit && c.Level("onb.raise") >= 2 && x["stage"] == "Offer" && x["oaj_at"] == nil && !oajOfferLive(x) && x["waiting_window"] == nil
+	can["markJoined"] = can["markJoined"] || (edit && oajOpen(x) && oajReady(x) == "")
 	can["raiseOffer"] = can["raiseOffer"] || (edit && c.Level("onb.raise") >= 2 && x["stage"] == "Offer" && x["query_at"] != nil && x["accepted_at"] == nil && x["declined_at"] == nil)
 	can["close"] = edit && x["stage"] == "Offer" && (x["offer_id"] == nil || x["offer_status"] == "Rejected" || x["offer_status"] == "Cancelled")
 	can["upload"] = edit && x["stage"] != "Closed"

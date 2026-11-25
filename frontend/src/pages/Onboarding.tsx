@@ -11,7 +11,7 @@ import { DocWindowSetting } from './DocCollection';
 import { PortalCard } from '../components/PortalCard';
 import { SkipApprovalButton } from '../components/SkipApproval';
 import { shiftOffered } from './ShiftForm';
-import { BgvPanel, EarlyExit, HireSettings, JoiningOutcomes, OfferVersions, Timeline, WaitingPanel } from './Hiring';
+import { BgvPanel, EarlyExit, HireSettings, JoiningOutcomes, OfferAtJoiningChoose, OfferAtJoiningNote, OfferVersions, Timeline, WaitingPanel } from './Hiring';
 
 /* Onboarding in stages (owner's process, 11 Nov 2026; hiring lifecycle 16 Nov 2026): every new hire starts as a
    shortlist and keeps one number, SI-0001 → OI-0001 when the candidate accepts → JI-0001 at joining (a normal employee
@@ -28,7 +28,7 @@ type Pipe = { rows: any[]; counts: Record<string, number>; stages: string[] };
 const SECTIONS = ['Personal', 'Identity and statutory', 'Bank', 'Job', 'Location and reporting', 'Benefits', 'Uniform', 'Hiring', 'Compensation'];
 const TYPES = ['Permanent', 'Retainer', 'Contractual'];
 const STATES: [number, string][] = [[0, 'Not needed'], [1, 'Optional'], [2, 'Mandatory']];
-const STAGES = ['Shortlisted', 'Interview', 'Offer', 'Waiting', 'Joined', 'With Payroll', 'Done', 'Closed'];
+const STAGES = ['Shortlisted', 'Interview', 'Offer', 'Offer at joining', 'Waiting', 'Joined', 'With Payroll', 'Done', 'Closed'];
 const STAGE_LABEL: Record<string, string> = { Joined: 'Joined, approvals pending' };
 const GENDERS = ['Male', 'Female', 'Other', 'Prefer not to say'];
 /** Fields asked only on other answers (as the server's onbField.asked): UAN number when an existing UAN is declared,
@@ -341,6 +341,8 @@ function CandidateModal({ id, onClose, onOffer }: { id: string; onClose: () => v
   const hist = (r: any) => (r?.history ?? []).filter((h: any) => h.action !== 'Skipped' || h.note).map((h: any, i: number) =>
     <li key={i}><b>{h.stage ? `${h.stage}: ` : ''}{h.action}</b> <span className="mute">by {h.by_name} · {fmtD(String(h.at))}</span>{h.note && <div className="ink2" style={{ fontSize: 12.5 }}>“{h.note}”</div>}</li>);
   const offerOpen = !!x.offer_id && x.offer_status !== 'Rejected' && x.offer_status !== 'Cancelled';
+  // Offer at joining (offer_at_joining.go): chosen instead of raising; the offer is raised on the joining day.
+  const oaj = x.offerAtJoining;
   const joined = x.stage === 'Joined';
   const jn = x.joining;
   const verified = !!x.verified_at;
@@ -387,11 +389,14 @@ function CandidateModal({ id, onClose, onOffer }: { id: string; onClose: () => v
       <Pill k={x.offer_status === 'Approved' ? 'ok' : x.offer_status === 'Pending' ? 'warn' : 'bad'}>{x.declined_at ? 'Declined' : x.lapsed_at ? 'Lapsed' : x.offer_status === 'Approved' ? (x.accepted_at ? 'Accepted' : x.query_at ? 'Question asked' : x.released_at ? `Sent ${fmtD(String(x.released_at))}` : 'Approved') : x.offer_status === 'Pending' ? 'Pending approval' : `Offer ${String(x.offer_status).toLowerCase()}`}</Pill>
       <span className="ink2" style={{ fontSize: 13 }}>{x.type} · {x.grade} · gross {inr(x.gross)} a month · joining {fmtD(x.doj)}</span>
       {x.offerRequest && x.offer_status === 'Pending' && <Chain steps={x.offerRequest.chain} step={x.offerRequest.step} status={x.offerRequest.status} />}
-    </div> : <p className="mute" style={{ margin: 0, fontSize: 13 }}>{x.stage === 'Offer' ? 'Selected. Raise the offer: the form starts from the shortlist. The Offer ID is issued when the candidate accepts.' : 'After the interview.'}</p>}
+    </div> : !oaj && <p className="mute" style={{ margin: 0, fontSize: 13 }}>{x.stage === 'Offer' ? 'Selected. Raise the offer: the form starts from the shortlist. The Offer ID is issued when the candidate accepts.' : 'After the interview.'}</p>}
+    {oaj && <OfferAtJoiningNote x={x} />}
     {x.offer_id && <OfferVersions x={x} act={act} busy={busy} />}
     <div className="row" style={{ marginTop: 10 }}>
-      {c.raiseOffer && <button className="btn primary" onClick={() => onOffer(x)}>{x.offer_id ? `Revise: send v${(x.offer_version || 1) + 1}` : 'Raise offer v1'}</button>}
-      {offerOpen && <button className="btn" onClick={() => setView('offer')}>{x.offer_status === 'Approved' && !x.released_at && edit ? 'Release offer' : 'Offer letter'}</button>}
+      {oaj && c.raiseOffer && <button className="btn primary" disabled={!oaj.due} title={oaj.due ? undefined : `On the joining day, ${fmtD(oaj.doj)}`} onClick={() => onOffer({ ...x, atJoining: true })}>{x.offer_id ? `Revise at joining: v${(x.offer_version || 1) + 1}` : 'Raise offer at joining'}</button>}
+      {c.raiseOffer && <button className={`btn${oaj ? '' : ' primary'}`} onClick={() => onOffer(x)}>{x.offer_id ? `Revise: send v${(x.offer_version || 1) + 1}` : 'Raise offer v1'}{oaj ? ' instead' : ''}</button>}
+      {c.offerAtJoining && <OfferAtJoiningChoose x={x} act={act} busy={busy} />}
+      {offerOpen && <button className="btn" onClick={() => setView('offer')}>{x.offer_status === 'Approved' && !x.released_at && edit && !x.at_joining ? 'Release offer' : 'Offer letter'}</button>}
       {c.close && <button className="btn bad" onClick={() => setClosing('close')}>Close candidate</button>}
     </div>
 
@@ -488,7 +493,7 @@ function OfferForm({ cand, onBack, onSent }: { cand: any; onBack: () => void; on
     try {
       const now = await check();
       if (now.errors?.length) { toast(`${now.errors.length} thing${now.errors.length > 1 ? 's' : ''} to fix`); window.scrollTo(0, 0); return; }
-      const r = await api('/offers' + skip, { body: { data: d, candidate: owner } }); toast(`Offer v${r.version ?? 1} for ${cand.id} sent for approval`); onSent();
+      const r = await api('/offers' + skip, { body: { data: d, candidate: owner, atJoining: !!cand.atJoining } }); toast(`Offer v${r.version ?? 1}${cand.atJoining ? ' at joining' : ''} for ${cand.id} sent for approval`); onSent();
     } catch (x: any) { toast(x.message); } finally { setBusy(false); }
   };
   const band = res?.band, gross = +d.gross || 0;
@@ -497,7 +502,7 @@ function OfferForm({ cand, onBack, onSent }: { cand: any; onBack: () => void; on
   return (
     <div className="grid split">
       <div className="grid">
-        <div className="note row sp"><span><b className="mono">{cand.id} offer v{(cand.offer_version || 0) + 1}</b> · for <b>{cand.name}</b>, selected by {cand.interviewed_by_name || cand.manager_name}{cand.interview_date ? ` on ${fmtD(cand.interview_date)}` : ''}. Prefilled from the shortlist {cand.id}.{cand.rejoin_of ? ` Rejoin of ${cand.rejoin_of}.` : ''}</span>
+        <div className="note row sp"><span><b className="mono">{cand.id} offer v{(cand.offer_version || 0) + 1}{cand.atJoining ? ' at joining' : ''}</b> · for <b>{cand.name}</b>, selected by {cand.interviewed_by_name || cand.manager_name}{cand.interview_date ? ` on ${fmtD(cand.interview_date)}` : ''}. Prefilled from the shortlist {cand.id}.{cand.rejoin_of ? ` Rejoin of ${cand.rejoin_of}.` : ''}</span>
           <button className="btn sm" onClick={onBack}>Back to the candidate</button></div>
         {SECTIONS.map((sec) => {
           const fs = fields.filter((f) => f.section === sec);
@@ -508,9 +513,9 @@ function OfferForm({ cand, onBack, onSent }: { cand: any; onBack: () => void; on
               : <label key={f.key} className={`field ${missing(f) ? 'err' : ''}`}><span>{f.label}{f.offer === 2 && f.kind !== 'flow' && f.kind !== 'policy' && <Req />}</span>
                 <Control f={f} d={d} set={set} opts={L.opts} corporate={corporate} policy={policy} /></label>)}
           </div>
-          {sec === 'Compensation' && d.type !== 'Retainer' && <div className="form" style={{ marginTop: 10 }}><label className="field"><span>Reimbursement, ₹ a month (inside the gross)</span>
+          {sec === 'Compensation' && d.type !== 'Retainer' && <div className="form" style={{ marginTop: 10 }}><label className="field"><span>Reimbursement, ₹ a month (outside the gross)</span>
             <input type="number" min={0} value={d.reimb ?? ''} onChange={(e) => set('reimb', e.target.value)} />
-            <small className="mute">Basic and HRA first, then the Reimbursement; the special allowance takes the rest. Goes to the employee at joining.</small></label></div>}
+            <small className="mute">Paid on top of the gross like variable pay; the gross split is unchanged. Goes to the employee at joining.</small></label></div>}
           {sec === 'Compensation' && <OfferCtcEntry d={d} set={set} variable={variable} />}</div> : null;
         })}
         <AccomCard d={d} set={set} show={show} />
@@ -636,15 +641,15 @@ function OfferModal({ id, onClose }: { id: string; onClose: () => void }) {
         ? <div className="mute" style={{ border: '1px dashed var(--line)', borderRadius: 10, padding: 14, margin: '12px 0', fontSize: 13 }}>The offer letter is held until joining. It is generated when the candidate is marked joined.</div>
         : <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.6, border: '1px solid var(--line)', borderRadius: 10, padding: 14, margin: '12px 0' }}>{o.letter}</div>}
       {o.accommodation && <p style={{ fontSize: 13 }}>{o.accommodation}</p>}
-      {o.status === 'Approved' && canRel && o.candidate_id && <AccomCard d={accom} set={(k, v) => setAcc({ ...accom, [k]: v, ...(k === 'accom' && v === 'No' ? { accomCluster: '' } : {}) })} show plain />}
+      {o.status === 'Approved' && canRel && o.candidate_id && !o.at_joining && <AccomCard d={accom} set={(k, v) => setAcc({ ...accom, [k]: v, ...(k === 'accom' && v === 'No' ? { accomCluster: '' } : {}) })} show plain />}
       {declining && <Field label="Why did the candidate decline?"><input value={why} onChange={(e) => setWhy(e.target.value)} /></Field>}
       <div className="row" style={{ justifyContent: 'flex-end' }}>
         <button className="btn" onClick={onClose}>Close</button>
         {canRel && ['Approved', 'Released', 'Accepted'].includes(o.status) && (declining ? <button className="btn bad" onClick={() => step('decline')}>Mark declined</button> : <button className="btn" onClick={() => setDeclining(true)}>Candidate declined</button>)}
-        {o.status === 'Approved' && canRel && <button className="btn primary" onClick={() => step('release')}>Release offer</button>}
+        {o.status === 'Approved' && canRel && !o.at_joining && <button className="btn primary" onClick={() => step('release')}>Release offer</button>}
       </div>
-      {o.request_status !== 'Approved' && <p className="mute" style={{ fontSize: 12 }}>The offer can be released after all approvals are complete.</p>}
-      {o.candidate_id && o.status === 'Approved' && <p className="mute" style={{ fontSize: 12 }}>On release the answer is due within the days set in Form setup › Hiring; without an answer by then the offer lapses. Record the candidate's answer on the candidate.</p>}
+      {o.request_status !== 'Approved' && !o.at_joining && <p className="mute" style={{ fontSize: 12 }}>The offer can be released after all approvals are complete.</p>}
+      {o.candidate_id && o.status === 'Approved' && !o.at_joining && <p className="mute" style={{ fontSize: 12 }}>On release the answer is due within the days set in Form setup › Hiring; without an answer by then the offer lapses. Record the candidate's answer on the candidate.</p>}
     </>}
   </Modal>;
 }

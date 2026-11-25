@@ -44,7 +44,7 @@ func (s *Server) fnfCompute(ctx context.Context, q store.Q, id string) (*emp, []
 	lwd, fm := *e.LWD, (*e.LWD)[:7]
 	gross, _ := grossFor(ctx, q, id, fm)
 	_, st := structureFor(ctx, q, id, lwd)
-	basic := math.Round(calc.Calc(calc.Input{Type: calc.EmploymentType(e.Type), Gross: gross, Structure: &st, AllBasic: payFor(ctx, q, id, e.Type).allBasicIn(fm)}).Basic)
+	basic := math.Round(calc.Calc(calc.Input{Type: calc.EmploymentType(e.Type), Gross: gross, Structure: &st, AllBasic: payFor(ctx, q, id, e.Type).allBasicIn(fm), AllIn: allInOn(ctx, q, fm)}).Basic)
 	L := []fnfLine{}
 	ts, err := loadTimeSet(ctx, q)
 	if err != nil {

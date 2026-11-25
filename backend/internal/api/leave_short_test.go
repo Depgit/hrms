@@ -129,8 +129,8 @@ func TestShortLeave(t *testing.T) {
 	}
 }
 
-// The offer's Reimbursement (owner, 20 Nov 2026) goes to the employee at joining; one above what Basic and HRA leave is
-// refused on the offer.
+// The offer's Reimbursement (owner, 20 Nov 2026) goes to the employee at joining; outside the gross since 25 Nov, so
+// only a negative amount is refused.
 func TestOfferReimbursementToEmployee(t *testing.T) {
 	c, _, st := setupFull(t)
 	signAll(c, "EMP-1002", "EMP-1004", "EMP-1009", "EMP-1011", "EMP-1012")
@@ -138,12 +138,12 @@ func TestOfferReimbursementToEmployee(t *testing.T) {
 	if s, r := c.upload("EMP-1004", "HRBP", "candidate", si, "aadhaar"); s != 200 {
 		t.Fatalf("aadhaar: %v", r)
 	}
-	d := offerData(st, "Riya", "Sharma", "9876501234") // gross 26,000: Basic 13,000 and HRA 6,500 leave 6,500
-	d["reimb"] = 7000
-	if _, r := c.do("POST", "/api/offers/check", "EMP-1004", "HRBP", map[string]any{"data": d, "candidate": si}); !strings.Contains(fmt.Sprint(r["errors"]), "more than what is left after Basic and HRA") {
-		t.Fatalf("7,000 not refused: %v", r["errors"])
+	d := offerData(st, "Riya", "Sharma", "9876501234") // gross 26,000
+	d["reimb"] = -5
+	if _, r := c.do("POST", "/api/offers/check", "EMP-1004", "HRBP", map[string]any{"data": d, "candidate": si}); !strings.Contains(fmt.Sprint(r["errors"]), "zero or more") {
+		t.Fatalf("a negative amount not refused: %v", r["errors"])
 	}
-	d["reimb"] = 3000
+	d["reimb"] = 7000 // outside the gross (25 Nov 2026): more than Basic and HRA leave is fine
 	s, r := c.do("POST", "/api/offers", "EMP-1004", "HRBP", map[string]any{"data": d, "candidate": si})
 	if s != 200 {
 		t.Fatalf("offer: %v", r)
@@ -160,7 +160,7 @@ func TestOfferReimbursementToEmployee(t *testing.T) {
 		t.Fatalf("joined: %v", r)
 	}
 	p, _ := st.DB.C("employee_pay").FindOne(context.Background(), bson.M{"employee_id": r["id"]})
-	if a, _ := p["comp_amts"].(map[string]any); a == nil || a["reimb"] != 3000.0 {
+	if a, _ := p["comp_amts"].(map[string]any); a == nil || a["reimb"] != 7000.0 {
 		t.Fatalf("employee_pay of %v: %v", r["id"], p)
 	}
 }

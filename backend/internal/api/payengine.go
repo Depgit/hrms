@@ -233,6 +233,8 @@ type payCtx struct {
 	vtarget map[string][]varTargetPt
 	vpaid   map[string]map[string]float64
 	classic bool
+	// allInFrom is the first month of the all-inclusive gross ("" off; allin.go).
+	allInFrom string
 }
 
 // PayRowOut is one person's row in a payroll month, stored as payroll_row.data.
@@ -296,7 +298,7 @@ func loadPayCtxOpt(ctx context.Context, q store.Q, ym string, attendance bool, b
 		structs: map[string]calc.Structure{}, structNames: map[string]string{}, smap: map[string][]structPt{}, pay: map[string]payOptions{}, varFrom: map[string]varFrom{},
 		tdsPct: map[string]*float64{}, lwf: map[string]*calc.LwfRule{}, lines: map[string][]calc.Line{}, ov: map[string]payOverride{},
 		hold: map[string]string{}, prevVar: map[string]map[string]float64{}, prevNet: map[string]float64{}, salaryTds: map[string]float64{},
-		vtarget: map[string][]varTargetPt{}, vpaid: map[string]map[string]float64{}}
+		vtarget: map[string][]varTargetPt{}, vpaid: map[string]map[string]float64{}, allInFrom: allInFrom(ctx, q)}
 	ids := ids(list)
 	for _, e := range list {
 		pc.emps[e.ID] = e
@@ -450,6 +452,9 @@ func (pc *payCtx) grossAt(id, ym string) float64 {
 	return grossInMonth(pc.gross[id], ym)
 }
 
+// allIn says whether month ym is paid on the all-inclusive gross (never in the before/after comparison's classic run).
+func (pc *payCtx) allIn(ym string) bool { return !pc.classic && allInAt(pc.allInFrom, ym) }
+
 // grossInMonth is the gross for month ym from a history sorted by month: the latest revision from that month or
 // earlier, and when that revision starts after the 1st of ym, the earlier gross for the days before it and the new
 // one from it (user decision 13 Nov 2026, ITM-28).
@@ -587,7 +592,12 @@ func (pc *payCtx) row(e *emp) *PayRowOut {
 	// started when it started later (owner, 14 Nov 2026). Calc counts it as month of the year, which works for cycles of
 	// 1, 3, 6 and 12 months.
 	joinMonth := int(ymTime(pc.varAnchor(e, st)).Month())
-	esiKeep := calc.EsiKeep(ym, e.DOJ[:7], func(m string) float64 { return pc.grossAt(e.ID, m) }, st.EsiCeil)
+	allIn := pc.allIn(ym)
+	var lwf *calc.LwfRule
+	if r := pc.lwf[e.StateID]; r != nil {
+		lwf = r
+	}
+	esiKeep := calc.EsiKeep(ym, e.DOJ[:7], func(m string) float64 { return pc.grossAt(e.ID, m) }, st.EsiCeil) // on G with the all-inclusive gross too
 	// A structure change inside the month blends both calculations by days (spec 13).
 	type part struct {
 		sid string
@@ -613,10 +623,6 @@ func (pc *payCtx) row(e *emp) *PayRowOut {
 			parts = append(parts, part{pc.structureOn(e.ID, f), float64(policy.DayDiff(f, end)) / dim})
 		}
 	}
-	var lwf *calc.LwfRule
-	if r := pc.lwf[e.StateID]; r != nil {
-		lwf = r
-	}
 	in := calc.RowIn{Days: calc.PayDays(ym, st.Denom), LOP: mo.LOP, Outside: float64(mo.Outside), DaysN: mo.DaysN, Gross: gross,
 		Lines: append([]calc.Line{}, pc.lines[e.ID]...), SalaryTds: pc.salaryTds[e.ID]}
 	// No overtime, no pay for off-day work and no night shift allowance (removed by the owner, 24 Nov 2026; it was ₹0
@@ -633,7 +639,7 @@ func (pc *payCtx) row(e *emp) *PayRowOut {
 			in := calc.Input{Type: calc.EmploymentType(e.Type), Gross: earned, EligGross: &eg, Month: month, JoinMonth: joinMonth,
 				VarPct: pc.varPctOpt(e.ID, ym), VarCycle: pay.VarCycle, VarTotal: tot, Meal: pay.Meal, Accom: pay.Accom, TdsPct: pc.tdsPct[e.ID],
 				EsiKeep: esiKeep, Structure: withMedical(s, pay.Medical), Lwf: lwf, PfExempt: pay.PfExempt, AllBasic: pay.allBasicIn(ym), Classic: pc.classic,
-				EmpAmts: pay.CompAmts}
+				EmpAmts: pay.CompAmts, AllIn: allIn}
 			if !pc.classic && s.Designed {
 				pc.varInputs(e.ID, ym, &in)
 			}
@@ -664,7 +670,7 @@ func (pc *payCtx) row(e *emp) *PayRowOut {
 	if why := pc.hold[e.ID]; why != "" {
 		out.Hold, out.HoldWhy = true, why
 	}
-	if !pc.classic && st.Designed {
+	if !pc.classic && st.Designed && !allIn { // all-inclusive gross: variable pay is automatic, nothing to enter
 		out.VarMissing = pc.varMissing(e, row.R.Comps)
 	}
 	out.Flags = rowFlags(out, ym)

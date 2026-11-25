@@ -1652,7 +1652,7 @@ func repMissing(s *Server, ctx context.Context, c *Ctx, f repFilter) ([]string, 
 		if gross == 0 {
 			gross = pc.grossAt(id, str(e["doj"])[:7])
 		}
-		res := calc.Calc(calc.Input{Type: calc.EmploymentType(str(e["type"])), Gross: gross, Structure: pc.structure(pc.structureOn(id, ym+"-01")), PfExempt: pc.pay[id].PfExempt})
+		res := calc.Calc(calc.Input{Type: calc.EmploymentType(str(e["type"])), Gross: gross, Structure: pc.structure(pc.structureOn(id, ym+"-01")), PfExempt: pc.pay[id].PfExempt, AllIn: pc.allIn(ym)})
 		if res.EePF > 0 && !reUAN.MatchString(statIDClean(str(g["uan"]))) { // blank, "No" or not 12 digits (REAL-39)
 			m = append(m, "UAN (PF applies)")
 		}

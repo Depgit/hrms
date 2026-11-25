@@ -42,6 +42,7 @@ function Estimate({ f, regime }: { f: any; regime: string }) {
   const a = f.declared ?? f.est, old = regime === 'Old';
   return <>
     <table><thead><tr><th></th><th className="num">New regime</th><th className="num">Old regime</th></tr></thead><tbody>
+      {f.reimb > 0 && <tr><td>Reimbursement a month, outside the gross</td><td className="num" colSpan={2}>{inr(f.reimb)}</td></tr>}
       <tr><td>Taxable income</td><td className="num">{inr(a.newTaxable)}</td><td className="num">{inr(a.oldTaxable)}</td></tr>
       <tr><td>Deductions counted</td><td className="num">Standard ₹75,000</td><td className="num">{inr(a.oldDeductions + a.hraExempt)}{a.hraExempt > 0 && <> <span className="mute" style={{ fontSize: 12 }}>(HRA {inr(a.hraExempt)})</span></>}</td></tr>
       <tr><td><b>Estimated yearly tax</b></td><td className="num"><b>{inr(a.newTax)}</b></td><td className="num"><b>{inr(a.oldTax)}</b></td></tr>

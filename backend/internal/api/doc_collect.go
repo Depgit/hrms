@@ -980,6 +980,9 @@ func (s *Server) docMail(ctx context.Context, emp, subject, text string) {
 		return
 	}
 	comp := companyName(ctx, s.st.DB)
+	if s.appURL != "" { // every document mail is about My documents: link to it (owner, 26 Nov 2026)
+		text += "\n\nOpen My documents: " + strings.TrimRight(s.appURL, "/") + "/my-documents"
+	}
 	if err := s.mail.Send(ctx, mail.Message{To: to, Subject: comp + ": " + subject, Text: text + "\n\n" + comp + " HR\n"}); err != nil {
 		log.Printf("document collection email to %s: %v", emp, err)
 	}

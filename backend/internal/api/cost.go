@@ -7,6 +7,7 @@ package api
 //   - Lines: salary paid (earnings: fixed, variable, incentives, arrears and claims; the bonus is shown with the
 //     company contributions; the meal and accommodation deductions of employee_pay are left out: HR raises the
 //     gross by them and deducts them back to meet the minimum wage, so they are no company cost — owner, 17 Nov), company contributions (employer PF, EPFO admin and EDLI, ESI, LWF, gratuity, bonus,
+//     on the all-inclusive gross only admin, gratuity, PL encashment, bonus inside G and medical: allin.go,
 //     medical insurance) and accommodation (each person's share, plus the empty-unit cost on the property the unit
 //     serves; hst.go HstMonthCost). Total cost, cost per head, budget, difference and % used, red when over.
 //   - Actual or projected: an approved or published month reads its payroll rows; the open month (and later ones)
@@ -62,20 +63,24 @@ type costLine struct {
 	LocID      string  `json:"locId"`
 	Desig      string  `json:"desig,omitempty"`
 	Type       string  `json:"type,omitempty"`
-	Paid       bool    `json:"paid"`   // on the payroll (false: an accommodation share only)
-	Salary     float64 `json:"salary"` // earnings less the bonus and the minimum-wage top-ups
-	TopUp      float64 `json:"topUp"`  // the meal and accommodation deductions: a minimum-wage top-up, not company cost
-	PF         float64 `json:"pf"`     // employer PF
-	Admin      float64 `json:"admin"`  // EPFO admin and EDLI
+	Paid       bool    `json:"paid"`            // on the payroll (false: an accommodation share only)
+	Salary     float64 `json:"salary"`          // earnings less the bonus, the minimum-wage top-ups and the Reimbursement
+	Reimb      float64 `json:"reimb,omitempty"` // the Reimbursement, outside the gross (reimb.go; 25 Nov 2026)
+	TopUp      float64 `json:"topUp"`           // the meal and accommodation deductions: a minimum-wage top-up, not company cost
+	PF         float64 `json:"pf"`              // employer PF
+	Admin      float64 `json:"admin"`           // EPFO admin and EDLI
 	ESI        float64 `json:"esi"`
 	LWF        float64 `json:"lwf"`
 	Grat       float64 `json:"grat"`
+	PlEnc      float64 `json:"plEnc,omitempty"` // the PL encashment provision: a company cost on the all-inclusive gross (allin.go)
 	Bonus      float64 `json:"bonus"`
 	Med        float64 `json:"med"`
 	Accom      float64 `json:"accom"` // the person's share of accommodation
 }
 
-func (l costLine) contrib() float64 { return l.PF + l.Admin + l.ESI + l.LWF + l.Grat + l.Bonus + l.Med }
+func (l costLine) contrib() float64 {
+	return l.PF + l.Admin + l.ESI + l.LWF + l.Grat + l.PlEnc + l.Bonus + l.Med
+}
 
 // costPlace is a property with its cluster, city and state, and its budgets.
 type costPlace struct {
@@ -159,11 +164,17 @@ func costPlaces(ctx context.Context, q store.Q) (map[string]costPlace, map[strin
 	return places, cb, nil
 }
 
-// costLineOf is the cost of one pay row.
+// costLineOf is the cost of one pay row. On the all-inclusive gross (allin.go) the employer's PF, ESI, EDLI and LWF
+// are deducted from the employee (inside the salary paid, still remitted to the authorities), so the company's own
+// contributions are the admin charges, gratuity, the PL encashment provision and medical insurance.
 func costLineOf(o *PayRowOut) costLine {
 	r := o.R
+	if r.AllIn {
+		return costLine{EmployeeID: o.EmployeeID, Name: o.Name, LocID: o.LocID, Desig: o.Desig, Type: o.Type, Paid: true,
+			Salary: o.TotalEarn - r.Bonus - r.Meal - r.Accom - r.Reimb, Reimb: r.Reimb, TopUp: r.Meal + r.Accom, Admin: r.Admin, Grat: r.Grat, PlEnc: r.PlEnc, Bonus: r.Bonus, Med: r.Med}
+	}
 	return costLine{EmployeeID: o.EmployeeID, Name: o.Name, LocID: o.LocID, Desig: o.Desig, Type: o.Type, Paid: true,
-		Salary: o.TotalEarn - r.Bonus - r.Meal - r.Accom, TopUp: r.Meal + r.Accom, PF: r.ErPF, Admin: r.Admin + r.Edli, ESI: r.ErESI, LWF: r.LwfEr, Grat: r.Grat, Bonus: r.Bonus, Med: r.Med}
+		Salary: o.TotalEarn - r.Bonus - r.Meal - r.Accom - r.Reimb, Reimb: r.Reimb, TopUp: r.Meal + r.Accom, PF: r.ErPF, Admin: r.Admin + r.Edli, ESI: r.ErESI, LWF: r.LwfEr, Grat: r.Grat, Bonus: r.Bonus, Med: r.Med}
 }
 
 // costNewBook is a book for month ym with the places loaded.
@@ -369,11 +380,13 @@ type costNode struct {
 	People     int         `json:"people"`
 	Salary     float64     `json:"salary"`
 	TopUp      float64     `json:"topUp"` // minimum-wage top-ups left out of the salary
+	Reimb      float64     `json:"reimb"` // the Reimbursement, outside the gross
 	PF         float64     `json:"pf"`
 	Admin      float64     `json:"admin"`
 	ESI        float64     `json:"esi"`
 	LWF        float64     `json:"lwf"`
 	Grat       float64     `json:"grat"`
+	PlEnc      float64     `json:"plEnc,omitempty"` // the PL encashment provision (all-inclusive gross only)
 	Bonus      float64     `json:"bonus"`
 	Med        float64     `json:"med"`
 	Contrib    float64     `json:"contrib"`
@@ -397,12 +410,14 @@ func (n *costNode) addLine(l costLine) {
 		n.People++
 	}
 	n.Salary += l.Salary
+	n.Reimb += l.Reimb
 	n.TopUp += l.TopUp
 	n.PF += l.PF
 	n.Admin += l.Admin
 	n.ESI += l.ESI
 	n.LWF += l.LWF
 	n.Grat += l.Grat
+	n.PlEnc += l.PlEnc
 	n.Bonus += l.Bonus
 	n.Med += l.Med
 	n.AccomShare += l.Accom
@@ -411,12 +426,14 @@ func (n *costNode) addLine(l costLine) {
 func (n *costNode) addNode(c *costNode) {
 	n.People += c.People
 	n.Salary += c.Salary
+	n.Reimb += c.Reimb
 	n.TopUp += c.TopUp
 	n.PF += c.PF
 	n.Admin += c.Admin
 	n.ESI += c.ESI
 	n.LWF += c.LWF
 	n.Grat += c.Grat
+	n.PlEnc += c.PlEnc
 	n.Bonus += c.Bonus
 	n.Med += c.Med
 	n.AccomShare += c.AccomShare
@@ -428,10 +445,10 @@ func (n *costNode) addNode(c *costNode) {
 // finish works out the totals, rounds the figures and orders the children by name (the company's unplaced row last).
 func (n *costNode) finish() {
 	r := calc.Round2
-	n.Contrib = r(n.PF + n.Admin + n.ESI + n.LWF + n.Grat + n.Bonus + n.Med)
+	n.Contrib = r(n.PF + n.Admin + n.ESI + n.LWF + n.Grat + n.PlEnc + n.Bonus + n.Med)
 	n.Accom = r(n.AccomShare + n.AccomEmpty)
-	n.Total = r(n.Salary + n.Contrib + n.Accom)
-	for _, p := range []*float64{&n.Salary, &n.TopUp, &n.PF, &n.Admin, &n.ESI, &n.LWF, &n.Grat, &n.Bonus, &n.Med, &n.AccomShare, &n.AccomEmpty, &n.Budget} {
+	n.Total = r(n.Salary + n.Reimb + n.Contrib + n.Accom)
+	for _, p := range []*float64{&n.Salary, &n.Reimb, &n.TopUp, &n.PF, &n.Admin, &n.ESI, &n.LWF, &n.Grat, &n.PlEnc, &n.Bonus, &n.Med, &n.AccomShare, &n.AccomEmpty, &n.Budget} {
 		*p = r(*p)
 	}
 	if n.People > 0 {
@@ -674,9 +691,10 @@ func (s *Server) costPeople(r *http.Request, c *Ctx) (any, error) {
 		}
 		x := row{costLine: l, Location: pl.Name}
 		rd := calc.Round2
-		x.Salary, x.TopUp, x.PF, x.Admin, x.ESI, x.LWF, x.Grat, x.Bonus, x.Med, x.Accom = rd(l.Salary), rd(l.TopUp), rd(l.PF), rd(l.Admin), rd(l.ESI), rd(l.LWF), rd(l.Grat), rd(l.Bonus), rd(l.Med), rd(l.Accom)
+		x.Salary, x.Reimb, x.TopUp, x.PF, x.Admin, x.ESI, x.LWF, x.Grat, x.Bonus, x.Med, x.Accom = rd(l.Salary), rd(l.Reimb), rd(l.TopUp), rd(l.PF), rd(l.Admin), rd(l.ESI), rd(l.LWF), rd(l.Grat), rd(l.Bonus), rd(l.Med), rd(l.Accom)
+		x.PlEnc = rd(l.PlEnc)
 		x.Contrib = rd(l.contrib())
-		x.Total = rd(l.Salary + l.contrib() + l.Accom)
+		x.Total = rd(l.Salary + l.Reimb + l.contrib() + l.Accom)
 		out = append(out, x)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Total > out[j].Total })
@@ -705,7 +723,7 @@ func (s *Server) costTrend(r *http.Request, c *Ctx) (any, error) {
 		if n == nil {
 			n = &costNode{}
 		}
-		out = append(out, map[string]any{"ym": m, "mode": meta.Mode, "frozen": meta.Frozen, "people": n.People, "salary": n.Salary, "contrib": n.Contrib,
+		out = append(out, map[string]any{"ym": m, "mode": meta.Mode, "frozen": meta.Frozen, "people": n.People, "salary": n.Salary, "reimb": n.Reimb, "contrib": n.Contrib,
 			"accom": n.Accom, "total": n.Total, "perHead": n.PerHead, "budget": n.Budget, "over": n.Over})
 	}
 	return map[string]any{"months": out}, nil
@@ -737,15 +755,15 @@ func (s *Server) costSheet(r *http.Request, c *Ctx) (string, []string, [][]any, 
 		if n.Budget > 0 {
 			budget, diff, pct = n.Budget, n.Diff, n.Pct
 		}
-		rows = append(rows, []any{ymLabel(ym), basis, level[n.Kind], strings.Repeat("  ", depth) + n.Name, n.People, n.Salary, n.TopUp, n.PF, n.Admin, n.ESI, n.LWF, n.Grat, n.Bonus, n.Med,
+		rows = append(rows, []any{ymLabel(ym), basis, level[n.Kind], strings.Repeat("  ", depth) + n.Name, n.People, n.Salary, n.Reimb, n.TopUp, n.PF, n.Admin, n.ESI, n.LWF, n.Grat, n.PlEnc, n.Bonus, n.Med,
 			n.Contrib, n.AccomShare, n.AccomEmpty, n.Accom, n.Total, n.PerHead, budget, diff, pct, map[bool]string{true: "Over budget"}[n.Over]})
 		for _, x := range n.Children {
 			walk(x, depth+1)
 		}
 	}
 	walk(costTree(b, c), 0)
-	return "cost-" + ym + ".xlsx", []string{"Month", "Basis", "Level", "Name", "People", "Salary paid", "Minimum-wage top-ups (excluded)", "Employer PF", "EPFO admin and EDLI", "Employer ESI", "LWF (employer)",
-		"Gratuity", "Bonus", "Medical insurance", "Company contributions", "Accommodation (shares)", "Accommodation (empty units)", "Accommodation", "Total cost",
+	return "cost-" + ym + ".xlsx", []string{"Month", "Basis", "Level", "Name", "People", "Salary paid", "Reimbursement (outside the gross)", "Minimum-wage top-ups (excluded)", "Employer PF", "EPFO admin and EDLI", "Employer ESI", "LWF (employer)",
+		"Gratuity", "PL encashment provision", "Bonus", "Medical insurance", "Company contributions", "Accommodation (shares)", "Accommodation (empty units)", "Accommodation", "Total cost",
 		"Cost per head", "Budget", "Difference", "% of budget used", "Over"}, rows, nil
 }
 

@@ -7,6 +7,7 @@ import PersonPicker, { type Person } from '../components/PersonPicker';
 import { CandidateBlock, InterviewForm } from './Onboarding';
 import { SkipApprovalButton, SkipWaitingButton } from '../components/SkipApproval';
 import { shiftOffered } from './ShiftForm';
+import { BulkModal } from './Bulk';
 
 /** Request types, in the prototype's order (WFS). */
 export const WORKFLOWS: Record<string, string> = {
@@ -50,10 +51,10 @@ const COND: Record<string, string> = {
 };
 const COND_OK: Record<string, string[]> = {
   shortlist: ['always'],
-  joining: ['always', 'budget'], verify: ['always'], leave: ['always', 'days', 'grades'], regularize: ['always', 'cnt', 'grades'], transfer: ['always', 'grades', 'tkind'],
-  resign: ['always', 'grades', 'waive', 'skind'], p_claim: ['always', 'amount', 'ctype', 'grades'], p_adv: ['always', 'amount', 'grades'], p_arrear: ['always', 'amount'],
-  p_ded: ['always', 'amount', 'grades'], p_change: ['always', 'ckind'], p_fnf: ['always', 'amount'],
-  p_pip: ['always', 'amount'], // the prototype copies the arrear's (COND_OK.p_pip)
+  joining: ['always', 'budget', 'grades'], verify: ['always', 'grades'], leave: ['always', 'days', 'grades'], regularize: ['always', 'cnt', 'grades'], transfer: ['always', 'grades', 'tkind'],
+  resign: ['always', 'grades', 'waive', 'skind'], p_claim: ['always', 'amount', 'ctype', 'grades'], p_adv: ['always', 'amount', 'grades'], p_arrear: ['always', 'amount', 'grades'],
+  p_ded: ['always', 'amount', 'grades'], p_change: ['always', 'ckind', 'grades'], p_fnf: ['always', 'amount', 'grades'],
+  p_pip: ['always', 'amount', 'grades'], // the prototype copies the arrear's (COND_OK.p_pip)
   p_ack: ['always', 'grades'],
 };
 const TKINDS = ['Within city', 'Cross city', 'Cross state', 'Cross region'];
@@ -945,7 +946,8 @@ const NameCell = ({ p }: { p?: { id: string; name: string } }) => (p?.id ? <>{p.
 function ApproverNames() {
   const { can } = useAuth();
   const nav = useNavigate();
-  const { data: d, error } = useLoad(() => api('/approvals/approvers'), []);
+  const { data: d, error, reload } = useLoad(() => api('/approvals/approvers'), []);
+  const [bulk, setBulk] = useState(false);
   if (!d) return <Loading error={error} />;
   const locRoles = inOrder(Object.keys(d.locations[0]?.people || {}), LOC_ROLES);
   return <>
@@ -953,7 +955,9 @@ function ApproverNames() {
     {d.gaps.length ? <div className="note bad" style={{ marginBottom: 14 }}>{d.gaps.length} not mapped: {d.gaps.slice(0, 8).join(', ')}{d.gaps.length > 8 ? '…' : ''}</div>
       : <div className="note ok" style={{ marginBottom: 14 }}>Every approver in use has a name.</div>}
     {d.overlaps?.length > 0 && <div className="note" style={{ marginBottom: 14 }}><b>Check overlaps:</b> {d.overlaps.slice(0, 4).join(' ')}</div>}
-    {can('acc.users') && <div style={{ marginBottom: 14 }}><button className="btn" onClick={() => nav('/access?tab=users')}>Open Role mapping</button></div>}
+    {can('acc.users') && <div className="row" style={{ marginBottom: 14, gap: 8 }}><button className="btn" onClick={() => nav('/access?tab=users')}>Open Role mapping</button>
+      {can('acc.users', 2) && <button className="btn primary" onClick={() => setBulk(true)}>Bulk upload names</button>}</div>}
+    {bulk && <BulkModal tpl="apprnames" title="Bulk upload: approver names" onClose={() => setBulk(false)} onApplied={() => reload()} />}
     <div className="card" style={{ marginBottom: 14 }}><h3>Properties</h3><div className="tw"><table>
       <thead><tr><th>Property</th>{locRoles.map((r) => <th key={r}>{r}</th>)}</tr></thead>
       <tbody>{d.locations.map((l: any) => <tr key={l.id}><td><b>{l.name}</b><div className="mute" style={{ fontSize: 12 }}>{l.path}</div></td>{locRoles.map((r) => <td key={r}><NameCell p={l.people[r]} /></td>)}</tr>)}</tbody>
@@ -1297,6 +1301,8 @@ function FlowEditor({ goNames }: { goNames: () => void }) {
   const grades = useLoad(() => api<any[]>('/masters/grade?status=Active').then((l) => l.map((g) => g.name as string)), []);
   const names = useLoad(() => api('/approvals/approvers'), []);
   const settings = useLoad(() => api<{ slaHours: number }>('/approvals/settings'), []);
+  const { can } = useAuth();
+  const [bulkNames, setBulkNames] = useState(false);
   const [wf, setWf] = useState('joining');
   const [flow, setFlow] = useState<'Operations' | 'Corporate'>('Operations');
   const [grp, setGrp] = useState<'C' | 'P'>('C');
@@ -1379,7 +1385,8 @@ function FlowEditor({ goNames }: { goNames: () => void }) {
     <>
       <Tabs tabs={wfs.map((w) => [w, wfName(w)] as [string, string])} value={wf} onChange={(w) => leave(() => setWf(w))} />
       <p className="ink2" style={{ margin: '0 0 14px', fontSize: 13.5 }}>{WFNOTE[wf]}</p>
-      {gaps.length > 0 && <div className="note bad" style={{ marginBottom: 14 }}><b>Approver names missing:</b> {gaps.slice(0, 8).join(', ')}{gaps.length > 8 ? ` and ${gaps.length - 8} more` : ''}. <button className="btn sm" onClick={goNames}>Add names</button></div>}
+      {gaps.length > 0 && <div className="note bad" style={{ marginBottom: 14 }}><b>Approver names missing:</b> {gaps.slice(0, 8).join(', ')}{gaps.length > 8 ? ` and ${gaps.length - 8} more` : ''}. <button className="btn sm" onClick={goNames}>Add names</button>{can('acc.users', 2) && <> <button className="btn sm" onClick={() => setBulkNames(true)}>Bulk upload names</button></>}</div>}
+      {bulkNames && <BulkModal tpl="apprnames" title="Bulk upload: approver names" onClose={() => setBulkNames(false)} onApplied={() => names.reload()} />}
       <div className="card" style={{ marginBottom: 14 }}>
         <div className="row sp" style={{ marginBottom: 10, flexWrap: 'wrap' }}>
           <div className="seg">{(['Operations', 'Corporate'] as const).map((f) => <button key={f} className={flow === f ? 'on' : ''} onClick={() => leave(() => setFlow(f))}>{f} flow</button>)}</div>

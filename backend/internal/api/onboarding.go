@@ -499,6 +499,7 @@ type offerJob struct {
 	Grade, CityID, City, LocID, Loc string
 	Gross                           float64
 	TopUp                           float64 // meal and accommodation deductions: a minimum-wage top-up, not company cost
+	Reimb                           float64 // the Reimbursement ₹ a month, outside the gross (reimb.go): company cost
 	Manager, FManager               *string
 	RejoinOf                        string
 	Rehire                          string
@@ -656,6 +657,9 @@ func resolveJob(ctx context.Context, q store.Q, d map[string]string, errs *[]str
 		}
 		j.Gross = g
 	}
+	if calc.EmploymentType(j.Type) != calc.Retainer {
+		j.Reimb = math.Max(0, offerReimb(d))
+	}
 	if calc.RulesFor(calc.EmploymentType(j.Type)).Ded == "all" {
 		for _, k := range []string{"dMeal", "dAccom"} {
 			if v, err := strconv.ParseFloat(d[k], 64); err == nil && v > 0 {
@@ -733,7 +737,7 @@ func offerProblems(ctx context.Context, q store.Q, d map[string]string, docs map
 	checkFormat(d, &errs)
 	j := resolveJob(ctx, q, d, &errs)
 	jobMasterRequired(d, &errs)                             // Role and Skill, always, like the department (hirefix.go)
-	offerReimbProblems(ctx, q, j, d, &errs)                 // the Reimbursement must fit in what Basic and HRA leave (reimb.go)
+	offerReimbProblems(ctx, q, j, d, &errs)                 // the Reimbursement: zero or more, on a structure that has it (reimb.go)
 	if err := accomProblems(ctx, q, d, &errs); err != nil { // Company accommodation: Yes needs a cluster with units (hst_auto.go)
 		return offerJob{}, nil, err
 	}
@@ -786,7 +790,7 @@ func offerPay(ctx context.Context, q store.Q, j offerJob, d map[string]string) c
 		st = calc.Structure{}
 		_ = onboardingDecodeJSON(x["rates"], &st)
 	}
-	in := calc.Input{Type: calc.EmploymentType(j.Type), Gross: j.Gross, Structure: &st, EmpAmts: reimbAmts(offerReimb(d))}
+	in := calc.Input{Type: calc.EmploymentType(j.Type), Gross: j.Gross, Structure: &st, EmpAmts: reimbAmts(offerReimb(d)), AllIn: offerAllIn(ctx, q, j)}
 	t := calc.RulesFor(calc.EmploymentType(j.Type))
 	if t.Variable && !st.Designed {
 		in.VarPct, in.VarCycle = numOr(d["varPct"]), intOr(d["varCycle"])
@@ -987,6 +991,7 @@ type offerBody struct {
 	Data      map[string]any `json:"data"`
 	Draft     string         `json:"draft"`     // documents uploaded before the offer was saved (offers before stages)
 	Candidate string         `json:"candidate"` // the selected candidate (SI-0001) the offer is for
+	AtJoining bool           `json:"atJoining"` // "Raise offer at joining" (offer_at_joining.go)
 }
 
 // offerInputDocs are the documents an offer form sees: a candidate's (owner SI-0001), else a draft's.
@@ -1108,6 +1113,14 @@ func (s *Server) offerCreate(r *http.Request, c *Ctx) (any, error) {
 		return nil, err
 	}
 	b.Candidate = str(cand["id"])
+	if b.AtJoining { // offer at joining: chosen before, raised on the joining day (offer_at_joining.go)
+		if !oajOpen(cand) {
+			return nil, bad("Choose Offer at joining for %s first", b.Candidate)
+		}
+		if doj := oajDOJ(cand); today() < doj {
+			return nil, bad("The joining day is %s. Raise the offer at joining on that day, or use Reschedule joining", longDate(doj))
+		}
+	}
 	d := cleanData(b.Data)
 	candidateOfferData(cand, d)
 	docs := offerInputDocs(ctx, s.st.DB, b)
@@ -1157,6 +1170,16 @@ func (s *Server) offerCreate(r *http.Request, c *Ctx) (any, error) {
 			{Key: "designation_id", Value: j.DesigID}, {Key: "grade", Value: j.Grade}, {Key: "location_id", Value: j.LocID}, {Key: "manager_id", Value: j.Manager},
 			{Key: "functional_manager_id", Value: j.FManager}, {Key: "gross", Value: j.Gross}, {Key: "band_pos", Value: pos}, {Key: "budget_over", Value: over},
 			{Key: "data", Value: d}, {Key: "rejoin_of", Value: strPtr(j.RejoinOf)}, {Key: "raised_by", Value: c.EmployeeID}, {Key: "version", Value: int32(version)}}
+		if b.AtJoining || (prev != nil && prev["at_joining"] == true) {
+			offer = append(offer, bson.E{Key: "at_joining", Value: b.AtJoining})
+		}
+		if b.AtJoining {
+			if _, err := tx.C("candidate").Update(ctx, bson.D{{Key: "_id", Value: b.Candidate}}, bson.D{{Key: "$set", Value: bson.D{{Key: "oaj_doj", Value: j.DOJ}}}}); err != nil {
+				return err
+			}
+		} else if err := oajSwitchBack(ctx, tx, c, cand); err != nil { // the usual offer raised instead of the offer at joining
+			return err
+		}
 		if prev != nil { // the revised offer: a new version, sent for approval again, from the start
 			offer = append(offer, bson.E{Key: "released_at", Value: nil}, bson.E{Key: "accepted_at", Value: nil}, bson.E{Key: "declined_at", Value: nil},
 				bson.E{Key: "query_at", Value: nil}, bson.E{Key: "query_text", Value: nil}, bson.E{Key: "expires_on", Value: nil}, bson.E{Key: "lapsed_at", Value: nil})
@@ -1182,7 +1205,14 @@ func (s *Server) offerCreate(r *http.Request, c *Ctx) (any, error) {
 		if prev != nil {
 			from = map[bool]string{true: "Question", false: "Not approved"}[prev["query_at"] != nil]
 		}
-		if err := lifeEvent(ctx, tx, c, lifeEv{Cand: b.Candidate, Action: fmt.Sprintf("Offer v%d raised", version), From: from, To: "Pending approval",
+		action := fmt.Sprintf("Offer v%d raised", version)
+		if b.AtJoining {
+			action += " at joining"
+			if prev == nil {
+				from = "Offer at joining"
+			}
+		}
+		if err := lifeEvent(ctx, tx, c, lifeEv{Cand: b.Candidate, Action: action, From: from, To: "Pending approval",
 			Reason: fmt.Sprintf("%s, gross %s a month, joining %s", j.Type, rupees(j.Gross), longDate(j.DOJ))}); err != nil {
 			return err
 		}
@@ -1194,7 +1224,11 @@ func (s *Server) offerCreate(r *http.Request, c *Ctx) (any, error) {
 			return err
 		}
 		out = map[string]any{"id": id, "request": req, "version": version}
-		return audit(ctx, tx, c, fmt.Sprintf("Raised offer v%d for %s (%s)", version, j.Name, b.Candidate), "offer", id, nil, map[string]any{"type": j.Type, "gross": j.Gross, "budget": over, "band": pos, "candidate": b.Candidate})
+		what := fmt.Sprintf("Raised offer v%d for %s (%s)", version, j.Name, b.Candidate)
+		if b.AtJoining {
+			what = fmt.Sprintf("Raised offer v%d at joining for %s (%s)", version, j.Name, b.Candidate)
+		}
+		return audit(ctx, tx, c, what, "offer", id, nil, map[string]any{"type": j.Type, "gross": j.Gross, "budget": over, "band": pos, "candidate": b.Candidate, "atJoining": b.AtJoining})
 	})
 	return out, err
 }
@@ -1280,6 +1314,7 @@ func onboardingOffers(ctx context.Context, q store.Q, filter bson.D, limit int64
 			"data": o["data"], "location_id": o["location_id"], "department_id": o["department_id"], "pan_check": o["pan_check"],
 			"offer_no": o["offer_no"], "version": o["version"], "expires_on": o["expires_on"], "query_at": o["query_at"], "query_text": o["query_text"], "lapsed_at": o["lapsed_at"],
 			"letter_at": o["letter_at"], "letter_released_at": o["letter_released_at"], // hirefix.go
+			"at_joining": o["at_joining"], // offer_at_joining.go
 			"department": d["name"], "designation": g["name"], "location": p.loc["name"], "city": p.city["name"], "city_id": p.city["id"], "raised_by": rb["name"],
 			"request_id": onboardingCol(r, "id"), "request_status": onboardingCol(r, "status"), "chain": onboardingCol(r, "chain"), "step": onboardingCol(r, "step"),
 			"verify_id": onboardingCol(v, "id"), "verify_status": onboardingCol(v, "status"), "verify_chain": onboardingCol(v, "chain"), "verify_step": onboardingCol(v, "step")})
@@ -1572,7 +1607,7 @@ func (s *Server) offerLetter(ctx context.Context, o store.Row, res calc.Result) 
 func offerBreakup(res calc.Result) string {
 	var l []string
 	if res.Fee > 0 { // a retainer: the retainer value only (calc retainerOnly)
-		l = append(l, "Retainer fee: "+rupees(res.Fee)+" a month (TDS under section 194J)")
+		l = append(l, "Retainer fee: "+rupees(res.Fee)+" a month (TDS "+tdsNote(res.TdsRate)+")")
 		for _, c := range res.Comps {
 			if c.Side == calc.SideDed {
 				l = append(l, fmt.Sprintf("%s (deduction): %s a month", c.Name, rupees(calc.Round2(c.Amount))))
@@ -1585,6 +1620,8 @@ func offerBreakup(res calc.Result) string {
 			switch {
 			case c.Kind == calc.CompVariable:
 				l = append(l, fmt.Sprintf("%s (variable, %s): %s a month", c.Name, cycleWord(c.Cycle), rupees(calc.Round2(c.Target))))
+			case c.Extra:
+				l = append(l, fmt.Sprintf("%s (outside the gross): %s a month", c.Name, rupees(calc.Round2(c.Amount))))
 			case c.Side == calc.SideDed:
 				l = append(l, fmt.Sprintf("%s (deduction): %s a month", c.Name, rupees(calc.Round2(c.Amount))))
 			default:
@@ -1593,10 +1630,10 @@ func offerBreakup(res calc.Result) string {
 		}
 	} else {
 		l = append(l, "Basic + DA: "+rupees(res.Basic)+" a month", "HRA: "+rupees(res.Hra)+" a month")
-		if res.Reimb > 0 {
-			l = append(l, "Reimbursement: "+rupees(res.Reimb)+" a month")
-		}
 		l = append(l, "Special allowance: "+rupees(res.Sa)+" a month")
+		if res.Reimb > 0 {
+			l = append(l, "Reimbursement (outside the gross): "+rupees(res.Reimb)+" a month")
+		}
 		if res.Variable > 0 {
 			l = append(l, "Variable pay: "+rupees(res.Variable)+" a month")
 		}
@@ -1637,6 +1674,9 @@ func (s *Server) offerStep(r *http.Request, c *Ctx) (any, error) {
 		case "release":
 			if st != "Approved" {
 				return bad("The offer can be released once it is approved, and only once")
+			}
+			if o["at_joining"] == true { // offer_at_joining.go
+				return bad("An offer at joining is not released: Mark joined records the acceptance and gives the letter")
 			}
 			set := bson.D{{Key: "released_at", Value: now}}
 			if cand != "" {
@@ -2026,6 +2066,9 @@ func finalizeOffer(ctx context.Context, tx store.Q, r *Request) (string, error) 
 		v := max(1, toInt(o["version"]))
 		if err := lifeEvent(ctx, tx, nil, lifeEv{Cand: cand, Action: fmt.Sprintf("Offer v%d approved", v), From: "Pending approval", To: "Approved", Reason: "Approval " + r.ID}); err != nil {
 			return "", err
+		}
+		if o["at_joining"] == true { // offer_at_joining.go
+			return fmt.Sprintf("Offer at joining v%d for %s (%s) approved. Mark them joined from Onboarding: joining is the acceptance and the Offer ID is issued then.", v, o["candidate_name"], cand), nil
 		}
 		return fmt.Sprintf("Offer v%d for %s (%s) approved. Release it from Onboarding. The Offer ID is issued when the candidate accepts.", v, o["candidate_name"], cand), nil
 	}

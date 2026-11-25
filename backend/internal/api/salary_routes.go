@@ -38,7 +38,8 @@ func (s *Server) salaryPreview(r *http.Request, c *Ctx) (any, error) {
 		Inc         float64  `json:"inc"`
 		VarAmt      *float64 `json:"varAmt"`  // variable pay as a target: ₹ a month (varMode "amount")
 		VarMode     string   `json:"varMode"` // "pct": the target is varPct % of the fixed gross
-		Reimb       float64  `json:"reimb"`   // the Reimbursement in the fixed pay, ₹ a month (reimb.go)
+		Reimb       float64  `json:"reimb"`   // the Reimbursement (outside the gross), ₹ a month (reimb.go)
+		TdsPct      *float64 `json:"tdsPct"`  // a retainer's own TDS % (nil: the structure's)
 	}
 	if err := decode(r, &b); err != nil {
 		return nil, err
@@ -69,11 +70,14 @@ func (s *Server) salaryPreview(r *http.Request, c *Ctx) (any, error) {
 	if b.LocationID != "" {
 		lwf = lwfFor(ctx, s.st.DB, b.LocationID, today())
 	}
-	if err := checkReimb(st, "", string(t), b.Gross, b.Reimb); err != nil {
+	if err := checkReimb(st, "", string(t), b.Reimb); err != nil {
+		return nil, err
+	}
+	if err := checkTdsPct(b.TdsPct); err != nil {
 		return nil, err
 	}
 	in := calc.Input{Type: t, Gross: b.Gross, Structure: &st, Lwf: lwf, Month: b.Month, JoinMonth: b.JoinMonth, VarPct: b.VarPct, VarCycle: b.VarCycle, Meal: b.Meal, Accom: b.Accom, Inc: b.Inc,
-		EmpAmts: reimbAmts(b.Reimb)}
+		EmpAmts: reimbAmts(b.Reimb), TdsPct: b.TdsPct, AllIn: allInPreview(ctx, s.st.DB)}
 	switch {
 	case st.Designed && b.VarMode == "pct" && b.VarPct != nil:
 		in.VarTargetPct = b.VarPct
@@ -81,7 +85,7 @@ func (s *Server) salaryPreview(r *http.Request, c *Ctx) (any, error) {
 		in.VarTarget, in.CTC = b.VarAmt, b.Gross+*b.VarAmt
 	}
 	res := calc.Calc(in)
-	out := map[string]any{"breakup": res, "ctcYear": calc.Round2(res.CTC * 12), "band": nil, "lwfNote": lwfNoteText(lwf), "rules": calc.RulesFor(t)}
+	out := map[string]any{"breakup": res, "ctcYear": calc.Round2(res.CTC * 12), "band": nil, "lwfNote": lwfNoteText(lwf), "rules": calc.RulesFor(t), "allIn": allInFrom(ctx, s.st.DB)}
 	if st.Designed { // the labour-code wage check, for a structure made from components (paycomp.go)
 		out["wage"] = wageNote(res)
 	}

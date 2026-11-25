@@ -1,13 +1,13 @@
 package api
 
-// Reimbursement in the fixed pay (owner, 20 Nov 2026). Every salary structure carries a fixed earning "Reimbursement"
-// (calc.ReimbComponent, method "per-employee amount"): its ₹ a month is entered on each employee (Pay options, Bulk
-// update › Salary breakup column "Reimbursement (₹)", the salary and pay previews) and kept in
-// employee_pay.comp_amts.reimb. It is part of the fixed monthly gross: Basic and HRA as the structure says, then the
-// Reimbursement, then the balancing component (Special allowance) takes what is left, so the gross and CTC stay as
-// entered. Flags by default: taxable, not PF, ESI or bonus wage (the component designer can change them). An amount
-// above what is left after Basic and HRA (the balancing figure with no reimbursement) is refused. Nobody has one until
-// HR enters it, so pay is unchanged (migration 024; `hrms pay-compare -dump` / `-against`).
+// Reimbursement (owner, 20 Nov 2026; outside the gross since 25 Nov 2026). Every salary structure carries a fixed
+// earning "Reimbursement" (calc.ReimbComponent, method "per-employee amount"): its ₹ a month is entered on each employee
+// (Pay options, Bulk update › Salary breakup column "Reimbursement (₹)", the salary and pay previews, the offer) and
+// kept in employee_pay.comp_amts.reimb. It is paid OUTSIDE the fixed monthly gross, like variable pay: the gross split
+// (Basic, HRA, Special allowance) is exactly as with no reimbursement, the amount is earned by the days paid as the gross
+// is, it is in no PF, ESI or bonus wage, and it is added to total earnings, net pay and the CTC/cost. Flags by default:
+// taxable (the component designer can change it). Any amount of zero or more is taken (no "room" check any more).
+// Nobody has one until HR enters it, so pay is unchanged (migration 024; `hrms pay-compare`).
 
 import (
 	"context"
@@ -36,18 +36,9 @@ func hasPerEmp(st calc.Structure, code string) bool {
 	return false
 }
 
-// reimbRoom is what the fixed gross leaves after Basic, HRA and the other fixed earnings that are not the balancing
-// figure: the most the Reimbursement can be. With amt as the Reimbursement the balancing figure stops at 0, so the
-// fixed earnings go over the gross by exactly amt − room.
-func reimbRoom(st calc.Structure, typ string, gross, amt float64) float64 {
-	r := calc.Calc(calc.Input{Type: calc.EmploymentType(typ), Gross: gross, Structure: &st, EmpAmts: reimbAmts(amt)})
-	over := math.Max(0, r.Basic+r.Hra+r.Sa+r.Reimb-gross)
-	return calc.Round2(math.Max(0, amt-over))
-}
-
-// checkReimb refuses a Reimbursement the structure cannot hold: negative, on a structure without the component, or
-// more than what is left after Basic and HRA.
-func checkReimb(st calc.Structure, structName, typ string, gross, amt float64) error {
+// checkReimb refuses a Reimbursement the structure cannot pay: negative, on a structure without the component, or for
+// a retainer.
+func checkReimb(st calc.Structure, structName, typ string, amt float64) error {
 	switch {
 	case amt < 0:
 		return bad("Reimbursement cannot be negative")
@@ -58,27 +49,16 @@ func checkReimb(st calc.Structure, structName, typ string, gross, amt float64) e
 	case calc.EmploymentType(typ) == calc.Retainer:
 		return bad("A retainer is paid one retainer fee, so it has no Reimbursement")
 	}
-	if room := reimbRoom(st, typ, gross, amt); amt > room+0.005 {
-		return bad("Reimbursement %s is more than what is left after Basic and HRA (%s on a monthly gross of %s). Lower it or raise the gross", inr(amt), inr(room), inr(gross))
-	}
 	return nil
 }
 
-// reimbCheckFor checks an amount for a person on their gross (gross > 0: the gross about to be set) and the structure
-// in force on date.
-func reimbCheckFor(ctx context.Context, q store.Q, id, typ, date string, gross, amt float64) error {
+// reimbCheckFor checks an amount for a person on the structure in force on date.
+func reimbCheckFor(ctx context.Context, q store.Q, id, typ, date string, amt float64) error {
 	if amt == 0 {
 		return nil
 	}
-	if gross <= 0 {
-		g, ok := grossFor(ctx, q, id, date[:7])
-		if !ok {
-			return bad("Set the monthly gross before the Reimbursement")
-		}
-		gross = g
-	}
 	name, st := structureFor(ctx, q, id, date)
-	return checkReimb(st, name, typ, gross, amt)
+	return checkReimb(st, name, typ, amt)
 }
 
 // setReimb records a person's Reimbursement ₹ a month (employee_pay.comp_amts.reimb) with the change history; nil when
@@ -121,8 +101,8 @@ func offerReimb(d map[string]string) float64 {
 	return 0
 }
 
-// offerReimbProblems checks the offer's Reimbursement against its gross and salary structure (the one chosen, else the
-// default), as Pay options does for an employee.
+// offerReimbProblems checks the offer's Reimbursement against its salary structure (the one chosen, else the default),
+// as Pay options does for an employee.
 func offerReimbProblems(ctx context.Context, q store.Q, j offerJob, d map[string]string, errs *[]string) {
 	v := strings.TrimSpace(d["reimb"])
 	if v == "" {
@@ -133,7 +113,7 @@ func offerReimbProblems(ctx context.Context, q store.Q, j offerJob, d map[string
 		*errs = append(*errs, "Reimbursement must be an amount of zero or more")
 		return
 	}
-	if amt == 0 || j.Gross <= 0 || j.Type == "" {
+	if amt == 0 || j.Type == "" {
 		return
 	}
 	sid := d["structId"]
@@ -144,7 +124,7 @@ func offerReimbProblems(ctx context.Context, q store.Q, j offerJob, d map[string
 	if x, s, err := structureDoc(ctx, q, sid); err == nil {
 		name, st = str(x["name"]), s
 	}
-	if err := checkReimb(st, name, j.Type, j.Gross, amt); err != nil {
+	if err := checkReimb(st, name, j.Type, amt); err != nil {
 		*errs = append(*errs, err.Error())
 	}
 }

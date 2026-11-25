@@ -28,8 +28,9 @@ import (
 // every-minute sweep (PortalSweepArgs) that notices changes and exits; never inside a request. A job posts once
 // and never again by itself (MaxAttempts 1, and a failed write stays failed until HR presses Retry). A refusal, an
 // error or a missing mapping goes to the waiting list with the portal's message and a bell to HR; an unclear reply
-// is "Check on the portal" as before. Nothing goes out while sending is off (ptReady): the writes due wait
-// (phase "waiting") and go out when HR confirms the backlog ("Send waiting") once it is on.
+// is "Check on the portal" as before. Sending is on since 25 Nov 2026 (owner's approval, realtime.Spec.Send); if it
+// is switched off (ptReady), the writes due wait (phase "waiting") and go out when HR confirms the backlog ("Send
+// waiting") once it is on again. A create also chooses the punch machine (ptDevice, portal_write.go).
 //
 // The state is kept in employee.portal_sync next to the last send: want ("create", set at Mark joined), phase
 // (waiting, sending, failed, blocked; empty when nothing is pending), phase_action, phase_msg, phase_at.
@@ -122,10 +123,11 @@ func ptWantCreate(ctx context.Context, tx store.Q, id string) error {
 	for k, v := range asMap(e["portal_sync"]) {
 		sync[k] = v
 	}
-	if str(sync["state"]) != "" || strings.TrimSpace(str(e["attendance_code"])) != "" {
+	if st := str(sync["state"]); (st != "" && st != ptRemoved) || strings.TrimSpace(str(e["attendance_code"])) != "" {
 		return nil // already on the portal (a rejoiner keeping their code): nothing to create
 	}
 	sync["want"] = "create"
+	delete(sync, "state")
 	_, err = tx.C("employee").Update(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{"portal_sync": sync}})
 	return err
 }
@@ -265,14 +267,23 @@ func (s *Server) PortalAutoRun(ctx context.Context, a PortalWriteArgs) (string, 
 	if action == "create" {
 		ptCreateMu.Lock()
 		defer ptCreateMu.Unlock()
-		code, err := ptNextCode(ctx, q, set)
-		if err != nil {
-			return "", err
+		// The portal's employee code is the number of the person's ID, 6 digits (owner, 25 Nov 2026): JI-000006 →
+		// 000006, EMP-000123 → 000123. An ID with no digits takes the next free number as before.
+		code := ptIDCode(x.ID)
+		if code == "" {
+			if code, err = ptNextCode(ctx, q, set); err != nil {
+				return "", err
+			}
 		}
 		if msg, err := attCodeProblem(ctx, q, code, x.ID); err != nil {
 			return "", err
 		} else if msg != "" {
-			block = append(block, msg)
+			block = append(block, msg+": set "+x.Name+"'s Attendance code by hand (Employees) if they are already on the portal")
+		}
+		if other, err := ptCodeHeld(ctx, q, code, x.ID); err != nil {
+			return "", err
+		} else if other != "" {
+			block = append(block, "Portal code "+code+" is being sent for "+other)
 		}
 		if len(st.Matches) > 0 && !notSame {
 			block = append(block, "The portal may already have "+x.Name+": Match portal codes proposed "+strings.Join(st.Matches, "; ")+
@@ -287,6 +298,17 @@ func (s *Server) PortalAutoRun(ctx context.Context, a PortalWriteArgs) (string, 
 		if action == "update" {
 			delete(vals, realtime.FieldCode) // the code and card stay as the portal has them
 			delete(vals, realtime.FieldCard)
+		}
+		if action == "create" { // the punch machine the machine pool plans (owner, 25 Nov 2026); never on update or left
+			serial, note, err := ptDevice(ctx, q, x)
+			if err != nil {
+				return "", err
+			}
+			if serial != "" {
+				vals[realtime.FieldDevice] = serial
+			} else {
+				w.Notes = append(w.Notes, realtime.DeviceNote(note))
+			}
 		}
 		w.Values = vals
 	case "left":
@@ -347,6 +369,51 @@ func (s *Server) PortalAutoRun(ctx context.Context, a PortalWriteArgs) (string, 
 	return "saved", nil
 }
 
+// ptDevice is the serial number of the punch machine a new employee's record goes on (the machine pool's plan,
+// mpPlan: their own property's machine first, then the next machine of the cluster with space), or why there is
+// none: their property has no cluster, the cluster has no machine mapped, the cluster is full, or the machine has no
+// serial number. None is not a problem: the create goes without a device and HR adds them to a machine on the portal.
+func ptDevice(ctx context.Context, q store.Q, x *ptEmp) (serial, why string, err error) {
+	p, err := mpLoad(ctx, q)
+	if err != nil {
+		return "", "", err
+	}
+	clID := p.locCluster[x.LocID]
+	cl := p.clusters[clID]
+	switch {
+	case x.LocID == "":
+		return "", "they have no property", nil
+	case cl == nil:
+		return "", "their property " + nonEmptyStr(x.Loc, x.LocID) + " is in no cluster", nil
+	case len(cl.Machines) == 0:
+		return "", "no punch machine is mapped to cluster " + cl.Name, nil
+	}
+	m := p.assign[x.ID]
+	if _, counted := p.people[x.ID]; !counted && m == nil { // not active yet: placed after everyone already there
+		ms := append([]*mpMachine(nil), cl.Machines...)
+		ps := append(append([]mpPerson(nil), cl.People...), mpPerson{ID: x.ID, Name: x.Name, LocID: x.LocID, DOJ: "9999-12-31"})
+		a, _, _ := mpPlan(ms, ps)
+		m = a[x.ID]
+	}
+	switch {
+	case m == nil:
+		return "", fmt.Sprintf("cluster %s is full (%d records on its machines)", cl.Name, cl.Cap), nil
+	case strings.TrimSpace(m.Serial) == "":
+		return "", "machine " + m.Name + " has no serial number", nil
+	}
+	return strings.TrimSpace(m.Serial), "", nil
+}
+
+// ptSentDevice is the punch machine a post chose (the device row as sent), "" when none.
+func ptSentDevice(rows []realtime.PlanRow) string {
+	for _, r := range rows {
+		if r.Role == realtime.FieldDevice {
+			return nonEmptyStr(r.Shown, r.Value)
+		}
+	}
+	return ""
+}
+
 // ptRecord keeps what a post did, whatever it was (the post is done and is not repeated): the send log, the
 // employee's portal state (and Attendance code after a create), the audit with the fields sent and the reply, and
 // the punch-machine to-do. c is nil for an automatic write.
@@ -355,8 +422,13 @@ func (s *Server) ptRecord(ctx context.Context, c *Ctx, x *ptEmp, w realtime.Writ
 	ticked := ""
 	err := s.st.Tx(ctx, func(tx store.Q) error {
 		ticked = ""
-		if _, err := tx.C(store.PortalSendColl).Insert(ctx, bson.M{"employee_id": x.ID, "action": w.Action, "code": w.Code, "ok": res.OK, "unclear": res.Unclear,
-			"sent": res.Sent, "message": timectxNullIf(res.Message), "by": by, "at": now}); err != nil {
+		device := ptSentDevice(res.Sent)
+		rec := bson.M{"employee_id": x.ID, "action": w.Action, "code": w.Code, "ok": res.OK, "unclear": res.Unclear,
+			"sent": res.Sent, "message": timectxNullIf(res.Message), "by": by, "at": now, "device": timectxNullIf(device)}
+		if len(res.Notes) > 0 {
+			rec["notes"] = res.Notes
+		}
+		if _, err := tx.C(store.PortalSendColl).Insert(ctx, rec); err != nil {
 			return err
 		}
 		before := map[string]any{"attendance_code": timectxNullIf(x.Code), "portal_sync": x.Sync}
@@ -402,8 +474,16 @@ func (s *Server) ptRecord(ctx context.Context, c *Ctx, x *ptEmp, w realtime.Writ
 		} else if !res.OK {
 			outcome = "the portal refused it"
 		}
-		if err := audit(ctx, tx, c, fmt.Sprintf("%s %s the Realtime portal (code %s) by %s: %s", x.Name, verb, w.Code, by, outcome), "employee", x.ID, before,
-			map[string]any{"action": w.Action, "code": w.Code, "sent": res.Sent, "reply": res.Message, "ok": res.OK, "unclear": res.Unclear}); err != nil {
+		onMachine := ""
+		if device != "" {
+			onMachine = ", punch machine " + device
+		}
+		after := map[string]any{"action": w.Action, "code": w.Code, "sent": res.Sent, "reply": res.Message, "ok": res.OK, "unclear": res.Unclear, "device": timectxNullIf(device)}
+		if len(res.Notes) > 0 {
+			after["notes"] = res.Notes
+		}
+		if err := audit(ctx, tx, c, fmt.Sprintf("%s %s the Realtime portal (code %s%s) by %s: %s", x.Name, verb, w.Code, onMachine, by, outcome), "employee", x.ID, before,
+			after); err != nil {
 			return err
 		}
 		if res.OK {
@@ -539,6 +619,100 @@ func (s *Server) portalRetry(r *http.Request, c *Ctx) (any, error) {
 		return nil, err
 	}
 	return map[string]any{"queued": true}, nil
+}
+
+// portalCreate (HR) creates on the portal an active employee who is not on it and was never sent: someone marked
+// joined before automatic sending began (19 Nov 2026), so no create was ever due. One job, as at Mark joined.
+func (s *Server) portalCreate(r *http.Request, c *Ctx) (any, error) {
+	if err := c.Need("att.portal", 2); err != nil {
+		return nil, err
+	}
+	ctx := r.Context()
+	x, err := s.ptOne(ctx, c, r.PathValue("id"))
+	if err != nil {
+		return nil, err
+	}
+	if _, why := ptReady(); why != "" {
+		return nil, bad("%s", why)
+	}
+	if x.Status != "Active" {
+		return nil, bad("%s is not active", x.Name)
+	}
+	if st := str(x.Sync["state"]); (st != "" && st != ptRemoved) || str(x.Sync["phase"]) != "" || strings.TrimSpace(x.Code) != "" {
+		return nil, bad("%s already has a portal code or a write pending", x.Name)
+	}
+	if s.jobs == nil {
+		return nil, fmt.Errorf("the job queue is not running")
+	}
+	err = s.st.Tx(ctx, func(tx store.Q) error {
+		if err := ptWantCreate(ctx, tx, x.ID); err != nil {
+			return err
+		}
+		if _, err := s.jobs.InsertTx(ctx, tx, PortalWriteArgs{EmployeeID: x.ID, By: c.Name}, nil); err != nil {
+			return err
+		}
+		return audit(ctx, tx, c, fmt.Sprintf("Create on the Realtime portal asked for %s", x.Name), "employee", x.ID, nil, map[string]any{"want": "create"})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"queued": true}, nil
+}
+
+// ptRemoved is portal_sync.state after HR said the employee was removed (deleted) on the portal by hand.
+const ptRemoved = "removed"
+
+// ptFetchActive reads the portal's active employee list (GET). Tests replace it.
+var ptFetchActive = func(ctx context.Context, cfg realtime.Config) ([]realtime.ListRow, error) {
+	c, err := realtime.New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return c.ActiveList(ctx)
+}
+
+// portalRemoved (HR): the employee was deleted on the portal by hand. The HRMS checks the portal's list (GET) that
+// the code is really gone, then forgets the portal record (Attendance code and portal_sync), so "Create on the
+// portal" is offered again. Nothing is created by itself afterwards (state "removed": no automatic create).
+func (s *Server) portalRemoved(r *http.Request, c *Ctx) (any, error) {
+	if err := c.Need("att.portal", 2); err != nil {
+		return nil, err
+	}
+	ctx := r.Context()
+	x, err := s.ptOne(ctx, c, r.PathValue("id"))
+	if err != nil {
+		return nil, err
+	}
+	code := strings.TrimSpace(x.Code)
+	if code == "" {
+		code = str(x.Sync["code"])
+	}
+	if code == "" {
+		return nil, bad("%s has no portal code", x.Name)
+	}
+	cfg, ok := rtEnv()
+	if !ok {
+		return nil, bad("Add the portal account (REALTIME_URL, REALTIME_USER, REALTIME_PASS) to the server first")
+	}
+	rows, err := ptFetchActive(ctx, cfg)
+	if err != nil {
+		return nil, bad("The portal's employee list could not be read: %v", err)
+	}
+	if row := realtime.FindCode(rows, code); row != nil {
+		return nil, bad("Still on the portal: %s, code %s. Delete or remove them there first", row.Name, row.Code)
+	}
+	err = s.st.Tx(ctx, func(tx store.Q) error {
+		sync := map[string]any{"state": ptRemoved, "removed_code": code, "removed_by": c.Name, "removed_at": time.Now()}
+		if _, err := tx.C("employee").Update(ctx, bson.M{"_id": x.ID}, bson.M{"$set": bson.M{"portal_sync": sync, "attendance_code": nil}}); err != nil {
+			return err
+		}
+		return audit(ctx, tx, c, fmt.Sprintf("%s was removed from the Realtime portal (code %s, checked on the portal's list)", x.Name, code), "employee", x.ID,
+			map[string]any{"attendance_code": x.Code, "portal_sync": x.Sync}, map[string]any{"attendance_code": nil, "portal_sync": sync})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true}, nil
 }
 
 // portalBacklog (HR) sends every write that waited while sending was off, once it is on: one job each.

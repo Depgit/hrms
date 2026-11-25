@@ -446,6 +446,7 @@ func (s *Server) Routes() http.Handler {
 	s.machineRoutes(m)      // punch machines as one pool per cluster: board, plan, to-do list (machines.go)
 	s.portalWriteRoutes(m)  // send employees to the Realtime portal: create, update, mark left (portal_write.go)
 	s.payCompRoutes(m)      // pay components, structures from components, variable payouts (paycomp.go)
+	s.allInRoutes(m)        // the all-inclusive gross from a month (allin.go)
 
 	return logRequests(m)
 }

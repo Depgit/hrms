@@ -38,6 +38,10 @@ export function PortalCard({ id }: { id: string }) {
     {x.notReady && <p className="mute" style={{ fontSize: 12 }}>{x.notReady}. Writes due wait and go out when HR confirms them under Attendance › Punch machine setup.</p>}
     {x.canSend && <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
       {(a.phase === 'failed' || a.phase === 'blocked') && !x.notReady && <button className="btn primary" disabled={busy} onClick={() => call('retry', {}, 'Queued: sending once more')}>Retry</button>}
+      {s.status === 'Not on portal' && !s.code && !a.phase && !a.due && !x.notReady && x.employeeStatus === 'Active' &&
+        <button className="btn primary" disabled={busy} onClick={() => window.confirm(`Create ${x.name} on the Realtime portal now?`) && call('create', {}, 'Queued: creating on the portal')}>Create on the portal</button>}
+      {(s.status === 'On portal' || s.status === 'Changed since last send') && s.code && !a.phase &&
+        <button className="btn" disabled={busy} onClick={() => window.confirm(`Was ${x.name} (code ${s.code}) deleted on the Realtime portal? The HRMS checks the portal's list first, then offers "Create on the portal" again.`) && call('removed', {}, 'Removed from the portal: you can create them again')}>It was removed from the portal</button>}
       {matchHeld && !x.notReady && <button className="btn" disabled={busy} onClick={() => call('retry', { notSame: true }, 'Queued: creating them as a new person')}>Retry: they are someone else</button>}
       {s.status === 'Check on the portal' && <>
         <button className="btn" disabled={busy} onClick={() => call('resolve', { on: true }, 'Saved')}>I checked: it is on the portal</button>
@@ -45,6 +49,7 @@ export function PortalCard({ id }: { id: string }) {
       <button className="btn sm" disabled={busy} onClick={() => d.reload()}>Refresh</button>
     </div>}
     {x.sends?.length > 0 && <details style={{ marginTop: 8 }}><summary className="mute" style={{ fontSize: 12 }}>Writes ({x.sends.length})</summary>
-      <ul style={{ fontSize: 12.5 }}>{x.sends.map((r: any) => <li key={r.id}>{fmtD(String(r.at).slice(0, 10))} · {r.action} · code {r.code} · {r.ok ? 'saved' : r.unclear ? 'unclear' : 'refused'}{r.message ? ` · “${r.message}”` : ''} · {r.by}</li>)}</ul></details>}
+      <ul style={{ fontSize: 12.5 }}>{x.sends.map((r: any) => <li key={r.id}>{fmtD(String(r.at).slice(0, 10))} · {r.action} · code {r.code} · {r.ok ? 'saved' : r.unclear ? 'unclear' : 'refused'}{r.message ? ` · “${r.message}”` : ''}{r.device ? ` · punch machine ${r.device}` : ''} · {r.by}
+        {(r.notes ?? []).map((n: string) => <div key={n} className="mute">{n}</div>)}</li>)}</ul></details>}
   </div>;
 }

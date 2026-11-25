@@ -795,7 +795,7 @@ func (s *Server) payPreview(r *http.Request, c *Ctx) (any, error) {
 		Comps       []calc.Component `json:"comps"`
 		LocationID  string           `json:"locationId"`
 		Month       int              `json:"month"`
-		Reimb       float64          `json:"reimb"` // the Reimbursement in the fixed pay, ₹ a month (reimb.go)
+		Reimb       float64          `json:"reimb"` // the Reimbursement (outside the gross), ₹ a month (reimb.go)
 	}
 	if err := decode(r, &b); err != nil {
 		return nil, err
@@ -826,10 +826,10 @@ func (s *Server) payPreview(r *http.Request, c *Ctx) (any, error) {
 		}
 		st = designedRates(st, b.Comps)
 	}
-	if err := checkReimb(st, "", string(t), fixed, b.Reimb); err != nil {
+	if err := checkReimb(st, "", string(t), b.Reimb); err != nil {
 		return nil, err
 	}
-	in := calc.Input{Type: t, Gross: fixed, Structure: &st, Month: b.Month, EmpAmts: reimbAmts(b.Reimb)}
+	in := calc.Input{Type: t, Gross: fixed, Structure: &st, Month: b.Month, EmpAmts: reimbAmts(b.Reimb), AllIn: allInPreview(ctx, s.st.DB)}
 	if b.LocationID != "" {
 		in.Lwf = lwfFor(ctx, s.st.DB, b.LocationID, today())
 	}
@@ -844,6 +844,7 @@ func (s *Server) payPreview(r *http.Request, c *Ctx) (any, error) {
 	}
 	res := calc.Calc(in)
 	out["breakup"], out["ctcYear"], out["wage"], out["rules"], out["lwfNote"] = res, calc.Round2(res.CTC*12), wageNote(res), calc.RulesFor(t), lwfNoteText(in.Lwf)
+	out["allIn"] = allInFrom(ctx, s.st.DB)
 	if variable > 0 && !calc.RulesFor(t).Variable {
 		out["warn"] = string(t) + " staff do not earn variable pay, so the variable part is not paid"
 	}
@@ -861,6 +862,10 @@ func (s *Server) varPayList(r *http.Request, c *Ctx) (any, error) {
 	open := openYm(ctx, s.st.DB)
 	if !isYm(ym) {
 		ym = open
+	}
+	if msg := allInVarRefusal(ctx, s.st.DB, ym); msg != "" { // all-inclusive gross: automatic, nothing to enter
+		return map[string]any{"ym": ym, "open": open, "rows": []any{}, "due": 0, "entered": 0, "can": false, "canTarget": c.Level("emp.salary") >= 2,
+			"allIn": allInFrom(ctx, s.st.DB), "allInNote": msg}, nil
 	}
 	scope, err := c.ScopeFilter(ctx, s.st.DB, "")
 	if err != nil {
@@ -972,6 +977,13 @@ func setVarPayout(ctx context.Context, tx store.Q, c *Ctx, id, ym, code string, 
 	}
 	if !calc.RulesFor(calc.EmploymentType(e.Type)).Variable {
 		return "", bad("%s staff do not earn variable pay", e.Type)
+	}
+	// All-inclusive gross (allin.go): variable pay is paid every month by the days paid, the last month too; nothing
+	// is entered for those months (clearing an amount entered before is allowed).
+	if paidIn := date[:7]; amount != nil {
+		if msg := allInVarRefusal(ctx, tx, paidIn); msg != "" {
+			return "", bad("%s", msg)
+		}
 	}
 	if ym != "fnf" {
 		if anchor := varAnchorFor(ctx, tx, id); !calc.VarDue(ym, anchor, comp.Cycle) {
@@ -1218,6 +1230,9 @@ func fnfVariableLines(ctx context.Context, q store.Q, e *emp) []fnfLine {
 	_, st := structureFor(ctx, q, e.ID, *e.LWD)
 	if !st.Designed {
 		return nil
+	}
+	if allInOn(ctx, q, (*e.LWD)[:7]) { // all-inclusive gross: paid with the last month's salary, by the days paid
+		return []fnfLine{{Key: "var:allin", Kind: "info", Label: "Variable pay", Amount: 0, Note: "Paid every month with salary, by the days paid (all-inclusive gross): nothing more in the full and final"}}
 	}
 	gross, _ := grossFor(ctx, q, e.ID, (*e.LWD)[:7])
 	in := calc.Input{Type: calc.EmploymentType(e.Type), Gross: gross, Structure: &st}

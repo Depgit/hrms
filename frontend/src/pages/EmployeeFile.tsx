@@ -381,12 +381,12 @@ function PayTab({ x, e }: { x: any; e: any }) {
     {!own ? <div className="note">Your role cannot see salary details.</div> : <div className="grid g2" style={{ alignItems: 'start' }}>
       <div className="card"><div className="row sp"><h3 style={{ margin: 0 }}>{ymLabel(ym)} calculation</h3>{x.employee.Type === 'Permanent' && <button className="btn sm" onClick={() => setSlip(true)}>Payslip preview</button>}</div>
         {!r ? <p className="mute" style={{ margin: '8px 0 0' }}>Not in the {ymLabel(ym)} payroll.</p> : <div className="tw" style={{ marginTop: 8 }}><table><tbody>
-          {L('Retainer fee', r.r.fee, 'Section 194J')}{L('Basic', r.r.basic)}{L('House rent allowance', r.r.hra)}{L('Reimbursement', r.r.reimb)}{L('Special allowance', r.r.sa)}{L('Bonus', r.r.bonus)}{L('Variable pay', r.r.varPay)}
+          {L('Retainer fee', r.r.fee)}{L('Basic', r.r.basic)}{L('House rent allowance', r.r.hra)}{L('Special allowance', r.r.sa)}{L('Reimbursement (outside the gross)', r.r.reimb)}{L('Bonus', r.r.bonus)}{L('Variable pay', r.r.varPay)}
           {(r.add ?? []).map((a: any, i: number) => <tr key={'a' + i}><td>{a.label}{a.reason && <div className="mute" style={{ fontSize: 12 }}>{a.reason}</div>}</td><td className="num">{inr(a.amount)}</td></tr>)}
           {L('Other earning', r.oe, r.reason)}
           <tr><td><b>Total earnings</b></td><td className="num"><b>{inr(r.totalEarn)}</b></td></tr>
           {L('Provident fund', r.r.eePF, undefined, true)}{L('ESI', r.r.eeESI, undefined, true)}{L('Labour welfare fund', r.r.lwfEe, undefined, true)}{L('Meal', r.r.meal, undefined, true)}
-          {L('Accommodation', r.r.accom, undefined, true)}{L('TDS', r.r.tds, 'Section 194J', true)}{L('Income tax (TDS)', r.stds, 'Section 192', true)}
+          {L('Accommodation', r.r.accom, undefined, true)}{L('TDS', r.r.tds, r.r.tdsRate ? `${r.r.tdsRate}% of gross` : '% of gross', true)}{L('Income tax (TDS)', r.stds, 'Section 192', true)}
           {(r.ded ?? []).map((a: any, i: number) => <tr key={'d' + i}><td>{a.label}{a.reason && <div className="mute" style={{ fontSize: 12 }}>{a.reason}</div>}</td><td className="num">−{inr(a.amount)}</td></tr>)}
           {L('Other deduction', r.od, r.reason, true)}
           <tr><td><b>Total deductions</b></td><td className="num"><b>{inr(r.totalDed)}</b></td></tr>

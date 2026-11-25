@@ -68,6 +68,32 @@ export function OfferVersions({ x, act, busy }: { x: any; act: Act; busy: boolea
   </>;
 }
 
+/** Offer at joining (offer_at_joining.go): HR chooses it for a selected candidate instead of raising the offer now,
+ *  with the expected joining date and a note. */
+export function OfferAtJoiningChoose({ x, act, busy }: { x: any; act: Act; busy: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [v, setV] = useState({ date: today(), note: '' });
+  if (!open) return <button className="btn" onClick={() => setOpen(true)}>Offer at joining</button>;
+  return <div className="card" style={{ marginTop: 10, flexBasis: '100%' }}>
+    <p className="ink2" style={{ fontSize: 13, margin: '0 0 8px' }}>No offer now. On the joining day you raise the offer (the same form), it goes for Offer approval as usual, and Mark joined after the approval is the acceptance: the Offer ID is issued and the offer letter given at joining.</p>
+    <div className="form">
+      <Field label="Expected joining date"><input type="date" value={v.date} min={today()} onChange={(e) => setV({ ...v, date: e.target.value })} /></Field>
+      <label className="field" style={{ gridColumn: '1 / -1' }}><span>Note (optional)</span><input type="text" value={v.note} onChange={(e) => setV({ ...v, note: e.target.value })} /></label>
+    </div>
+    <div className="row" style={{ marginTop: 10 }}><button className="btn" onClick={() => setOpen(false)}>Cancel</button>
+      <button className="btn primary" disabled={busy || !v.date} onClick={() => act(() => api(`/candidates/${x.id}/offer-at-joining`, { body: v }), (r) => r.result).then(() => setOpen(false))}>Choose offer at joining</button></div>
+  </div>;
+}
+
+/** Where an offer-at-joining candidate stands: the expected date, the note and what Mark joined waits for. */
+export function OfferAtJoiningNote({ x }: { x: any }) {
+  const o = x.offerAtJoining;
+  if (!o) return null;
+  return <div className="note" style={{ marginTop: 8 }}><b>Offer at joining</b>: expected to join on {fmtD(o.doj)}{o.note ? ` · ${o.note}` : ''} <span className="mute">(chosen by {o.by})</span>.
+    <div className="ink2" style={{ fontSize: 12.5 }}>{!x.offer_id ? (o.due ? 'The joining day has come: raise the offer at joining. It goes for Offer approval; Mark joined comes after the approval.' : `Raise the offer at joining on ${fmtD(o.doj)}. Until then you can still raise the usual offer or close the candidate.`)
+      : o.waitingFor || 'Approved. Mark joined: joining is the acceptance, the Offer ID is issued and the offer letter is given.'}</div></div>;
+}
+
 /** Joining-day outcomes for an accepted offer: joined on the actual date, no-show (waiting), date moved, withdrew,
  *  declined on the day. */
 export function JoiningOutcomes({ x, act, busy, onDetails }: { x: any; act: Act; busy: boolean; onDetails: () => void }) {
@@ -89,14 +115,15 @@ export function JoiningOutcomes({ x, act, busy, onDetails }: { x: any; act: Act;
         <button className="btn bad" onClick={() => setAsk('decline')}>Offer declined</button>
       </>}
     </div>
-    {x.doj && <p className="mute" style={{ fontSize: 12, margin: '6px 0 0' }}>Joining date on the offer: {fmtD(x.doj)}.</p>}
+    {x.offerAtJoining && !c.markJoined && x.offerAtJoining.waitingFor && x.offer_id && <p className="ink2" style={{ fontSize: 12.5, margin: '6px 0 0' }}>Mark joined: {x.offerAtJoining.waitingFor}.</p>}
+    {(x.doj || x.offerAtJoining) && <p className="mute" style={{ fontSize: 12, margin: '6px 0 0' }}>{x.offerAtJoining ? `Expected joining date: ${fmtD(x.offerAtJoining.doj)}.` : `Joining date on the offer: ${fmtD(x.doj)}.`}</p>}
     {ask === 'no-show' && <Ask label="What happened (not answering, phone off…)" optional go={`Start waiting (${x.hiring?.waitDays ?? 7} days)`} onCancel={() => setAsk('')} onGo={(v) => ev({ action: 'no-show', reason: v.reason })} />}
-    {ask === 'doj' && <Ask label="Why is the joining date changing?" date={addDays(x.doj || today(), 7)} go="Reschedule joining" onCancel={() => setAsk('')} onGo={(v) => ev({ action: 'doj', date: v.date, reason: v.reason })} />}
+    {ask === 'doj' && <Ask label="Why is the joining date changing?" date={addDays(x.offerAtJoining?.doj || x.doj || today(), 7)} go="Reschedule joining" onCancel={() => setAsk('')} onGo={(v) => ev({ action: 'doj', date: v.date, reason: v.reason })} />}
     {ask === 'decline' && <Ask label="Why did the candidate decline?" go="Close: offer declined" tone="bad" onCancel={() => setAsk('')} onGo={(v) => ev({ action: declineAction, reason: v.reason })} />}
-    {/* The joiner's link and joining details are their own section, not a joining outcome. */}
-    <div className="card" style={{ marginTop: 14 }}><h3>Joiner's link and joining details</h3>
+    {/* The joiner's link and joining details are their own section, not a joining outcome (after joining for an offer at joining). */}
+    {!x.offerAtJoining && <div className="card" style={{ marginTop: 14 }}><h3>Joiner's link and joining details</h3>
       <p className="mute" style={{ fontSize: 12.5, margin: '-4px 0 8px' }}>Send the joiner their link so their details and documents are in before the first day. Required before the Employee ID is issued.</p>
-      <button className="btn" onClick={onDetails}>Open joiner's link and joining details</button></div>
+      <button className="btn" onClick={onDetails}>Open joiner's link and joining details</button></div>}
   </>;
 }
 

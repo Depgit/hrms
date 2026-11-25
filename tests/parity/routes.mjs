@@ -259,6 +259,8 @@ export const ROUTES = [
 
   // compensation
   ['GET /api/comp', () => ['/api/comp']],
+  // The all-inclusive gross from a month (allin.go, 26 Nov 2026; no Postgres counterpart: 404 there).
+  ['GET /api/comp/all-in', () => ['/api/comp/all-in']],
   ['GET /api/salary/structures', () => ['/api/salary/structures']],
   ['GET /api/comp/structures/{id}/maps', (c) => c.sort(c.arr('/api/salary/structures').map((s) => s.id)).map((id) => `/api/comp/structures/${enc(id)}/maps`)],
   ['GET /api/comp/structure-map/candidates', (c) => [`/api/comp/structure-map/candidates?date=${c.today}`, `/api/comp/structure-map/candidates?date=${c.today}&city=${c.gurugram}&type=Permanent`]],

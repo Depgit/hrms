@@ -185,7 +185,7 @@ func pfFactsOf(ctx context.Context, q store.Q, id string) (*pfFacts, error) {
 	f.Pay, _ = q.C("employee_pay").FindOne(ctx, bson.M{"employee_id": id})
 	f.Choice = str(f.Pay["pf_choice"])
 	_, st := structureFor(ctx, q, id, ym+"-01")
-	f.Basic = calc.Round2(calc.Calc(calc.Input{Type: calc.EmploymentType(f.Type), Gross: f.Gross, Structure: &st, AllBasic: payOptsOf(f.Pay).allBasicIn(ym)}).Basic)
+	f.Basic = calc.Round2(calc.Calc(calc.Input{Type: calc.EmploymentType(f.Type), Gross: f.Gross, Structure: &st, AllBasic: payOptsOf(f.Pay).allBasicIn(ym), AllIn: allInOn(ctx, q, ym)}).Basic)
 	f.History, _ = q.C("payroll_row").Exists(ctx, bson.M{"employee_id": id, "ym": bson.M{"$lt": open}, "data.r.eePF": bson.M{"$gt": 0}})
 	return f, nil
 }
@@ -650,6 +650,7 @@ func pfFigures(ctx context.Context, q store.Q, ym string, list []*emp) (map[stri
 	for _, g := range govs {
 		uan[str(g["employee_id"])] = validUan(g["uan"])
 	}
+	allIn := allInOn(ctx, q, ym) // the all-inclusive gross (allin.go)
 	for _, e := range list {
 		g := grossInMonth(hist[e.ID], ym)
 		sid := smap[e.ID]
@@ -660,7 +661,7 @@ func pfFigures(ctx context.Context, q store.Q, ym string, list []*emp) (map[stri
 		if !ok {
 			st = calc.DefaultStructure
 		}
-		res := calc.Calc(calc.Input{Type: calc.EmploymentType(e.Type), Gross: g, Structure: &st, PfExempt: exempt[e.ID], AllBasic: allBasic[e.ID]})
+		res := calc.Calc(calc.Input{Type: calc.EmploymentType(e.Type), Gross: g, Structure: &st, PfExempt: exempt[e.ID], AllBasic: allBasic[e.ID], AllIn: allIn})
 		out[e.ID] = &pfFigure{Gross: g, Basic: calc.Round2(res.Basic), EePF: res.EePF, Exempt: exempt[e.ID], HasUan: uan[e.ID]}
 	}
 	return out, nil

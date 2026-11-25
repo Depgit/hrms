@@ -146,3 +146,21 @@ func TestCheckFits(t *testing.T) {
 		}
 	}
 }
+
+// Grade rules on every flow whose request has a grade (owner, 26 Nov 2026: offer approval by grade).
+func TestGradeOnMoreFlows(t *testing.T) {
+	for _, wf := range []string{"joining", "verify", "p_arrear", "p_change", "p_fnf", "p_pip"} {
+		if !KindFits(wf, "grades") {
+			t.Fatalf("%s: grade rule not allowed", wf)
+		}
+	}
+	if KindFits("shortlist", "grades") {
+		t.Fatal("shortlist has no grade yet")
+	}
+	s := RuleSet{Rules: []Rule{
+		{ID: "a", Label: "Grade G3", On: true, When: []Condition{{K: "grades", List: []string{"G3"}}}, Approvers: []string{PM, LM}},
+		{ID: "o", Label: OtherwiseLabel, Approvers: []string{LM}},
+	}}
+	eq(t, Build(s, Facts{WF: "joining", Grade: "G3"}, resolve).Chain, []string{PM, LM})
+	eq(t, Build(s, Facts{WF: "joining", Grade: "G1"}, resolve).Chain, []string{LM})
+}

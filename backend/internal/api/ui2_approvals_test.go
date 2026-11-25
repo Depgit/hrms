@@ -52,7 +52,8 @@ func TestUI2ApprSubjectAndPreview(t *testing.T) {
 			t.Fatal(sim)
 		}
 		days, offs, rng := num(sim["days"]), num(sim["offs"]), num(sim["range"])
-		if rng != 7 || offs < 1 || days <= 0 || days > 7 || (days != 7 && days != 7-offs) {
+		// A holiday in that week is an off the leave may still count (sandwich rule): days lies between 7−offs and 7.
+		if rng != 7 || offs < 1 || days <= 0 || days > 7 || days < 7-offs {
 			t.Fatalf("days %v offs %v range %v", days, offs, rng)
 		}
 		if len(sim["chain"].([]any)) == 0 || len(sim["people"].([]any)) == 0 {

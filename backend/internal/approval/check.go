@@ -158,10 +158,10 @@ func checkCond(c Condition) error {
 // kindsFor lists the condition kinds each workflow's requests carry (the editor's COND_OK): a condition of another
 // kind could never hold for them. Both leave lists (leaveC, leaveP) are leave.
 var kindsFor = map[string][]string{
-	"shortlist": {}, "interview": {}, "verify": {}, "joining": {"budget"}, "leave": {"days", "grades"}, "regularize": {"cnt", "grades"},
+	"shortlist": {}, "interview": {}, "verify": {"grades"}, "joining": {"budget", "grades"}, "leave": {"days", "grades"}, "regularize": {"cnt", "grades"},
 	"transfer": {"grades", "tkind"}, "resign": {"grades", "waive", "skind"}, "p_claim": {"amount", "ctype", "grades"},
-	"p_adv": {"amount", "grades"}, "p_arrear": {"amount"}, "p_ded": {"amount", "grades"}, "p_change": {"ckind"}, "p_fnf": {"amount"},
-	"p_pip": {"amount"}, "p_ack": {"grades"},
+	"p_adv": {"amount", "grades"}, "p_arrear": {"amount", "grades"}, "p_ded": {"amount", "grades"}, "p_change": {"ckind", "grades"}, "p_fnf": {"amount", "grades"},
+	"p_pip": {"amount", "grades"}, "p_ack": {"grades"},
 }
 
 // KindFits says whether a rule of a workflow (key: its workflow key, leaveC and leaveP for leave) may check a

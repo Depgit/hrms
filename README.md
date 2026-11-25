@@ -121,6 +121,16 @@ sign-ins, what each role sees, every page, the end-to-end flows, security, and t
   escalation) is a periodic River job every 5 minutes, scheduled only by the elected leader when several API servers
   run. `Server.Enqueue` inserts a job inside a database transaction, so later work such as payroll runs and bulk
   imports is queued only if the data change commits.
+- **Bulk upload of approver names (owner, 26 Nov 2026).** The red "Approver names missing" box on Approvals ›
+  Approval flow has **Bulk upload names** next to Add names (Role mapping at Edit, `acc.users` 2; also Bulk update ›
+  Approvals › Approver names, `apprnames`). Download template = one row per missing name (the same list as the box,
+  one row for every request type): Role, Level (Property / Department / Corporate department / Company), Place, Place
+  Code, Where, Needed By (flows using the role, info), Employee (drop-down of every active employee as "Name
+  (EMP-…)", the people Map a role offers). Upload saves it as Access › Role mapping does: added to the person's
+  mapping of that role (selected locations or departments) or a new mapping (Selected locations for a property, All
+  locations for a department or company role), with the same checks (active, overlap) and audit; blank Employee
+  skipped; a slot held by someone by now, a switched-off or cluster/city/state mapping are refused (change those on
+  Role mapping). Generic `bulkTemplate.fill`: the plain template carries the rows. Test `TestBulkApproverNames`.
 - **"Approval required" tick per request type and flow (18 Nov 2026; meaning set 21 Nov).** On every flow in
   Approvals › Check a flow › All flows at a glance, only there (every request type, the shortlist and interview too;
   only who can edit flows, `appr.setup` 2). The Approval flow tab has no tick (rules and approvers only). Ticked (the default) = the rules decide who
@@ -1083,8 +1093,8 @@ Two payroll downloads next to the bank advice and the register, which are unchan
 
 ### Sending employees to the Realtime portal (automatic since 19 Nov 2026)
 
-- **What.** The HRMS writes to the Realtime India portal by itself: **Mark joined** creates the employee (the next
-  free code, which becomes the Attendance code); a change of the details the portal gets (name, department,
+- **What.** The HRMS writes to the Realtime India portal by itself: **Mark joined** creates the employee (code = the
+  ID's digits, 6 wide, which becomes the Attendance code); a change of the details the portal gets (name, department,
   designation, property/branch, shift, phone, email…) of someone the HRMS put on the portal updates them; an exit
   (inactive, or the last working day reached) marks them left. There is no "Send to portal" button and no preview
   any more. Code: `api/portal_auto.go` (jobs, sweep, Retry, backlog), `api/portal_write.go` (details, mapping,
@@ -1105,16 +1115,53 @@ Two payroll downloads next to the bank advice and the register, which are unchan
   people with a code whose last working day is on or after `auto_since`. Updated: only people the HRMS sent (their
   last details are known). A person "Match portal codes" proposes a portal record for is held, not created twice;
   "Retry: they are someone else" creates them.
-- **Details sent.** Code and card number (card padded to 8 digits), name, father's name, birth and joining dates,
-  gender, phone, email, and the portal's department, designation, branch and shift as mapped once under "Mapping and
-  code rule" (a property defaults to the portal branch of its mapped machine). After a create the machine enrol to-do
-  is ticked when the branch is in the target cluster; a mark-left ticks the remove to-do. The portal's device step
-  ("Upload Name in Device") is never pressed.
-- **Switching it on.** `realtime.Spec` (the form's page, the edit page with `{code}`, save caption) must be confirmed
-  on the live portal first: run `hrms realtime-forms` (sign-in plus GETs only), set `Spec`, rebuild. Until then
-  every write due waits ("Sending is not switched on yet"); once on, HR presses **Send waiting** once to send the
-  backlog. Tests `TestPortalAutoCreate`, `internal/realtime` `TestEmployeeWrites` (fake portal
-  `internal/realtime/rtfake`).
+- **Details sent.** Code (the digits of the ID, 6 wide: JI-000006 → 000006, 25 Nov) and card number (the code padded
+  to 8 digits), name, father's name, birth and joining dates (the shift start date = the joining date on a create),
+  gender, phone, email (left out, and said so, when the portal's own check would refuse the address), and the
+  portal's department, designation, branch and shift as mapped once under "Mapping and code rule" (a property
+  defaults to the portal branch of its mapped machine), plus the portal's **Office Time Policy** and **First Weekly
+  Off** as mapped for the employee's work policy (kinds `policy` and `wo`, 25 Nov). The portal's company is left as
+  its form has it (one choice, Saltstayz). After a create the machine enrol to-do is ticked when the branch is in the
+  target cluster; a mark-left ticks the remove to-do. The portal's device step ("Upload Name in Device") is never
+  pressed.
+- **Punch machine on a create (owner, 25 Nov 2026).** A create also picks the machine in the form's **Select Devices**
+  list (`Device_List`, detail `realtime.FieldDevice`): the machine the machine pool plans for the person (Attendance ›
+  Punch machine setup › machine pool: their own property's machine first, then the next machine of the cluster with
+  space, each machine holding the capacity the admin set), matched by its serial number (the option's value, or the
+  start of its text "RSS20230761581 / Gulmohar Marg"). No machine (property without a cluster, no machine mapped to
+  the cluster, the cluster full, a machine without a serial, or a serial the portal's list does not have) does **not**
+  hold the create: it goes with the form's own choice and a note "No punch machine chosen: …; HR adds them to a
+  machine on the portal". The machine chosen and the notes are kept in `portal_send` (`device`, `notes`, no
+  migration), in the audit, and shown under "Writes" on the employee's Realtime portal card. An update or a mark left
+  never sets the device. The form's device buttons (Connect, Upload Name, Enable/Disable/Delete User) are never
+  pressed (`neverPress`). Code: `ptDevice` (`api/portal_auto.go`), `pickDevice` (`realtime/empwrite.go`).
+- **The portal's form (read 25 Nov 2026, GETs only).** The portal has no API for employees: `Third_PartyApi.aspx`
+  only pushes punches out to another system (greytHR, ZingHr or a URL). The employee form is `Employee.aspx`:
+  the list's **Add** gives `Employee.aspx?RowId=0` (confirmed by the owner, 25 Nov; the blank form; without a RowId the page fails), each row of
+  `EmployeeList.aspx` links to `Employee.aspx?RowId=<row>`. A write reads the list (GET) first: a create stops when
+  the code or card is already there ("The portal already has employee code …"), an update or mark-left finds the
+  employee's RowId by code. Controls (`ctl00$MainContent$…`): `Txtpaycode` code, `Txtcardno` card (8 digits, 9 at
+  most), `Txtempname`, `txtfartherhusname`, `txtDateofBirth`, `TxtPhoneNo`, `TxtEmailAddress`, `CboGender`,
+  `cbocompnayname`, `cbobranchname`, `cbodeptname`, `cbodesignation`, `cboofficetimepolicy`, `TxtDOJ`,
+  `txtshiftstartdate`, `cboshiftname` (GEN, NST, SFT), `cboFWOff` (Sunday … Saturday, None) and
+  `txtreginnationdate` (**mark left = the Resignation Date**; the form has no status, and "Auto Approved Gps Punch"
+  is not one). Required by the page: name, code, card, company, department (its blank first choice is not one),
+  designation, office time policy, shift. Everything else (shift type, second weekly off, branch-access ticks,
+  mobile attendance mode; on an update or mark left also the device list) is posted as the form has it. The only button pressed is **Save**
+  (`cmdsave`); Connect, upload Name, Enable/Disable/Delete User, Cancel and the OTP buttons never are. After the
+  post the HRMS looks again (GET): a create must be on the list, an update or mark-left must show the values sent
+  on the employee's form; otherwise the write is "Check on the portal". The page's own script alerts and labels are
+  not taken for the reply. Fake of this form: `internal/realtime/rtfake`.
+- **Switched on (owner, 25 Nov 2026).** `realtime.Spec` holds the live form and sending is **on** (`Spec.Send =
+  true`); the owner confirmed the employee list's **Add** button is how employees are added and that it opens
+  `Employee.aspx?RowId=0` (confirmed by the owner, 25 Nov). Writes due
+  from now go out by themselves; whatever waited while sending was off stays Waiting until HR presses **Send waiting**
+  once. Still to watch on the first live writes: what the portal says after Save (the HRMS's look on the list/form
+  covers it), that the Resignation Date alone marks someone left, and the shift list's own post-back when the shift
+  changes. To switch it off again: `Send: false`, rebuild (every write due then waits, "Sending is switched off";
+  reading the lists and mapping still work). Tests `TestPortalAutoCreate` (create with and without a machine, cluster
+  full, update, mark left), `internal/realtime` `TestEmployeeWrites`, `TestSendOff` (the off path), `TestDeviceOnCreate`,
+  `TestListRows`.
 
 ### Company accommodation from the offer (19 Nov 2026)
 
@@ -1377,6 +1424,66 @@ Two payroll downloads next to the bank advice and the register, which are unchan
   `hiring.letterJoinTypes` on `PUT /api/onboarding/settings`.
 - The old "Mark not joined" (`POST /api/candidates/{id}/not-joined`) stays on the server but no button reaches it.
 
+### All-inclusive gross from a month (owner, 26 Nov 2026; reworked the same evening)
+
+From the month set in **Compensation › Salary structure › All-inclusive gross from month** (`company_setting.allin_from`,
+"YYYY-MM", empty = off, no default; `PUT /api/comp/all-in`, right `pay.setup` Edit, audited; `GET /api/comp/all-in`
+for any signed-in user), the monthly gross HR offers or sets (G) is the gross salary and also carries the employer's
+statutory shares. `calc/allin.go`, `api/allin.go`.
+
+- **Earnings = G.** G is split by the structure into Basic, HRA, Special allowance and, when G ≤ the bonus ceiling
+  (and the type gets bonus), a **Statutory bonus** line (BonusPct of min(Basic, BonusCalc)); F + bonus = G
+  (`calc.AllInFixed` finds F to the paisa). Order everywhere: Basic, HRA, Special allowance, Statutory bonus,
+  Gross salary (= G). The bonus is inside G, never on top; not in the PF or ESI wage.
+- **Deductions** (from the employee): employee PF, **employer PF (incl. EPS)**, employee ESI, **employer ESI**,
+  **EDLI**, employee LWF, **employer LWF**, TDS and the rest, each worked out normally on G's split (PF wage and
+  ceiling, ESI wage = G less the bonus, ESI when G ≤ the ESI ceiling, EDLI on Basic up to ₹15,000, LWF on G with its
+  rates and caps). Net = G − deductions (+ variable pay and reimbursement). `Result.ErDed` holds the employer's shares;
+  ErPF/Eps/ErEpf/ErESI/Edli/LwfEr keep their amounts, so ECR, ESI and LWF challans and the statutory reports are
+  unchanged.
+- **Company cost**: EPFO admin charges, gratuity, PL encashment and (as before) medical insurance.
+  **CTC = G + admin + gratuity + PL encashment + medical + variable target + reimbursement.**
+- **Outside G, on top**: variable pay = target × paid days ÷ days, automatically every month (a % target is % of
+  G); HR payouts are refused for those months (Payroll › Variable pay, the Salary breakup bulk) and ignored if
+  entered earlier; the full and final adds nothing. The Reimbursement is unchanged.
+- **Part month**: G earned = G × paid days ÷ days, split the same way; deductions on the earned wages; no re-solving.
+- **Retainer**: no PF, ESI, bonus or LWF, so nothing of that is deducted (fee = G, TDS as set). **PF opt-out/exempt**:
+  no PF or EDLI deducted, no admin.
+- **Months**: payroll months ≥ the setting, for everyone; earlier months and approved or published payrolls never
+  change (a change that would alter one is refused).
+- **Screens**: breakups (Compensation try-an-offer, Salary calculator, pay preview, offer, employee) show the salary
+  lines, "Variable pay / Reimbursement (pro-rata, additional)", the deductions with the employer's shares, net, then
+  the CTC build-up. Payslip: "Statutory bonus" after Special allowance, the four employer lines under deductions,
+  only "EPFO admin charges" under employer contributions, a note with G. Payroll sheet and full register: "Statutory
+  bonus" and "Gross salary (G)" after Special allowance, the employer PF/ESI/EDLI/LWF deducted before Total deductions
+  (register keeps the remitted employer columns). Cost console: company contributions = admin, gratuity, PL
+  encashment (new column), bonus, medical; employer PF/ESI/LWF are 0 there (paid by the employee).
+- **TDS projection**: salary = G (with the bonus) + variable + taxable reimbursement; the employer's PF deducted from
+  the employee counts as the employee's PF does (80C in the old regime); employer ESI, EDLI and LWF are ignored like
+  the employee's ESI and LWF.
+- Without the setting nothing changes (`hrms pay-compare -against` 0 differences on a live copy, Oct and Nov 2026).
+  Tests: `calc.TestAllIn*`, `api.TestAllInGrossFromMonth`.
+
+### Offer at joining (owner, 26 Nov 2026)
+
+Lower-level hires (UT, for example) get no offer after the interview; the offer is given when they join. Any selected
+candidate can take this path (HR picks; no grade or designation rule). `api/offer_at_joining.go`.
+
+- **Choose.** Candidate › Offer › **Offer at joining** (right `onb.raise` Edit): expected joining date (today or later)
+  and an optional note (`POST /api/candidates/{id}/offer-at-joining`; `candidate.oaj_at/oaj_by/oaj_doj/oaj_note`).
+  Timeline "Offer at joining chosen", audited. The candidate sits in its own pipeline column **Offer at joining**
+  ("waiting for the joining day"). Until an offer is raised HR can still press **Raise offer v1 instead** (clears the
+  choice, timeline "Switched back to the usual offer") or **Close candidate**.
+- **Raise offer at joining** (from the expected date; earlier is refused: use Reschedule joining): the same offer form,
+  joining date prefilled; saved as offer v1 with `offer.at_joining` and sent through Offer approval exactly as usual.
+  It is never released (Release is refused), never answered and never lapses (the hiring sweep skips it).
+- **Mark joined** waits for that approval ("Waiting for offer approval"). After approval Mark joined records the
+  acceptance in the same transaction: Offer ID issued, version frozen ("Accepted at joining"), the letter released at
+  joining (`letter_at` "joining"), then the usual joining (JI- record, portal create, accommodation, machine gate).
+- **Joining outcomes** before joining: Reschedule joining moves the expected date (and the offer's), No show starts the
+  waiting window ("Came: mark joined" also needs the approved offer), Offer declined closes as today (an offer still
+  waiting for approval is cancelled). Everything after joining is unchanged; the usual offer path is untouched.
+
 ### Half-day leave, short leave and the Reimbursement in fixed pay (owner, 20 Nov 2026)
 
 - **Half-day leave end to end.** When the leave plan has "Half-day leave allowed", the employee (My leave) and HR on
@@ -1414,6 +1521,32 @@ Two payroll downloads next to the bank advice and the register, which are unchan
 - Tests: `calc.TestReimbursementInFixedPay`, `api.TestReimbRoom`, `api.TestOfferReimbursementToEmployee`, `leave.TestShortLeaveRules`,
   `attend.TestShortLeaveExcusesLate`, `api.TestShortLeave`, `api.TestLeaveHalfDayBalanceAndLop`. Manual steps: Part AB
   of [docs/manual_test.md](docs/manual_test.md).
+- **25 Nov 2026 changes (owner).**
+  - **Retainer TDS 1%, editable.** `calc.DefaultStructure.TdsRate` is 1 (was 10); migration `030_retainer_tds_1pct`
+    sets every structure still on 10 to 1 (audited). Editable per structure (Compensation › structure "Retainer TDS",
+    "TDS, % of gross (editable)") and per employee (Employees › Edit pay options for a retainer, `employee_pay.tds_pct`,
+    `PUT /api/employees/{id}/pay` with `tdsSet` + `tdsPct`, null = the structure's rate, 0–50, change history "TDS %").
+    `calc.Result.tdsRate` carries the rate used; payslip/preview notes say "N% of gross" (no "section 194J" on pay
+    screens; the Tax returns page keeps the 194J/26Q filing wording). The bulk salary template has no TDS column.
+  - **Reimbursement outside the gross**, like variable pay (replaces the 20 Nov "inside the gross" rule): the Basic/HRA/
+    Special allowance split is as if there were none; the amount is earned by the days paid (amount × earned gross ÷
+    full gross), in no PF, ESI or bonus wage, and added to total earnings, net pay and CTC/cost (`Result.Reimb`,
+    `CompLine.extra`). Any amount ≥ 0 is taken (the "what Basic and HRA leave" refusal is gone); none for a retainer.
+    Shown separately on the offer and letter, Pay options, Salary breakup and calculator, payslip ("Outside the
+    gross"), payroll sheet and register ("Reimbursement (outside the gross)" after Special allowance), Cost and budget
+    (`costLine.reimb`, Excel column; offer cost includes it) and the TDS projection (`taxFig.reimb`; taxable unless the
+    component says not).
+  - **Realtime portal code = the ID's number, 6 digits** (JI-000006 → 000006, EMP-1054 → 001054; `ptIDCode`): the
+    automatic create sends it as Employee code (card = it padded to the card width) and it becomes the Attendance code,
+    so pulled punches match (leading zeros ignored). An ID without digits takes the next free number as before; a code
+    another employee already has holds the create with a message.
+  - **Employee codes by type from one series**: with one series for everyone (`by_type` off), a Retainer gets
+    RET-<next> (the Retainer series' prefix) and everyone else EMP-<next> from the SAME counter and width, a number
+    either prefix holds being skipped for both (`employeesPrefixes`; Employee ID step, Mark joined, import, next-code).
+    A series per type behaves as before.
+  - Tests: `calc.TestReimbursementOutsideGross`, `calc.TestRetainerTds`, `store.TestTdsOldDefaultToOne`,
+    `api.TestRetainerTdsOverride`, `api.TestReimbCheck`, `api.TestPortalIDCode`, `api.TestPortalAutoCreate`,
+    `api.TestEmployeeCodesRetEmpOneSeries`. Manual steps: Part AK of [docs/manual_test.md](docs/manual_test.md).
 
 ### Hiring IDs from the Employee code; blank nomination forms (owner, 24 Nov 2026)
 

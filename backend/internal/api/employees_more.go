@@ -118,7 +118,11 @@ func (s *Server) codeSettingsPut(r *http.Request, c *Ctx) (any, error) {
 			if x.Pad < 3 || x.Pad > 8 {
 				return bad("Digits must be between 3 and 8")
 			}
-			if mx := maxUsed(ctx, tx, x.Prefix); x.Next <= mx {
+			mx := maxUsed(ctx, tx, x.Prefix)
+			if x.Key == "All" { // a Retainer's RET- codes share these numbers (employeesPrefixes)
+				mx = max(mx, maxUsed(ctx, tx, employeesRetPrefix(ctx, tx, x.Prefix)))
+			}
+			if x.Next <= mx {
 				return bad("Next number for %s must be above %d, the highest code already used with that prefix", label, mx)
 			}
 			n, err := tx.C("employee_code_series").Update(ctx, bson.M{"key": x.Key}, bson.M{"$set": bson.M{"prefix": x.Prefix, "pad": x.Pad, "next_no": x.Next}})
@@ -170,8 +174,18 @@ type payOptions struct {
 	AllBasic     bool   `json:"allBasic,omitempty"`
 	AllBasicFrom string `json:"allBasicFrom,omitempty"`
 	// CompAmts: the person's own ₹ a month for the per-employee pay components (calc.MPerEmp), by code; "reimb" is the
-	// Reimbursement in the fixed pay (reimb.go).
+	// Reimbursement, outside the gross (reimb.go).
 	CompAmts map[string]float64 `json:"compAmts,omitempty"`
+	// TdsPct is a retainer's own TDS, % of gross (employee_pay.tds_pct; nil: the structure's "Retainer TDS"; 25 Nov 2026).
+	TdsPct *float64 `json:"tdsPct"`
+}
+
+// checkTdsPct refuses a TDS % outside 0–50 (the structure's own limits, compensation.go).
+func checkTdsPct(v *float64) error {
+	if v != nil && (*v < 0 || *v > 50) {
+		return bad("TDS must be between 0 and 50%% of gross")
+	}
+	return nil
 }
 
 // allBasicIn: the whole fixed gross is paid as Basic in month ym ("optout" PF choice, pfuan.go), only while PF exempt.
@@ -199,6 +213,9 @@ func payFor(ctx context.Context, q store.Q, id, empType string) payOptions {
 		p.VarStart = str(r["var_start"])
 		p.AllBasic, p.AllBasicFrom = r["all_basic"] == true, str(r["all_basic_from"])
 		p.CompAmts = byCompOf(r["comp_amts"])
+		if v, ok := r["tds_pct"].(float64); ok {
+			p.TdsPct = &v
+		}
 	}
 	t := calc.RulesFor(calc.EmploymentType(empType))
 	if !t.Variable {
@@ -209,6 +226,9 @@ func payFor(ctx context.Context, q store.Q, id, empType string) payOptions {
 	}
 	if !t.Statutory {
 		p.Medical = nil
+	}
+	if t.Ded != "tds" {
+		p.TdsPct = nil
 	}
 	return p
 }
@@ -228,8 +248,11 @@ func (s *Server) employeePayPut(r *http.Request, c *Ctx) (any, error) {
 		// figure (nil: unchanged). On a structure still on percentage rates only "pct" is taken, as the Variable pay %.
 		VarMode string   `json:"varMode"`
 		VarVal  *float64 `json:"varVal"`
-		// Reimb is the Reimbursement in the fixed pay, ₹ a month (nil: unchanged; reimb.go).
+		// Reimb is the Reimbursement (outside the gross), ₹ a month (nil: unchanged; reimb.go).
 		Reimb *float64 `json:"reimb"`
+		// TdsSet: the request sets the retainer's own TDS % (TdsPct; null = back to the structure's rate). Without it
+		// the TDS % is unchanged.
+		TdsSet bool `json:"tdsSet"`
 	}
 	if err := decode(r, &b); err != nil {
 		return nil, err
@@ -272,8 +295,14 @@ func (s *Server) employeePayPut(r *http.Request, c *Ctx) (any, error) {
 	if b.Meal < 0 || b.Accom < 0 {
 		return nil, bad("Deductions cannot be negative")
 	}
+	if b.TdsSet && b.TdsPct != nil && t.Ded != "tds" {
+		return nil, bad("%s staff have no TDS on fees: it is for types whose deduction is TDS (Retainer)", empType)
+	}
+	if err := checkTdsPct(b.TdsPct); b.TdsSet && err != nil {
+		return nil, err
+	}
 	if b.Reimb != nil {
-		if err := reimbCheckFor(ctx, s.st.DB, id, empType, openYm(ctx, s.st.DB)+"-01", 0, *b.Reimb); err != nil {
+		if err := reimbCheckFor(ctx, s.st.DB, id, empType, openYm(ctx, s.st.DB)+"-01", *b.Reimb); err != nil {
 			return nil, err
 		}
 	}
@@ -283,12 +312,18 @@ func (s *Server) employeePayPut(r *http.Request, c *Ctx) (any, error) {
 			return bad("Choose a reason for the change")
 		}
 		old := payFor(ctx, tx, id, empType)
+		if !b.TdsSet {
+			b.TdsPct = old.TdsPct
+		}
 		if b.Reimb != nil {
 			if _, err := setReimb(ctx, tx, c, id, reimbOf(old), *b.Reimb, reason, today(), "Manual"); err != nil {
 				return err
 			}
 		}
 		set := bson.M{"var_pct": b.VarPct, "var_cycle": b.VarCycle, "meal": b.Meal, "accommodation": b.Accom}
+		if b.TdsSet {
+			set["tds_pct"] = b.TdsPct
+		}
 		if !sameFloatPtr(old.VarPct, b.VarPct) { // a new % applies from the open month on (RUN-31)
 			set["var_from"], set["var_prev_pct"] = openYm(ctx, tx), old.VarPct
 			varStartSet(ctx, tx, id, old.VarPct, b.VarPct, openYm(ctx, tx), set)
@@ -318,6 +353,12 @@ func (s *Server) employeePayPut(r *http.Request, c *Ctx) (any, error) {
 			}
 			return fmt.Sprint(*v) + "%"
 		}
+		fmtT := func(v *float64) string {
+			if v == nil {
+				return "Structure rate"
+			}
+			return fmt.Sprint(*v) + "% of gross"
+		}
 		fmtC := func(v *int) string {
 			if v == nil {
 				return "Standard"
@@ -327,6 +368,7 @@ func (s *Server) employeePayPut(r *http.Request, c *Ctx) (any, error) {
 		for _, ch := range [][3]string{
 			{"Variable pay %", fmtP(old.VarPct), fmtP(b.VarPct)}, {"Variable payout cycle", fmtC(old.VarCycle), fmtC(b.VarCycle)},
 			{"Meal deduction", inr(old.Meal), inr(b.Meal)}, {"Accommodation deduction", inr(old.Accom), inr(b.Accom)},
+			{"TDS %", fmtT(old.TdsPct), fmtT(b.TdsPct)},
 		} {
 			if ch[1] == ch[2] {
 				continue
@@ -554,7 +596,7 @@ func (s *Server) employeeExport(w http.ResponseWriter, r *http.Request) {
 				name, st := structureFor(ctx, s.st.DB, id, date)
 				p := payFor(ctx, s.st.DB, id, str("type"))
 				in := calc.Input{Type: calc.EmploymentType(str("type")), Gross: gross, Structure: withMedical(&st, p.Medical), VarPct: p.VarPct, VarCycle: p.VarCycle,
-					Meal: p.Meal, Accom: p.Accom, Lwf: lwfFor(ctx, s.st.DB, str("location_id"), date), EmpAmts: p.CompAmts}
+					Meal: p.Meal, Accom: p.Accom, Lwf: lwfFor(ctx, s.st.DB, str("location_id"), date), EmpAmts: p.CompAmts, AllIn: allInOn(ctx, s.st.DB, date[:7])}
 				varTargetInput(ctx, s.st.DB, id, date[:7], st, &in) // a structure made from components (paycomp.go)
 				res := calc.Calc(in)
 				money := func(v float64) string {

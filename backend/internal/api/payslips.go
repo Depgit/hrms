@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -71,8 +72,9 @@ type slipLine struct {
 type payFigures struct {
 	Basic, Hra, Sa, Bonus, VarPay, Add, OE, TotE              float64
 	Fee                                                       float64 // Retainer: the retainer fee in place of Basic, HRA and Special allowance
-	Reimb                                                     float64 // the Reimbursement in the fixed pay (reimb.go)
+	Reimb                                                     float64 // the Reimbursement, outside the gross (reimb.go)
 	PF, ESI, LWF, MealAcc, Tds, Tds194, Tds192, Rec, OD, TotD float64
+	ErDed                                                     float64 // all-inclusive gross: the employer's PF, ESI, EDLI and LWF deducted (allin.go)
 	Net, RoundOff, LOP, Outside                               float64
 	CompDed                                                   float64 // deductions of a designed structure's components
 }
@@ -89,7 +91,11 @@ func figuresOf(o *PayRowOut) payFigures {
 	}
 	f := payFigures{Basic: r2(c.Basic), Hra: r2(c.Hra), Bonus: r2(c.Bonus), VarPay: r2(c.VarPay), Add: sum(o.Add), OE: r2(o.OE), TotE: r2(o.TotalEarn),
 		PF: r2(c.EePF), ESI: r2(c.EeESI), LWF: r2(c.LwfEe), MealAcc: r2(c.Meal + c.Accom), Tds194: r2(c.Tds), Tds192: r2(o.STds), Rec: sum(o.Ded), OD: r2(o.OD),
-		TotD: r2(o.TotalDed), Net: r2(o.Net), CompDed: r2(c.CompDed), Reimb: r2(c.Reimb)}
+		TotD: r2(o.TotalDed), Net: r2(o.Net), CompDed: r2(c.CompDed), Reimb: r2(c.Reimb),
+		ErDed: r2(r2(c.ErPF) + r2(c.ErESI) + r2(c.Edli) + r2(c.LwfEr))}
+	if !c.AllIn {
+		f.ErDed = 0
+	}
 	f.Sa = r2(f.TotE - f.Basic - f.Hra - f.Bonus - f.VarPay - f.Add - f.OE)
 	if f.Reimb != 0 { // r2(x − 0) is x: a row without one is unchanged to the paisa
 		f.Sa = r2(f.Sa - f.Reimb)
@@ -103,6 +109,9 @@ func figuresOf(o *PayRowOut) payFigures {
 	rest := r2(f.TotD - f.PF - f.ESI - f.LWF - f.MealAcc - f.Tds194 - f.Tds192 - f.Rec - f.OD)
 	if f.CompDed != 0 {
 		rest = r2(rest - f.CompDed)
+	}
+	if f.ErDed != 0 {
+		rest = r2(rest - f.ErDed)
 	}
 	switch {
 	case rest == 0:
@@ -135,25 +144,48 @@ func slipSnap(ctx context.Context, q store.Q, ym string, o *PayRowOut, co compan
 	}
 	c := o.R
 	f := figuresOf(o)
+	r2 := calc.Round2
+	// The all-inclusive gross (allin.go): the bonus is a line inside the gross; variable pay is paid every month on top.
+	bonusLabel, bonusNote, varNote := "Bonus", "", ""
+	if c.AllIn {
+		bonusLabel, bonusNote, varNote = "Statutory bonus", "Part of the gross", "Pro-rata, additional"
+	}
+	// The statutory bonus inside the gross comes right after the fixed earnings (owner, 26 Nov 2026); else as before.
+	bonusFirst := func() {
+		if c.AllIn {
+			nz(&E, bonusLabel, f.Bonus, bonusNote)
+		}
+	}
+	bonusLater := func() {
+		if !c.AllIn {
+			nz(&E, bonusLabel, f.Bonus, bonusNote)
+		}
+	}
 	var compDed []slipLine
-	nz(&E, "Retainer fee", f.Fee, "Section 194J")
+	nz(&E, "Retainer fee", f.Fee, "")
 	if len(c.Comps) > 0 { // a designed structure: its components, by name
 		fixed, varLines, dedLines := compSlipLines(o, f)
 		for _, l := range fixed {
 			nz(&E, l.Label, l.Amount, l.Note)
 		}
-		nz(&E, "Bonus", f.Bonus, "")
+		bonusFirst()
+		nz(&E, "Reimbursement", f.Reimb, "Outside the gross")
+		bonusLater()
 		for _, l := range varLines {
+			if l.Note == "" {
+				l.Note = varNote
+			}
 			nz(&E, l.Label, l.Amount, l.Note)
 		}
 		compDed = dedLines
 	} else {
 		nz(&E, "Basic", f.Basic, "")
 		nz(&E, "House rent allowance", f.Hra, "")
-		nz(&E, "Reimbursement", f.Reimb, "")
 		nz(&E, "Special allowance", f.Sa, "")
-		nz(&E, "Bonus", f.Bonus, "")
-		nz(&E, "Variable pay", f.VarPay, "")
+		bonusFirst()
+		nz(&E, "Reimbursement", f.Reimb, "Outside the gross")
+		bonusLater()
+		nz(&E, "Variable pay", f.VarPay, varNote)
 	}
 	for _, x := range o.Add {
 		nz(&E, x.Label, x.Amount, x.Reason)
@@ -162,20 +194,31 @@ func slipSnap(ctx context.Context, q store.Q, ym string, o *PayRowOut, co compan
 	nz(&D, "Provident fund", f.PF, "")
 	nz(&D, "ESI", f.ESI, "")
 	nz(&D, "Labour welfare fund", f.LWF, "")
+	if c.AllIn { // the employer's shares, deducted from the employee (all-inclusive gross, allin.go)
+		erLWF := r2(f.ErDed - r2(c.ErPF) - r2(c.ErESI) - r2(c.Edli))
+		nz(&D, "Employer PF (incl. EPS)", r2(c.ErPF), "")
+		nz(&D, "Employer ESI", r2(c.ErESI), "")
+		nz(&D, "EDLI", r2(c.Edli), "")
+		nz(&D, "Employer LWF", erLWF, "")
+	}
 	nz(&D, "Meal", c.Meal, "")
 	nz(&D, "Accommodation", c.Accom, "")
 	for _, l := range compDed {
 		nz(&D, l.Label, l.Amount, l.Note)
 	}
-	nz(&D, "TDS", f.Tds194, "Section 194J")
+	nz(&D, "TDS", f.Tds194, tdsNote(c.TdsRate))
 	nz(&D, "Income tax (TDS)", f.Tds192, "Section 192")
 	for _, x := range o.Ded {
 		nz(&D, x.Label, x.Amount, x.Reason)
 	}
 	nz(&D, "Other deduction", f.OD, o.Reason)
-	nz(&ER, "Employer provident fund", c.ErPF+c.Admin+c.Edli, "")
-	nz(&ER, "Employer ESI", c.ErESI, "")
-	nz(&ER, "Employer labour welfare fund", c.LwfEr, "")
+	if c.AllIn { // the company bears only the admin charges (and gratuity, PL encashment, medical: provisions)
+		nz(&ER, "EPFO admin charges", c.Admin, "")
+	} else {
+		nz(&ER, "Employer provident fund", c.ErPF+c.Admin+c.Edli, "")
+		nz(&ER, "Employer ESI", c.ErESI, "")
+		nz(&ER, "Employer labour welfare fund", c.LwfEr, "")
+	}
 	var pan, uan string
 	if g, _ := q.C("employee_gov_id").FindOne(ctx, bson.M{"employee_id": o.EmployeeID}); g != nil {
 		pan, uan = str(g["pan"]), str(g["uan"])
@@ -195,13 +238,17 @@ func slipSnap(ctx context.Context, q store.Q, ym string, o *PayRowOut, co compan
 	if bank != "" {
 		bankText = bank + " " + maskTail(acct, 4)
 	}
-	return map[string]any{
+	snap := map[string]any{
 		"days": o.Days, "paid": o.Paid, "lop": f.LOP, "outside": f.Outside, "earn": E, "ded": D, "er": ER,
 		"totE": f.TotE, "totD": f.TotD, "roundOff": f.RoundOff, "net": f.Net, "words": "Rupees " + calc.RupeeWords(f.Net) + " only",
 		"emp": map[string]any{"id": o.EmployeeID, "name": o.Name, "desig": o.Desig, "dept": o.Dept, "city": o.City, "location": o.Location, "doj": o.DOJ,
 			"pan": maskTail(pan, 4), "uan": uan, "bank": bankText, "type": o.Type},
 		"company": map[string]any{"name": co.Name, "legalName": co.LegalName, "address": co.Address, "pan": co.PAN, "tan": co.TAN, "cin": co.CIN, "pf": co.PFCode, "esi": co.ESICode},
 	}
+	if c.AllIn { // the gross G offered, earned this month, and the employer's shares deducted from it
+		snap["allIn"] = map[string]any{"offered": calc.Round2(c.OfferedFull), "gross": calc.Round2(c.Gross), "erDed": f.ErDed}
+	}
+	return snap
 }
 
 func loadSlipSetup(ctx context.Context, q store.Q) (payslipSetup, *string, error) {
@@ -412,6 +459,14 @@ func (s *Server) payslipPreview(r *http.Request, c *Ctx) (any, error) {
 	return out, nil
 }
 
+// tdsNote is the payslip note of a retainer's TDS: the % of gross used (a row saved before 25 Nov 2026 has none).
+func tdsNote(rate float64) string {
+	if rate <= 0 {
+		return "% of gross"
+	}
+	return strconv.FormatFloat(rate, 'f', -1, 64) + "% of gross"
+}
+
 // compSlipLines are a designed structure's payslip lines, to the paisa: the fixed earnings (the balancing component
 // takes the rounding so they add up to Basic + HRA + the rest, as figuresOf has them; components not shown on the
 // payslip are one "Other allowances" line), the variable amounts paid (adding up to the variable paid) and the
@@ -421,7 +476,7 @@ func compSlipLines(o *PayRowOut, f payFigures) (fixed, variable, ded []slipLine)
 	shown, other := 0.0, 0.0
 	rem := -1
 	for _, l := range o.R.Comps {
-		if l.Kind != calc.CompFixed || l.Side != calc.SideEarn {
+		if l.Kind != calc.CompFixed || l.Side != calc.SideEarn || l.Extra { // the Reimbursement is its own line (outside the gross)
 			continue
 		}
 		v := r2(l.Amount)
@@ -438,7 +493,7 @@ func compSlipLines(o *PayRowOut, f payFigures) (fixed, variable, ded []slipLine)
 	if other != 0 {
 		fixed = append(fixed, slipLine{Label: "Other allowances", Amount: other})
 	}
-	if diff := r2(f.Basic + f.Hra + f.Sa + f.Reimb - shown - other); diff != 0 && rem >= 0 {
+	if diff := r2(f.Basic + f.Hra + f.Sa - shown - other); diff != 0 && rem >= 0 {
 		fixed[rem].Amount = r2(fixed[rem].Amount + diff)
 	}
 	paid := 0.0

@@ -7,7 +7,8 @@ import { Field, Loading, Pill, toast, useLoad } from '../components/ui';
  *  left, one job each, never retried by itself. This is the waiting list of what did not go out (sending off,
  *  held by a mapping, failed, unclear) with Retry, "Send waiting" for the backlog, and the one-time mapping. */
 
-const KINDS: [string, string][] = [['dept', 'Departments'], ['desig', 'Designations'], ['branch', 'Properties → portal branch'], ['shift', 'Shifts']];
+const KINDS: [string, string][] = [['dept', 'Departments'], ['desig', 'Designations'], ['branch', 'Properties → portal branch'], ['shift', 'Shifts'],
+  ['policy', 'Work policies → portal office time policy'], ['wo', 'Work policies → portal first weekly off']];
 const WK: Record<string, [string, 'ok' | 'warn' | 'bad' | 'info' | 'n']> = { Waiting: ['Waiting (sending off)', 'warn'], Held: ['Held: mapping', 'warn'], Failed: ['Failed', 'bad'], Sending: ['Sending', 'info'], Check: ['Check on the portal', 'bad'] };
 const VERB: Record<string, string> = { create: 'Create', update: 'Update', left: 'Mark left' };
 /** A group the screen does not know (a newer server) still shows, as its own name (from main's fix, 24 Nov 2026). */
@@ -70,7 +71,7 @@ function PortalMapping() {
   return <div style={{ marginTop: 14 }}>
     <h3 style={{ fontSize: 13 }}>Mapping to the portal’s lists</h3>
     <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-      {ed && <button className="btn" disabled={!!busy} onClick={() => run('lists', () => api('/attendance/portal/lists', { method: 'POST' }), (r) => `Read: ${r.dept} departments, ${r.desig} designations, ${r.branch} branches, ${r.shift} shifts`)}>{busy === 'lists' ? 'Reading…' : 'Read the lists from the portal'}</button>}
+      {ed && <button className="btn" disabled={!!busy} onClick={() => run('lists', () => api('/attendance/portal/lists', { method: 'POST' }), (r) => `Read: ${r.dept} departments, ${r.desig} designations, ${r.branch} branches, ${r.shift} shifts, ${r.policy ?? 0} office time policies, ${r.wo ?? 0} weekly off days`)}>{busy === 'lists' ? 'Reading…' : 'Read the lists from the portal'}</button>}
       <span className="mute" style={{ fontSize: 12.5 }}>{x.listsAt ? `Lists read ${fmtD(String(x.listsAt).slice(0, 10))}.` : 'The portal’s lists have not been read yet; you can also type the portal’s exact text.'}</span>
     </div>
     {KINDS.map(([k, label]) => <div key={k} style={{ marginTop: 10 }}>

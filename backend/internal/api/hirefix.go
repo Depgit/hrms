@@ -222,7 +222,9 @@ func letterRuleCheck(ctx context.Context, q store.Q, h hireSettings) error {
 func letterView(ctx context.Context, q store.Q, o store.Row) {
 	at := "offer"
 	if str(o["candidate_id"]) != "" {
-		if o["released_at"] != nil {
+		if o["at_joining"] == true { // an offer at joining: the letter is given at Mark joined (offer_at_joining.go)
+			at = "joining"
+		} else if o["released_at"] != nil {
 			if o["letter_at"] == "joining" {
 				at = "joining"
 			}
@@ -232,7 +234,9 @@ func letterView(ctx context.Context, q store.Q, o store.Row) {
 	}
 	held := at == "joining" && o["letter_released_at"] == nil
 	o["letterAt"], o["letterHeld"], o["letterReleasedAt"] = at, held, o["letter_released_at"]
-	if at == "joining" {
+	if at == "joining" && o["at_joining"] == true {
+		o["letterRule"] = "Offer at joining: approved as usual and never released before joining. When HR marks the candidate joined, the offer is accepted (joining is the acceptance) and the letter is generated and given."
+	} else if at == "joining" {
 		o["letterRule"] = fmt.Sprintf("Offer letter released at joining (%s, %s): approve, release and record Accepted as usual; the letter is generated and given to the candidate when HR marks them joined.", o["department"], o["type"])
 	}
 	if held {
@@ -248,7 +252,11 @@ func releaseLetterAtJoining(ctx context.Context, tx store.Q, c *Ctx, o store.Row
 	if _, err := tx.C("offer").Update(ctx, bson.D{{Key: "_id", Value: o["id"]}}, bson.D{{Key: "$set", Value: bson.D{{Key: "letter_released_at", Value: tx.Now()}}}}); err != nil {
 		return err
 	}
-	if err := lifeEvent(ctx, tx, c, lifeEv{Cand: cand, Action: "Offer letter released at joining", Date: date, Reason: "Held until joining by the offer letter rule (Form setup › Hiring)"}); err != nil {
+	why := "Held until joining by the offer letter rule (Form setup › Hiring)"
+	if o["at_joining"] == true {
+		why = "Offer at joining: the letter is given when they join"
+	}
+	if err := lifeEvent(ctx, tx, c, lifeEv{Cand: cand, Action: "Offer letter released at joining", Date: date, Reason: why}); err != nil {
 		return err
 	}
 	return audit(ctx, tx, c, "Offer letter released at joining for "+str(o["candidate_name"]), "offer", str(o["id"]), map[string]any{"letterAt": "joining"}, map[string]any{"releasedOn": date})

@@ -160,6 +160,7 @@ func (s *Server) compGet(r *http.Request, c *Ctx) (any, error) {
 		}
 		out["leaveTypes"] = names
 	}
+	out["allIn"] = allInView(ctx, s.st.DB, c) // the all-inclusive gross from a month (allin.go)
 	if c.Level("comp.bands") >= 1 {
 		out["bands"], _ = compBands(ctx, s.st.DB)
 	}
