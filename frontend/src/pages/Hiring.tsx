@@ -209,7 +209,12 @@ export function BgvPanel({ x, reload }: { x: any; reload: () => void }) {
 /** Form setup › Hiring: the waiting window, automatic close, the background check rule and offer expiry. */
 export function HireSettings() {
   const { can } = useAuth();
-  const { data, reload } = useLoad(() => api<{ hiring: any }>('/onboarding/settings'), []);
+  const { data, reload } = useLoad(() => api<{ hiring: any; nextNo?: number }>('/onboarding/settings'), []);
+  const [nextNo, setNextNo] = useState('');
+  const saveNext = async () => {
+    if (!window.confirm(`The next candidate gets SI-${String(+nextNo).padStart(4, '0')} (then OI/JI with the same number). Numbers cannot be moved back. Save?`)) return;
+    try { await api('/onboarding/settings', { method: 'PUT', body: { nextNo: +nextNo } }); toast('Saved'); setNextNo(''); reload(); } catch (x: any) { toast(x.message); }
+  };
   const depts = useLoad(() => api<any[]>('/masters/department?status=Active'), []);
   const types = useLoad(() => api<any[]>('/masters/employment_type?status=Active'), []);
   const [v, setV] = useState<any>(null);
@@ -232,6 +237,10 @@ export function HireSettings() {
       <Field label="When the window ends"><select disabled={!edit} value={String(!!cur.waitAutoClose)} onChange={(e) => set('waitAutoClose', e.target.value === 'true')}><option value="false">HR confirms the close</option><option value="true">Close automatically</option></select></Field>
       <Field label="Background check"><select disabled={!edit} value={cur.bgvOff ? 'off' : String(!!cur.bgvBlocks)} onChange={(e) => { const v = e.target.value; setV({ ...cur, bgvOff: v === 'off', bgvBlocks: v === 'true' }); }}><option value="off">Not used: we do no background check</option><option value="true">Pending or discrepancy holds the Employee ID</option><option value="false">Recorded, does not hold the Employee ID</option></select></Field>
     </div>
+    <h3 className="sec">Hiring number (SI / OI / JI)</h3>
+    <p className="mute" style={{ fontSize: 12.5, margin: '0 0 8px' }}>The next candidate gets <b>SI-{String(data?.nextNo ?? '').padStart(4, '0')}</b>; the offer and the Joining ID keep the same number, and the Realtime portal code is that number in 6 digits. Set it past the portal's highest code so new codes never clash. It only moves forward.</p>
+    {edit && <div className="row" style={{ gap: 8, alignItems: 'flex-end' }}><Field label="Next hiring number"><input type="number" min={data?.nextNo ?? 1} max={999999} value={nextNo} placeholder={String(data?.nextNo ?? '')} onChange={(e) => setNextNo(e.target.value)} /></Field>
+      <button className="btn primary" disabled={!nextNo || +nextNo <= (data?.nextNo ?? 0) - 1} onClick={saveNext}>Set</button></div>}
     <h3 className="sec">Release the offer letter at</h3>
     <p className="mute" style={{ fontSize: 12.5, margin: '0 0 8px' }}>Offer release is the default. For the departments and employment types chosen here the letter is released at <b>joining</b>: the offer is still approved, released and accepted as usual, but the letter is not generated or given to the candidate until HR marks them joined, when it is released automatically (audited). A department or a type chosen is enough.</p>
     <Field label="Departments: letter at joining">{pick('letterJoinDepts', (depts.data ?? []).map((x) => x.name))}</Field>

@@ -452,7 +452,8 @@ func (s *Server) onbSettingsGet(r *http.Request, c *Ctx) (any, error) {
 	if c.Level("onb.pipeline") < 1 && c.Level("onb.raise") < 1 && c.Level("onb.setup") < 1 {
 		return nil, forbidden("")
 	}
-	return map[string]any{"employeeIdAt": employeeIDAt(r.Context(), s.st.DB), "hiring": loadHireSettings(r.Context(), s.st.DB)}, nil
+	return map[string]any{"employeeIdAt": employeeIDAt(r.Context(), s.st.DB), "hiring": loadHireSettings(r.Context(), s.st.DB),
+		"nextNo": onboardingStagesPeekSeq(r.Context(), s.st.DB, "candidate_seq")}, nil
 }
 
 func (s *Server) onbSettingsPut(r *http.Request, c *Ctx) (any, error) {
@@ -462,6 +463,7 @@ func (s *Server) onbSettingsPut(r *http.Request, c *Ctx) (any, error) {
 	var b struct {
 		EmployeeIDAt string        `json:"employeeIdAt"`
 		Hiring       *hireSettings `json:"hiring"` // the hiring lifecycle's settings (hiring.go)
+		NextNo       *int          `json:"nextNo"` // the next number of the SI/OI/JI series (owner, 26 Nov 2026)
 	}
 	if err := decode(r, &b); err != nil {
 		return nil, err
@@ -469,6 +471,9 @@ func (s *Server) onbSettingsPut(r *http.Request, c *Ctx) (any, error) {
 	ctx := r.Context()
 	if b.Hiring != nil {
 		return s.hireSettingsPut(ctx, c, *b.Hiring)
+	}
+	if b.NextNo != nil {
+		return s.hireNextNoPut(ctx, c, *b.NextNo)
 	}
 	if b.EmployeeIDAt != "documents" && b.EmployeeIDAt != "joining" {
 		return nil, bad("Choose when the Employee ID is created")
@@ -735,6 +740,28 @@ func onboardingStagesPeekSeq(ctx context.Context, q store.Q, name string) int64 
 		}
 	}
 	return 1
+}
+
+// hireNextNoPut moves the SI/OI/JI series forward so the next candidate gets this number (owner, 26 Nov 2026: start
+// after the Realtime portal's codes, so the Joining ID's number is free as the portal code). Only forward: a number
+// at or below one already given would repeat an ID. Up to 6 digits (the portal code is the ID's number in 6 digits).
+func (s *Server) hireNextNoPut(ctx context.Context, c *Ctx, next int) (any, error) {
+	cur := int(onboardingStagesPeekSeq(ctx, s.st.DB, "candidate_seq"))
+	switch {
+	case next > 999999:
+		return nil, bad("The hiring number has at most 6 digits")
+	case next < cur:
+		return nil, bad("Numbers up to %d are already used: the next number can be %d or higher", cur-1, cur)
+	case next == cur:
+		return map[string]any{"nextNo": cur}, nil
+	}
+	return map[string]any{"nextNo": next}, s.st.Tx(ctx, func(tx store.Q) error {
+		if err := store.RaiseSeq(ctx, tx, "candidate_seq", int64(next-1)); err != nil {
+			return err
+		}
+		return audit(ctx, tx, c, fmt.Sprintf("Next hiring number set to %d (was %d): the next candidate is %s", next, cur, stageID("SI", next)),
+			"onb_setting", "1", map[string]any{"nextNo": cur}, map[string]any{"nextNo": next})
+	})
 }
 
 // candidateCreate saves the shortlist as SI-0001 and sends it for approval (wf shortlist).
