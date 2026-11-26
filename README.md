@@ -1496,6 +1496,30 @@ candidate can take this path (HR picks; no grade or designation rule). `api/offe
   waiting window ("Came: mark joined" also needs the approved offer), Offer declined closes as today (an offer still
   waiting for approval is cancelled). Everything after joining is unchanged; the usual offer path is untouched.
 
+### Shortlisting stage in Form setup (owner, 26 Nov 2026)
+
+Onboarding › Form setup asks every field and document at three stages: **Shortlisting**, Offer release and Joining,
+each Mandatory, Optional or Not needed (`onb_field.shortlist_state`, `onb_document.shortlist_state`;
+`store/schema_shortlist.go`, `api/onboarding_stages.go`).
+
+- **Defaults (migration `031_shortlist_stage`, one audit row):** what the shortlist asked before. Mandatory: first and
+  last name, mobile, personal email, date of birth, gender, department, designation, work city, reporting location;
+  Optional: current address; everything else and every document Not needed. Locked: the names, job and place are
+  always Mandatory; the approval flow and work policy are never asked there. A row without a value reads its default.
+- **The shortlist form** shows what is asked at shortlisting for the candidate's type (Permanent unless Employment type
+  is asked there) and, for documents, department: its own cards for names, contact, place and job, then a card per
+  section for the other fields, then **Documents**. It still always asks the existing CTC, work experience and hiring
+  manager. Mandatory is checked on the server too (`POST /api/candidates` and `/check`: 400 "… is required", "… must be
+  uploaded with the shortlist"). There is no shortlist edit.
+- **Documents** go up under a draft key (`DRAFT-SL-…`, owner kind `offer`, only the uploader sees them) and move to the
+  candidate (`owner_kind=candidate`, `SI-0001`) in the same transaction as the shortlist; someone else's draft is
+  refused (403). They then count at offer release and joining (also on the joiner's link), so they are not asked again
+  unless HR replaces them.
+- **Carry forward:** every value given at shortlisting is kept in `candidate.data`, prefills the offer form
+  (`prefill`), and is copied into the offer's data when the offer form does not send it, so the joining details and
+  the joiner's link start from it. Approvers without the government ID or bank right do not read those numbers on the
+  candidate. Tests: `api.TestShortlistStage`.
+
 ### Half-day leave, short leave and the Reimbursement in fixed pay (owner, 20 Nov 2026)
 
 - **Half-day leave end to end.** When the leave plan has "Half-day leave allowed", the employee (My leave) and HR on

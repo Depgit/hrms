@@ -333,8 +333,8 @@ func TestJoinerLink(t *testing.T) {
 			t.Fatalf("%s: %d %v", body, s, r)
 		}
 		od := apiDoc(st, "offer", bson.M{"_id": oi})["data"].(map[string]any)
-		for k := range d {
-			if k != "ecName" && od[k] != nil && od[k] != "" {
+		for k := range d { // the value from the shortlist (gender, date of birth) may stay; the wrong one is not saved
+			if k != "ecName" && od[k] == d[k] {
 				t.Fatalf("%s: the wrong value was saved: %v", body, od[k])
 			}
 		}

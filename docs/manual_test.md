@@ -2010,6 +2010,19 @@ Use a copy of the data (migration `030_retainer_tds_1pct` runs on it).
 - [ ] Sheet/register: Statutory bonus, Gross salary (G), employer shares deducted; cost console shows no employer PF/ESI for the month.
 - [ ] The earlier (published) month's payslip and register are unchanged.
 
+## Part AN. Shortlisting stage in Form setup (26 Nov)
+
+1. **Form setup** (HR Admin): both tables have a **Shortlisting** column before Offer release.
+- [ ] Defaults: names, mobile, personal email, date of birth, gender, department, designation, work city, reporting location Mandatory; current address Optional; the rest and every document Not needed.
+- [ ] First name, Department, Work city, Approval flow and Work policy cannot be changed at Shortlisting. Audit log has each change.
+2. Set **Aadhaar number** Mandatory, **Gender** Not needed and the **PAN card** document Mandatory at Shortlisting.
+- [ ] Onboarding › Shortlist shows Aadhaar number (with *) in an "Identity and statutory" card, no Gender, and a Documents card with PAN card.
+- [ ] Send without them: "Aadhaar number is required" and "PAN card must be uploaded with the shortlist". Fill and upload: sent.
+3. Open the candidate, approve, Selected, **Raise offer v1**.
+- [ ] The candidate shows the Aadhaar number and the PAN card under Shortlist; the hiring manager in Approvals sees the PAN card listed (opening it needs the government ID right) but not the number.
+- [ ] The offer form is prefilled; the PAN card shows Uploaded. After approval and acceptance the joining details show the Aadhaar number and the PAN card uploaded (not asked again); the joiner's link shows them too.
+4. Set Employment type Mandatory at Shortlisting and a document Applies to Retainer only, Mandatory: the shortlist asks it only when Retainer is chosen.
+
 ## Part H. Known, deliberate differences from the prototype (not bugs)
 
 - Left out because they are demo-only: "Viewing as", "Simulate no response", "Load a 10-employee test", and the

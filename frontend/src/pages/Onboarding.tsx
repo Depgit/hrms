@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api, fmtD, inr, openDoc, today, uploadDoc } from '../api';
 import { useAuth } from '../auth';
@@ -19,8 +19,11 @@ import { BgvPanel, EarlyExit, HireSettings, JoiningOutcomes, OfferAtJoiningChoos
    Offers raised before stages (OFR-…) finish in their own table under the pipeline. */
 
 type FilledBy = 'joiner' | 'hr';
-type SetupField = { key: string; label: string; section: string; kind: string; options: string | null; on: boolean; sys: boolean; custom: boolean; offer: number; join: number; types: string[]; filledBy: FilledBy; threshold?: number };
-type SetupDoc = { key: string; label: string; on: boolean; sys: boolean; offer: number; join: number; types: string[]; depts: string[]; filledBy: FilledBy };
+/** shortlist, offer, join: 0 Not needed, 1 Optional, 2 Mandatory at Shortlisting, Offer release and Joining.
+ *  shortlistFixed: Shortlisting is locked (always asked, or never for the approval flow and work policy). */
+type SetupField = { key: string; label: string; section: string; kind: string; options: string | null; on: boolean; sys: boolean; custom: boolean; shortlist: number; offer: number; join: number; types: string[]; filledBy: FilledBy; threshold?: number; shortlistFixed?: boolean };
+type SetupDoc = { key: string; label: string; on: boolean; sys: boolean; shortlist: number; offer: number; join: number; types: string[]; depts: string[]; filledBy: FilledBy };
+type Stage = 'shortlist' | 'offer' | 'join';
 type Data = Record<string, string>;
 type Exp = { company: string; designation: string; from: string; to: string };
 type Pipe = { rows: any[]; counts: Record<string, number>; stages: string[] };
@@ -44,6 +47,12 @@ const fieldApplies = (f: SetupField, d: Data) => f.on && f.types.includes(d.type
 const docApplies = (x: SetupDoc, type: string, dept: string) => x.on && x.types.includes(type) && (!x.depts.length || x.depts.includes(dept));
 const strMap = (m: Record<string, unknown> | null | undefined): Data => Object.fromEntries(Object.entries(m || {}).filter(([, v]) => v != null && typeof v !== 'object').map(([k, v]) => [k, String(v)]));
 const blankExp = (): Exp => ({ company: '', designation: '', from: '', to: '' });
+/** Form setup fields the shortlist form lays out in its own cards (the rest it asks go in cards by section). */
+const SL_OWN = ['first', 'last', 'phone', 'email', 'dob', 'gender', 'addr', 'city', 'loc', 'dept', 'desig'];
+/** Always asked at shortlisting, Mandatory (store.ShortlistAlways). */
+const SL_ALWAYS = ['first', 'last', 'city', 'loc', 'dept', 'desig'];
+/** The key the shortlist form uploads its documents under until the shortlist is saved (files.go draftOwner). */
+const newDraft = () => 'DRAFT-SL-' + Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('');
 const stageTone = (b: string): 'ok' | 'warn' | 'bad' | 'info' | 'n' => (b === 'Done' ? 'ok' : b === 'Closed' ? 'bad' : b === 'Joined' || b === 'With Payroll' ? 'info' : 'warn');
 const ym = (s?: string) => (s ? new Date(+s.slice(0, 4), +s.slice(5, 7) - 1, 15).toLocaleString('en-IN', { month: 'short', year: 'numeric' }) : '');
 const Req = () => <> <b style={{ color: 'var(--bad)' }}>*</b></>;
@@ -170,6 +179,12 @@ function ShortlistForm({ rejoin, onSent }: { rejoin: string; onSent: (id: string
   const [res, setRes] = useState<any>(null);
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Form setup's Shortlisting: the fields and documents asked here (owner, 26 Nov 2026). Documents go up under a
+  // draft key and move to the candidate (SI-…) when the shortlist is sent.
+  const setup = useLoad(() => api<{ fields: SetupField[]; docs: SetupDoc[] }>('/onboarding/setup'), []);
+  const [draft] = useState(newDraft);
+  const [docs, setDocs] = useState<Record<string, any>>({});
+  const [uploads, setUploads] = useState(0);
   const pre = useLoad(() => (rejoin ? api(`/candidates/rejoin/${rejoin}`) : Promise.resolve(null)), [rejoin]);
   useEffect(() => {
     if (!pre.data) return;
@@ -180,19 +195,21 @@ function ShortlistForm({ rejoin, onSent }: { rejoin: string; onSent: (id: string
   const mgrs = useLoad(() => api<any[]>('/candidates/managers').catch(() => []), []);
   const set = (k: string, v: string) => setD((x) => {
     const n = { ...x, [k]: v };
-    if (k === 'dept') n.desig = '';
-    if (k === 'city') n.loc = '';
+    if (k === 'dept') { n.desig = ''; if (x.grade) n.grade = ''; }
+    if (k === 'desig' && x.grade) n.grade = '';
+    if (k === 'city') { n.loc = ''; if (x.shift) n.shift = ''; }
+    if (k === 'loc' && x.shift) n.shift = '';
     return n;
   });
   const setRow = (i: number, k: keyof Exp, v: string) => setExp((l) => l.map((r, j) => (j === i ? { ...r, [k]: v } : r)));
-  const body = useMemo(() => JSON.stringify({ data: d, experience: exp }), [d, exp]);
+  const body = useMemo(() => JSON.stringify({ data: d, experience: exp, draft }), [d, exp, draft]);
   const check = () => api('/candidates/check', { body: JSON.parse(body) }).then((r) => { setRes(r); return r; });
   useEffect(() => {
     if (!canCreate) return;
     const t = setTimeout(() => check().catch(() => {}), 300);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [body]);
+  }, [body, uploads]);
   const errs: string[] = res?.errors ?? [];
   const miss = (...words: string[]) => show && errs.some((e) => words.some((w) => e.startsWith(w)));
   const send = async (skip = '') => {
@@ -201,15 +218,35 @@ function ShortlistForm({ rejoin, onSent }: { rejoin: string; onSent: (id: string
     try {
       const now = await check();
       if (now.errors?.length) { toast(`${now.errors.length} thing${now.errors.length > 1 ? 's' : ''} to fix`); window.scrollTo(0, 0); return; }
-      const r = await api('/candidates' + skip, { body: { data: d, experience: exp } });
+      const r = await api('/candidates' + skip, { body: JSON.parse(body) });
       if (resume) {
         try { await uploadDoc('candidate', r.id, 'resume', resume); } catch (x: any) { toast(`${r.id} sent for approval. The résumé did not upload: ${x.message}`); onSent(r.id); return; }
       }
       toast(`${r.id} sent for approval`); onSent(r.id);
     } catch (x: any) { toast(x.message); } finally { setBusy(false); }
   };
+  const upload = async (key: string, file?: File) => {
+    if (!file) return;
+    try { const r = await uploadDoc('offer', draft, key, file); setDocs((x) => ({ ...x, [key]: r })); setUploads((n) => n + 1); toast('Attached ' + file.name); } catch (x: any) { toast(x.message); }
+  };
+  // What Form setup asks at shortlisting, for the employment type (Permanent unless the type itself is asked here).
+  const fsAll = setup.data?.fields ?? [];
+  const typeAsked = fsAll.some((f) => f.key === 'type' && f.on && f.shortlist > 0);
+  const typ = (typeAsked && d.type) || 'Permanent';
+  const asked = fsAll.filter((f) => SL_ALWAYS.includes(f.key) || (f.shortlist > 0 && f.kind !== 'flow' && f.kind !== 'policy' && fieldApplies(f, { ...d, type: typ })));
+  const extra = asked.filter((f) => !SL_OWN.includes(f.key));
+  const docList = (setup.data?.docs ?? []).filter((x) => x.shortlist > 0 && docApplies(x, typ, d.dept || ''));
+  if (!setup.data) return <Loading error={setup.error} />;
   const fld = (k: string, label: string, el: JSX.Element, req = true, words: string[] = [label]) =>
     <label className={`field ${miss(...words) ? 'err' : ''}`}><span>{label}{req && <Req />}</span>{el}</label>;
+  /** A Form setup field in the form's own cards: shown when asked at shortlisting, required when Mandatory there. */
+  const own = (k: string, label: string, el: JSX.Element, words: string[] = [], wide = false) => {
+    const f = asked.find((x) => x.key === k);
+    if (!f && !SL_ALWAYS.includes(k)) return null;
+    const lab = f?.label || label;
+    return <label className={`field ${miss(lab, ...words) ? 'err' : ''}`} style={wide ? { gridColumn: '1 / -1' } : undefined}>
+      <span>{lab}{(SL_ALWAYS.includes(k) || f?.shortlist === 2) && <Req />}</span>{el}</label>;
+  };
   const inp = (k: string, type = 'text', extra: Record<string, unknown> = {}) => <input type={type} value={d[k] ?? ''} onChange={(e) => set(k, e.target.value)} {...extra} />;
   const sel = (k: string, list: [string, string][], blank = 'Select') => <select value={d[k] ?? ''} onChange={(e) => set(k, e.target.value)}><option value="">{blank}</option>{list.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>;
   const plan = res?.plan;
@@ -219,13 +256,13 @@ function ShortlistForm({ rejoin, onSent }: { rejoin: string; onSent: (id: string
         {pre.data && <div className="note"><b>Rejoin of {rejoin}.</b> Earlier exit: {pre.data.exitReason || '—'}{pre.data.lwd ? `, last working day ${fmtD(pre.data.lwd)}` : ''}. Rehire eligibility: {pre.data.rehire}.{pre.data.open ? ` ${pre.data.open} is already open.` : ''}</div>}
         {pre.error && <div className="note bad">{pre.error}</div>}
         <div className="card"><h3>Personal details</h3><div className="form">
-          {fld('first', 'First name', inp('first'))}
-          {fld('last', 'Last name', inp('last'))}
-          {fld('phone', 'Mobile number', inp('phone', 'tel', { inputMode: 'numeric', maxLength: 10 }))}
-          {fld('email', 'Personal email ID', inp('email', 'email'), true, ['Personal email'])}
-          {fld('dob', 'Date of birth', inp('dob', 'date', { max: today() }), true, ['Date of birth', 'The candidate must'])}
-          {fld('gender', 'Gender', sel('gender', GENDERS.map((g) => [g, g])))}
-          <label className="field" style={{ gridColumn: '1 / -1' }}><span>Current address</span><input type="text" value={d.addr ?? ''} onChange={(e) => set('addr', e.target.value)} /></label>
+          {own('first', 'First name', inp('first'))}
+          {own('last', 'Last name', inp('last'), ['Keep names'])}
+          {own('phone', 'Mobile number', inp('phone', 'tel', { inputMode: 'numeric', maxLength: 10 }))}
+          {own('email', 'Personal email ID', inp('email', 'email'), ['Personal email'])}
+          {own('dob', 'Date of birth', inp('dob', 'date', { max: today() }), ['The candidate must'])}
+          {own('gender', 'Gender', sel('gender', GENDERS.map((g) => [g, g])), ['Choose a gender'])}
+          {own('addr', 'Current address', inp('addr'), [], true)}
         </div></div>
         <div className="card"><h3>Work experience</h3>
           <p className="mute" style={{ marginTop: -6, fontSize: 12 }}>Latest first. Leave the To month empty for the current job, and the rows empty for a fresher.</p>
@@ -241,18 +278,29 @@ function ShortlistForm({ rejoin, onSent }: { rejoin: string; onSent: (id: string
         </div>
         <div className="card"><h3>Existing CTC and location</h3><div className="form">
           {fld('ctc', 'Existing CTC (₹ a year)', inp('ctc', 'number', { min: 0, placeholder: '0 for a fresher' }), true, ['Existing CTC'])}
-          {fld('city', 'Work city', sel('city', L.opts('city')))}
-          {fld('loc', 'Reporting location', sel('loc', L.opts('loc'), d.city ? 'Select' : 'Select city first'), true, ['Reporting location', 'Location'])}
+          {own('city', 'Work city', sel('city', L.opts('city')), ['Choose the work city', 'City'])}
+          {own('loc', 'Reporting location', sel('loc', L.opts('loc'), d.city ? 'Select' : 'Select city first'), ['Choose the reporting location', 'Location'])}
         </div></div>
         <div className="card"><h3>Role and hiring manager</h3><div className="form">
-          {fld('dept', 'Department', sel('dept', L.opts('dept')), true, ['Department'])}
-          {fld('desig', 'Designation', sel('desig', L.opts('desig'), d.dept ? 'Select' : 'Select department first'), true, ['Designation'])}
+          {own('dept', 'Department', sel('dept', L.opts('dept')))}
+          {own('desig', 'Designation', sel('desig', L.opts('desig'), d.dept ? 'Select' : 'Select department first'))}
           {fld('manager', 'Hiring manager', <PersonPicker label="Hiring manager" people={mgrs.data} value={d.manager ?? ''} onChange={(id) => set('manager', id)} placeholder="Select" />, true, ['Hiring manager', 'The hiring manager', 'Choose a hiring manager'])}
           {d.rejoinOf && <label className="field"><span>Employee code on rejoining</span><select value={d.codeMode || 'same'} onChange={(e) => set('codeMode', e.target.value)}>
             <option value="same">Keep {d.rejoinOf} with a new service period</option><option value="new">A new code linked to {d.rejoinOf}</option></select></label>}
         </div>
           <p className="mute" style={{ fontSize: 12, margin: '10px 0 0' }}>The hiring manager is the reporting manager for the role. They approve the shortlist first and then take the interview.</p>
         </div>
+        {SECTIONS.map((sec) => {
+          const fs = extra.filter((f) => f.section === sec);
+          return fs.length ? <div key={sec} className="card"><h3>{sec}</h3><div className="form">
+            {fs.map((f) => <label key={f.key} className={`field ${miss(f.label) ? 'err' : ''}`}><span>{f.label}{f.shortlist === 2 && <Req />}</span>
+              <Control f={f} d={d} set={set} opts={L.opts} /></label>)}
+          </div></div> : null;
+        })}
+        {docList.length > 0 && <div className="card"><h3>Documents</h3>
+          <p className="mute" style={{ marginTop: -6, fontSize: 12 }}>Kept with the candidate from the shortlist: the offer and joining count them, so they are not asked again unless HR replaces them.</p>
+          <DocTable list={docList} stage="shortlist" docs={docs} onUpload={upload} empty="" />
+        </div>}
         <div className="card"><h3>Résumé <span className="mute" style={{ fontWeight: 600 }}>(optional)</span></h3>
           <div className="upl"><label className="btn sm">{resume ? 'Replace' : 'Choose file'}<input type="file" accept=".pdf,.jpg,.jpeg,.png" hidden onChange={(e) => { setResume(e.target.files?.[0] ?? null); e.target.value = ''; }} /></label>
             {resume ? <><span className="mute" style={{ fontSize: 12 }}>{resume.name}</span><button className="btn sm" onClick={() => setResume(null)}>Remove</button></> : <span className="mute" style={{ fontSize: 12 }}>PDF, JPG or PNG, up to 5 MB. Uploaded with the shortlist.</span>}</div>
@@ -275,6 +323,19 @@ function ShortlistForm({ rejoin, onSent }: { rejoin: string; onSent: (id: string
       </div>
     </div>
   );
+}
+
+/** What Form setup's Shortlisting added to a candidate (candidateGet shortlistItems): the other fields given at
+ *  shortlisting and the documents asked there, as rows of the candidate's details list. */
+function ShortlistExtras({ x }: { x: any }) {
+  const fields: { key: string; label: string; value: string }[] = x.shortlistItems?.fields ?? [];
+  const docs: { key: string; label: string; required: boolean; doc: any }[] = x.shortlistItems?.docs ?? [];
+  return <>
+    {fields.map((f) => <Fragment key={f.key}><dt>{f.label}</dt><dd>{f.value}</dd></Fragment>)}
+    {docs.length > 0 && <><dt>Documents</dt><dd>{docs.map((y) => <div key={y.key}>{y.doc
+      ? <a href="#" onClick={(e) => { e.preventDefault(); openDoc(y.doc.id).catch((er) => toast(er.message)); }}>{y.label}</a>
+      : <span className="mute">{y.label}: not uploaded{y.required ? '' : ' (optional)'}</span>}</div>)}</dd></>}
+  </>;
 }
 
 // ---------- Pipeline ----------
@@ -364,6 +425,7 @@ function CandidateModal({ id, onClose, onOffer }: { id: string; onClose: () => v
           <dt>Date of birth</dt><dd>{fmtD(d.dob)}</dd><dt>Gender</dt><dd>{d.gender || '—'}</dd>
           <dt>Address</dt><dd>{d.addr || '—'}</dd><dt>Existing CTC</dt><dd>{typeof x.existing_ctc === 'number' ? `${inr(x.existing_ctc)} a year` : '—'}</dd>
           <dt>Hiring manager</dt><dd>{x.manager_name} · {x.manager_id}</dd><dt>Raised by</dt><dd>{x.raised_by_name} · {fmtD(String(x.created_at))}</dd>
+          <ShortlistExtras x={x} />
           <dt>Résumé</dt><dd><div className="upl">{resume ? <a href="#" onClick={(e) => { e.preventDefault(); openDoc(resume.id).catch((er) => toast(er.message)); }}>{resume.file_name}</a> : <span className="mute">None</span>}
             {c.upload && <label className="btn sm">{resume ? 'Replace' : 'Upload'}<input type="file" accept=".pdf,.jpg,.jpeg,.png" hidden onChange={(e) => { upload(e.target.files?.[0]); e.target.value = ''; }} /></label>}</div></dd>
         </dl>
@@ -554,9 +616,9 @@ function OfferForm({ cand, onBack, onSent }: { cand: any; onBack: () => void; on
 }
 
 /** Documents of a stage (prototype `docsHtml` / the joining dialog). `onAsk` adds "Ask candidate" (offer stage). */
-function DocTable({ list, stage, docs, onUpload, readOnly, asked, onAsk, empty, marks }: { list: SetupDoc[]; stage: 'offer' | 'join'; docs: Record<string, any>; onUpload: (k: string, f?: File) => void; readOnly?: boolean; asked?: Record<string, boolean>; onAsk?: (k: string) => void; empty: string; marks?: boolean }) {
+function DocTable({ list, stage, docs, onUpload, readOnly, asked, onAsk, empty, marks }: { list: SetupDoc[]; stage: Stage; docs: Record<string, any>; onUpload: (k: string, f?: File) => void; readOnly?: boolean; asked?: Record<string, boolean>; onAsk?: (k: string) => void; empty: string; marks?: boolean }) {
   return <div className="tw"><table><tbody>{list.length ? list.map((x) => {
-    const st = stage === 'offer' ? x.offer : x.join, up = docs[x.key];
+    const st = x[stage], up = docs[x.key];
     return <tr key={x.key}>
       <td><b>{x.label}</b> {st === 2 ? <Pill k="bad">Mandatory</Pill> : <Pill k="n">Optional</Pill>}{marks && x.filledBy === 'joiner' && (String(up?.uploaded_by || '').endsWith('(joiner)') ? <JoinerMark filled /> : !up ? <JoinerMark /> : null)}{marks && up?.uploaded_by && <div className="mute" style={{ fontSize: 11.5 }}>by {up.uploaded_by}</div>}</td>
       <td>{up ? <Pill k="ok">Uploaded</Pill> : asked?.[x.key] ? <Pill k="info">Requested from candidate</Pill> : <Pill k="warn">Pending</Pill>}</td>
@@ -877,8 +939,8 @@ function FormSetup() {
   const { data, error, reload } = useLoad(() => api<{ fields: SetupField[]; docs: SetupDoc[] }>('/onboarding/setup'), []);
   const depts = useLoad(() => api<any[]>('/masters/department?status=Active'), []);
   const edit = can('onb.setup', 2);
-  const [cf, setCf] = useState({ label: '', section: 'Job', kind: 'text', options: '', offer: 0, join: 1 });
-  const [cd, setCd] = useState({ label: '', offer: 0, join: 1 });
+  const [cf, setCf] = useState({ label: '', section: 'Job', kind: 'text', options: '', shortlist: 0, offer: 0, join: 1 });
+  const [cd, setCd] = useState({ label: '', shortlist: 0, offer: 0, join: 1 });
   const [dep, setDep] = useState<Record<string, string>>({});
   if (!data) return <Loading error={error} />;
   const patch = async (kind: 'fields' | 'docs', key: string, body: any) => {
@@ -891,8 +953,13 @@ function FormSetup() {
   const bySel = (kind: 'fields' | 'docs', x: SetupField | SetupDoc, fixed: boolean) => fixed
     ? <span className="mute" style={{ fontSize: 12.5 }} title="System fields, pay and fields that pick from the company's lists are always filled by HR">HR</span>
     : <select aria-label={`Who fills ${x.label}`} disabled={!edit} value={x.filledBy} onChange={(e) => patch(kind, x.key, { filledBy: e.target.value })}><option value="joiner">Joiner</option><option value="hr">HR</option></select>;
-  const stSel = (kind: 'fields' | 'docs', x: SetupField | SetupDoc, stg: 'offer' | 'join') =>
-    <select disabled={!edit || (x.sys && stg === 'offer')} value={x[stg]} onChange={(e) => patch(kind, x.key, { [stg]: +e.target.value })}>{stOpts}</select>;
+  // Locked: a system item at Offer release; at Shortlisting the fields always asked (names, job, place) and the
+  // approval flow and work policy, which are worked out at the offer.
+  const stSel = (kind: 'fields' | 'docs', x: SetupField | SetupDoc, stg: Stage) =>
+    <select aria-label={`${x.label} at ${stg === 'shortlist' ? 'shortlisting' : stg === 'offer' ? 'offer release' : 'joining'}`}
+      disabled={!edit || (x.sys && stg === 'offer') || (stg === 'shortlist' && !!(x as SetupField).shortlistFixed)}
+      title={stg === 'shortlist' && (x as SetupField).shortlistFixed ? (x[stg] ? 'Always asked at shortlisting' : 'Worked out at the offer, not asked at shortlisting') : undefined}
+      value={x[stg]} onChange={(e) => patch(kind, x.key, { [stg]: +e.target.value })}>{stOpts}</select>;
   const typePills = (kind: 'fields' | 'docs', x: SetupField | SetupDoc) => TYPES.map((t, i) => {
     const on = x.types.includes(t);
     return <span key={t}>{i > 0 && ' '}<button className={`pill ${on ? 'info' : 'n'}`} disabled={!edit || x.sys} style={{ border: 0, cursor: 'pointer' }}
@@ -909,30 +976,32 @@ function FormSetup() {
   };
   return <>
     <HireSettings />
-    <div className="note" style={{ marginBottom: 14 }}>Every field and document is asked at two stages. <b>Offer release</b> is what HR enters on the offer for a selected candidate, before it goes for approval. <b>Joining</b> is what is collected once the candidate accepts and joins. At each stage choose Mandatory, Optional or Not needed. Nothing is deleted, only switched off. The shortlist asks personal details, work experience, existing CTC and location.
+    <div className="note" style={{ marginBottom: 14 }}>Every field and document is asked at three stages: <b>Shortlisting</b>, <b>Offer release</b> and <b>Joining</b>. <b>Shortlisting</b> is what HR or the HRBP enters when raising a shortlist (Onboarding › Shortlist); the shortlist always asks the name, department, designation, work city and reporting location, and besides Form setup the existing CTC, work experience and hiring manager. <b>Offer release</b> is what HR enters on the offer for a selected candidate, before it goes for approval. <b>Joining</b> is what is collected once the candidate accepts and joins. At each stage choose Mandatory, Optional or Not needed. What is given at an earlier stage prefills the later ones, and a document uploaded earlier counts later, so nothing is typed or uploaded twice (it stays editable where the later stage asks it). The shortlist counts as Permanent for <b>Applies to</b> unless Employment type is asked at shortlisting. Nothing is deleted, only switched off.
       <div style={{ marginTop: 6 }}><b>Filled by</b> says who fills a joining detail: the <b>Joiner</b> from the link HR sends them (Onboarding › Joining details › Joiner's link), or <b>HR</b>. HR can still correct what the joiner filled. System fields, pay and fields that pick from the company's lists are always HR's.</div></div>
     <div className="card" style={{ marginBottom: 14 }}><h3>Form fields</h3><div className="tw"><table>
-      <thead><tr><th>Field</th><th>Section</th><th>Shown</th><th>Offer release</th><th>Joining</th><th>Filled by</th><th>Applies to</th></tr></thead>
+      <thead><tr><th>Field</th><th>Section</th><th>Shown</th><th>Shortlisting</th><th>Offer release</th><th>Joining</th><th>Filled by</th><th>Applies to</th></tr></thead>
       <tbody>{data.fields.map((f) => <tr key={f.key}><td><b>{f.label}</b> {f.sys ? <Pill k="n">System</Pill> : f.custom ? <Pill k="info">Custom</Pill> : null}</td><td className="mute">{f.section}</td>
-        <td><Switch on={f.on} disabled={!edit || f.sys} label={`Show ${f.label}`} onChange={() => patch('fields', f.key, { on: !f.on })} /></td><td>{stSel('fields', f, 'offer')}</td><td>{stSel('fields', f, 'join')}</td><td>{bySel('fields', f, !joinerAllowed(f))}</td><td>{typePills('fields', f)}</td></tr>)}</tbody>
+        <td><Switch on={f.on} disabled={!edit || f.sys} label={`Show ${f.label}`} onChange={() => patch('fields', f.key, { on: !f.on })} /></td><td>{stSel('fields', f, 'shortlist')}</td><td>{stSel('fields', f, 'offer')}</td><td>{stSel('fields', f, 'join')}</td><td>{bySel('fields', f, !joinerAllowed(f))}</td><td>{typePills('fields', f)}</td></tr>)}</tbody>
     </table></div></div>
     {edit && <div className="card" style={{ marginBottom: 14 }}><h3>Add a custom field</h3><div className="form">
       <label className="field"><span>Label</span><input type="text" value={cf.label} onChange={(e) => setCf({ ...cf, label: e.target.value })} /></label>
       <label className="field"><span>Section</span><select value={cf.section} onChange={(e) => setCf({ ...cf, section: e.target.value })}>{SECTIONS.map((s) => <option key={s}>{s}</option>)}</select></label>
       <label className="field"><span>Type</span><select value={cf.kind} onChange={(e) => setCf({ ...cf, kind: e.target.value })}><option value="text">Text</option><option value="number">Number</option><option value="date">Date</option><option value="sel">Dropdown</option></select></label>
       <label className="field"><span>Dropdown options</span><input type="text" placeholder="Comma separated" value={cf.options} onChange={(e) => setCf({ ...cf, options: e.target.value })} /></label>
+      <label className="field"><span>At shortlisting</span><select value={cf.shortlist} onChange={(e) => setCf({ ...cf, shortlist: +e.target.value })}>{stOpts}</select></label>
       <label className="field"><span>At offer release</span><select value={cf.offer} onChange={(e) => setCf({ ...cf, offer: +e.target.value })}>{stOpts}</select></label>
       <label className="field"><span>At joining</span><select value={cf.join} onChange={(e) => setCf({ ...cf, join: +e.target.value })}>{stOpts}</select></label>
     </div><div className="row" style={{ marginTop: 12 }}><button className="btn primary" onClick={() => add('fields', { ...cf, options: cf.kind === 'sel' ? cf.options : '' }, () => setCf({ ...cf, label: '', options: '' }))}>Add field</button></div></div>}
     <DocWindowSetting />
     <div className="card" style={{ marginBottom: 14 }}><h3>Documents</h3><div className="tw"><table>
-      <thead><tr><th>Document</th><th>Shown</th><th>Offer release</th><th>Joining</th><th>Filled by</th><th>Applies to</th><th>Departments</th></tr></thead>
+      <thead><tr><th>Document</th><th>Shown</th><th>Shortlisting</th><th>Offer release</th><th>Joining</th><th>Filled by</th><th>Applies to</th><th>Departments</th></tr></thead>
       <tbody>{data.docs.map((x) => <tr key={x.key}><td><b>{x.label}</b> {x.sys && <Pill k="n">System</Pill>}</td>
-        <td><Switch on={x.on} disabled={!edit || x.sys} label={`Show ${x.label}`} onChange={() => patch('docs', x.key, { on: !x.on })} /></td><td>{stSel('docs', x, 'offer')}</td><td>{stSel('docs', x, 'join')}</td><td>{bySel('docs', x, false)}</td><td>{typePills('docs', x)}</td>
+        <td><Switch on={x.on} disabled={!edit || x.sys} label={`Show ${x.label}`} onChange={() => patch('docs', x.key, { on: !x.on })} /></td><td>{stSel('docs', x, 'shortlist')}</td><td>{stSel('docs', x, 'offer')}</td><td>{stSel('docs', x, 'join')}</td><td>{bySel('docs', x, false)}</td><td>{typePills('docs', x)}</td>
         <td><input type="text" disabled={!edit} placeholder="All departments" style={{ minWidth: 150 }} value={dep[x.key] ?? x.depts.join(', ')} onChange={(e) => setDep({ ...dep, [x.key]: e.target.value })} onBlur={() => saveDepts(x)} /></td></tr>)}</tbody>
     </table></div></div>
     {edit && <div className="card"><h3>Add a document</h3><div className="row">
       <input type="text" placeholder="e.g. Driving licence" value={cd.label} onChange={(e) => setCd({ ...cd, label: e.target.value })} style={{ maxWidth: 260 }} />
+      <label className="field" style={{ margin: 0 }}><span>At shortlisting</span><select value={cd.shortlist} onChange={(e) => setCd({ ...cd, shortlist: +e.target.value })}>{stOpts}</select></label>
       <label className="field" style={{ margin: 0 }}><span>At offer release</span><select value={cd.offer} onChange={(e) => setCd({ ...cd, offer: +e.target.value })}>{stOpts}</select></label>
       <label className="field" style={{ margin: 0 }}><span>At joining</span><select value={cd.join} onChange={(e) => setCd({ ...cd, join: +e.target.value })}>{stOpts}</select></label>
       <button className="btn primary" onClick={() => add('docs', cd, () => setCd({ ...cd, label: '' }))}>Add document</button>
@@ -952,6 +1021,7 @@ export function CandidateBlock({ id }: { id: string }) {
       <dt>Existing CTC</dt><dd>{typeof x.existing_ctc === 'number' ? `${inr(x.existing_ctc)} a year` : '—'}</dd>
       <dt>Mobile</dt><dd>{d.phone || '—'}</dd><dt>Email</dt><dd>{d.email || '—'}</dd><dt>Date of birth</dt><dd>{fmtD(d.dob)}</dd><dt>Gender</dt><dd>{d.gender || '—'}</dd>
       <dt>Hiring manager</dt><dd>{x.manager_name}</dd><dt>Raised by</dt><dd>{x.raised_by_name}</dd>
+      <ShortlistExtras x={x} />
       {x.interview_result && <><dt>Interview</dt><dd><Pill k={x.interview_result === 'Selected' ? 'ok' : 'bad'}>{x.interview_result}</Pill> {fmtD(x.interview_date)} by {x.interviewed_by_name}: “{x.interview_feedback}”</dd></>}
       <dt>Résumé</dt><dd>{resume ? <a href="#" onClick={(e) => { e.preventDefault(); openDoc(resume.id).catch((er) => toast(er.message)); }}>{resume.file_name}</a> : <span className="mute">None</span>}</dd>
     </dl>

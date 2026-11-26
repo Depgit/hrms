@@ -28,17 +28,21 @@ import (
 // ---------- Form setup ----------
 
 type onbField struct {
-	Key     string   `json:"key"`
-	Label   string   `json:"label"`
-	Section string   `json:"section"`
-	Kind    string   `json:"kind"`
-	Options *string  `json:"options"`
-	On      bool     `json:"on"`
-	Sys     bool     `json:"sys"`
-	Custom  bool     `json:"custom"`
-	Offer   int      `json:"offer"`
-	Join    int      `json:"join"`
-	Types   []string `json:"types"`
+	Key     string  `json:"key"`
+	Label   string  `json:"label"`
+	Section string  `json:"section"`
+	Kind    string  `json:"kind"`
+	Options *string `json:"options"`
+	On      bool    `json:"on"`
+	Sys     bool    `json:"sys"`
+	Custom  bool    `json:"custom"`
+	// Shortlist, Offer, Join: 0 Not needed, 1 Optional, 2 Mandatory at Shortlisting, Offer release and Joining.
+	Shortlist int      `json:"shortlist"`
+	Offer     int      `json:"offer"`
+	Join      int      `json:"join"`
+	Types     []string `json:"types"`
+	// ShortlistFixed: Shortlisting is locked (store.ShortlistFixed): always asked, or never (flow, policy).
+	ShortlistFixed bool `json:"shortlistFixed,omitempty"`
 	// FilledBy: "joiner" (the new joiner fills it from their link, joining_link.go) or "hr".
 	FilledBy string `json:"filledBy"`
 	// Threshold: the PF choice (pfChoice) is asked only above this monthly gross (company_setting.pf_exempt_gross).
@@ -46,15 +50,16 @@ type onbField struct {
 }
 
 type onbDoc struct {
-	Key      string   `json:"key"`
-	Label    string   `json:"label"`
-	On       bool     `json:"on"`
-	Sys      bool     `json:"sys"`
-	Offer    int      `json:"offer"`
-	Join     int      `json:"join"`
-	Types    []string `json:"types"`
-	Depts    []string `json:"depts"`
-	FilledBy string   `json:"filledBy"`
+	Key       string   `json:"key"`
+	Label     string   `json:"label"`
+	On        bool     `json:"on"`
+	Sys       bool     `json:"sys"`
+	Shortlist int      `json:"shortlist"`
+	Offer     int      `json:"offer"`
+	Join      int      `json:"join"`
+	Types     []string `json:"types"`
+	Depts     []string `json:"depts"`
+	FilledBy  string   `json:"filledBy"`
 }
 
 // joinerAllowed: the field may be given to the joiner (store.JoinerAllowed).
@@ -98,6 +103,12 @@ func loadSetup(ctx context.Context, q store.Q) ([]onbField, []onbDoc, error) {
 		if f.FilledBy == "" || !f.joinerAllowed() { // not set yet (an import), or a field HR always fills
 			f.FilledBy = store.DefaultFilledBy(f.Key, f.Section, f.Kind, f.Sys, str(r["options"]))
 		}
+		// Shortlisting (store/schema_shortlist.go): not set yet reads as the shortlist form asked before; locked rows
+		// always read their fixed value.
+		f.Shortlist, f.ShortlistFixed = store.ShortlistDefault(f.Key, f.Kind), store.ShortlistFixed(f.Key, f.Kind)
+		if r["shortlist_state"] != nil && !f.ShortlistFixed {
+			f.Shortlist = toInt(r["shortlist_state"])
+		}
 		fs = append(fs, f)
 	}
 	rows, err = q.C("onb_document").Find(ctx, bson.D{}, inOrder)
@@ -107,7 +118,7 @@ func loadSetup(ctx context.Context, q store.Q) ([]onbField, []onbDoc, error) {
 	ds := make([]onbDoc, 0, len(rows))
 	for _, r := range rows {
 		ds = append(ds, onbDoc{Key: str(r["key"]), Label: str(r["label"]), On: r["on_form"] == true, Sys: r["sys"] == true,
-			Offer: toInt(r["offer_state"]), Join: toInt(r["join_state"]), Types: onboardingStrings(r["types"]), Depts: onboardingStrings(r["depts"]),
+			Shortlist: toInt(r["shortlist_state"]), Offer: toInt(r["offer_state"]), Join: toInt(r["join_state"]), Types: onboardingStrings(r["types"]), Depts: onboardingStrings(r["depts"]),
 			FilledBy: str(r["filled_by"])})
 		if ds[len(ds)-1].FilledBy == "" {
 			ds[len(ds)-1].FilledBy = store.FilledByJoiner
@@ -297,19 +308,20 @@ func (s *Server) onbSetupGet(r *http.Request, c *Ctx) (any, error) {
 }
 
 type setupPatch struct {
-	Label    *string   `json:"label"`
-	On       *bool     `json:"on"`
-	Offer    *int      `json:"offer"`
-	Join     *int      `json:"join"`
-	Types    *[]string `json:"types"`
-	Depts    *[]string `json:"depts"`
-	FilledBy *string   `json:"filledBy"` // joiner | hr
+	Label     *string   `json:"label"`
+	On        *bool     `json:"on"`
+	Shortlist *int      `json:"shortlist"`
+	Offer     *int      `json:"offer"`
+	Join      *int      `json:"join"`
+	Types     *[]string `json:"types"`
+	Depts     *[]string `json:"depts"`
+	FilledBy  *string   `json:"filledBy"` // joiner | hr
 }
 
 var empTypes = []string{"Permanent", "Retainer", "Contractual"}
 
 func (p setupPatch) check(sys bool) error {
-	for _, v := range []*int{p.Offer, p.Join} {
+	for _, v := range []*int{p.Shortlist, p.Offer, p.Join} {
 		if v != nil && (*v < 0 || *v > 2) {
 			return bad("Choose Not needed, Optional or Mandatory")
 		}
@@ -353,6 +365,12 @@ func (s *Server) onbSetupPatch(r *http.Request, c *Ctx) (any, error) {
 	if b.Depts != nil && table != "onb_document" {
 		return nil, bad("Only documents can be limited to departments")
 	}
+	if b.Shortlist != nil && table == "onb_field" && store.ShortlistFixed(key, str(item["kind"])) && *b.Shortlist != store.ShortlistDefault(key, str(item["kind"])) {
+		if store.ShortlistAlways(key) {
+			return nil, bad("%s is always asked at shortlisting", item["label"])
+		}
+		return nil, bad("%s is worked out at the offer, so it is not asked at shortlisting", item["label"])
+	}
 	if b.Depts != nil { // each a department in the master (HIRE-236)
 		for _, d := range *b.Depts {
 			if ok, _ := s.st.DB.C("department").Exists(ctx, bson.M{"name": d}); !ok {
@@ -379,6 +397,9 @@ func (s *Server) onbSetupPatch(r *http.Request, c *Ctx) (any, error) {
 	}
 	if b.On != nil {
 		set = append(set, bson.E{Key: "on_form", Value: *b.On})
+	}
+	if b.Shortlist != nil {
+		set = append(set, bson.E{Key: "shortlist_state", Value: *b.Shortlist})
 	}
 	if b.Offer != nil {
 		set = append(set, bson.E{Key: "offer_state", Value: *b.Offer})
@@ -412,12 +433,13 @@ func (s *Server) onbSetupAdd(r *http.Request, c *Ctx) (any, error) {
 		return nil, err
 	}
 	var b struct {
-		Label   string `json:"label"`
-		Section string `json:"section"`
-		Kind    string `json:"kind"`
-		Options string `json:"options"`
-		Offer   int    `json:"offer"`
-		Join    int    `json:"join"`
+		Label     string `json:"label"`
+		Section   string `json:"section"`
+		Kind      string `json:"kind"`
+		Options   string `json:"options"`
+		Shortlist int    `json:"shortlist"`
+		Offer     int    `json:"offer"`
+		Join      int    `json:"join"`
 		// FilledBy: joiner or hr; empty for the default (a field by its section, a document the joiner).
 		FilledBy string `json:"filledBy"`
 	}
@@ -431,7 +453,7 @@ func (s *Server) onbSetupAdd(r *http.Request, c *Ctx) (any, error) {
 	if b.Label == "" || len(b.Label) > 80 {
 		return nil, bad("Enter a label")
 	}
-	if b.Offer < 0 || b.Offer > 2 || b.Join < 0 || b.Join > 2 {
+	if b.Shortlist < 0 || b.Shortlist > 2 || b.Offer < 0 || b.Offer > 2 || b.Join < 0 || b.Join > 2 {
 		return nil, bad("Choose Not needed, Optional or Mandatory")
 	}
 	ctx, kind := r.Context(), r.PathValue("kind")
@@ -460,7 +482,7 @@ func (s *Server) onbSetupAdd(r *http.Request, c *Ctx) (any, error) {
 				return bad("Fields in %s are filled by HR", b.Section)
 			}
 			if _, err := tx.C("onb_field").Insert(ctx, bson.M{"key": key, "label": b.Label, "section": b.Section, "kind": b.Kind,
-				"options": strPtr(opts), "custom": true, "offer_state": b.Offer, "join_state": b.Join, "sort": sort, "filled_by": by}); err != nil {
+				"options": strPtr(opts), "custom": true, "shortlist_state": b.Shortlist, "offer_state": b.Offer, "join_state": b.Join, "sort": sort, "filled_by": by}); err != nil {
 				return err
 			}
 		case "docs":
@@ -472,7 +494,7 @@ func (s *Server) onbSetupAdd(r *http.Request, c *Ctx) (any, error) {
 			if by == "" {
 				by = store.FilledByJoiner
 			}
-			if _, err := tx.C("onb_document").Insert(ctx, bson.M{"key": key, "label": b.Label, "offer_state": b.Offer, "join_state": b.Join, "sort": sort, "filled_by": by}); err != nil {
+			if _, err := tx.C("onb_document").Insert(ctx, bson.M{"key": key, "label": b.Label, "shortlist_state": b.Shortlist, "offer_state": b.Offer, "join_state": b.Join, "sort": sort, "filled_by": by}); err != nil {
 				return err
 			}
 		default:
@@ -1254,18 +1276,29 @@ func (s *Server) offerCandidate(ctx context.Context, q store.Q, c *Ctx, id strin
 }
 
 // candidateOfferData fills what the offer takes from the shortlist and cannot be changed on the offer form: the
-// rejoin and its code choice, and the hiring manager as the reporting manager unless one is chosen.
+// rejoin and its code choice, and the hiring manager as the reporting manager unless one is chosen. Every other value
+// given at shortlisting that the form did not send carries forward too (owner, 26 Nov 2026: nobody types it twice),
+// so the joining form and the joiner's link start from it; a value the offer form sends, even blank, wins.
 func candidateOfferData(cand store.Row, d map[string]string) {
 	delete(d, "rejoinOf")
 	delete(d, "codeMode")
+	m, _ := cand["data"].(map[string]any)
 	if rj := str(cand["rejoin_of"]); rj != "" {
 		d["rejoinOf"] = rj
-		if m, ok := cand["data"].(map[string]any); ok && str(m["codeMode"]) != "" {
+		if m != nil && str(m["codeMode"]) != "" {
 			d["codeMode"] = str(m["codeMode"])
 		}
 	}
 	if d["l1"] == "" {
 		d["l1"] = str(cand["manager_id"])
+	}
+	for k, v := range m {
+		if _, sent := d[k]; sent || k == "experience" || k == "codeMode" || len(k) > 40 {
+			continue
+		}
+		if s := strings.TrimSpace(fmt.Sprint(v)); s != "" && v != nil {
+			d[k] = s
+		}
 	}
 }
 
