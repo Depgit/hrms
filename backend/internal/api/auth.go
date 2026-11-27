@@ -27,7 +27,7 @@ const (
 	otpResend       = 30 * time.Second
 	passwordGrace   = 10 * time.Minute
 	loginMaxFails   = 5
-	loginLock       = 1 * time.Minute // owner, 27 Nov 2026: was 15
+	loginLock       = 5 * time.Minute // owner, 27 Nov 2026: was 15
 	sessionLifetime = 12 * time.Hour
 )
 
@@ -98,10 +98,10 @@ func (s *Server) otpSend(r *http.Request) (any, error) {
 		return nil, bad("purpose must be first or forgot")
 	}
 	ctx, id, ip := r.Context(), s.authID(r.Context(), b.EmployeeID), s.clientIP(r)
-	if err := s.authGuard.blocked(ip); err != nil {
+	if err := s.authGuard.blocked(ip, id); err != nil {
 		return nil, err
 	}
-	if err := s.authGuard.otpSend(ip); err != nil {
+	if err := s.authGuard.otpSend(ip, id); err != nil {
 		return nil, err
 	}
 	e, err := s.st.DB.C("employee").FindOne(ctx, bson.M{"_id": id})
@@ -109,7 +109,7 @@ func (s *Server) otpSend(r *http.Request) (any, error) {
 		return nil, err
 	}
 	if e == nil {
-		s.authGuard.failed(ip)
+		s.authGuard.failed(ip, id)
 		return nil, bad("We could not find that Employee ID. Check it, or ask HR.")
 	}
 	if e["status"] == "Pre-boarding" {
@@ -175,7 +175,7 @@ func (s *Server) otpVerify(r *http.Request) (any, error) {
 		return nil, err
 	}
 	ctx, id, ip := r.Context(), s.authID(r.Context(), b.EmployeeID), s.clientIP(r)
-	if err := s.authGuard.blocked(ip); err != nil {
+	if err := s.authGuard.blocked(ip, id); err != nil {
 		return nil, err
 	}
 	otps := s.st.DB.C("auth_otp")
@@ -191,7 +191,7 @@ func (s *Server) otpVerify(r *http.Request) (any, error) {
 		return nil, bad("The OTP expired. Request a new one.")
 	}
 	if subtle.ConstantTimeCompare([]byte(o["code_hash"].(string)), []byte(sha(id+":"+strings.TrimSpace(b.Code)))) != 1 {
-		s.authGuard.failed(ip)
+		s.authGuard.failed(ip, id)
 		tries := int(o["tries"].(int32)) + 1
 		_, _ = otps.Update(ctx, bson.M{"_id": o["id"]}, bson.M{"$set": bson.M{"tries": tries, "used": tries >= otpMaxTries}})
 		if tries >= otpMaxTries {
@@ -272,13 +272,13 @@ func (s *Server) login(r *http.Request) (any, error) {
 		return nil, err
 	}
 	ctx, id, ip := r.Context(), s.authID(r.Context(), b.EmployeeID), s.clientIP(r)
-	if err := s.authGuard.blocked(ip); err != nil {
+	if err := s.authGuard.blocked(ip, id); err != nil {
 		return nil, err
 	}
 	generic := "Employee ID or password is incorrect. First time here? Activate with OTP."
 	e, err := s.st.DB.C("employee").FindOne(ctx, bson.M{"_id": id})
 	if err != nil || e == nil {
-		s.authGuard.failed(ip)
+		s.authGuard.failed(ip, id)
 		return nil, unauthorized(generic)
 	}
 	if e["status"] == "Pre-boarding" {
@@ -290,20 +290,20 @@ func (s *Server) login(r *http.Request) (any, error) {
 		return nil, err
 	}
 	if a == nil {
-		s.authGuard.failed(ip)
+		s.authGuard.failed(ip, id)
 		return nil, unauthorized(generic)
 	}
 	if lu, ok := a["locked_until"].(time.Time); ok && lu.After(time.Now()) {
 		return nil, &apiError{Status: 423, Message: fmt.Sprintf("Too many wrong attempts. Try again in %d minutes, or reset your password with OTP.", int(time.Until(lu).Minutes())+1)}
 	}
 	if subtle.ConstantTimeCompare([]byte(hashPassword(b.Password, a["salt"].(string))), []byte(a["hash"].(string))) != 1 {
-		s.authGuard.failed(ip)
+		s.authGuard.failed(ip, id)
 		fails := int(a["fails"].(int32)) + 1
 		who := &Ctx{Name: str(e["name"]), EmployeeID: id}
 		if fails >= loginMaxFails {
 			_, _ = creds.Update(ctx, bson.M{"employee_id": id}, bson.M{"$set": bson.M{"fails": 0, "locked_until": time.Now().Add(loginLock)}})
 			_ = audit(ctx, s.st.DB, who, "Account locked after wrong passwords", "employee", id, nil, map[string]any{"ip": ip, "minutes": int(loginLock.Minutes())})
-			return nil, unauthorized("Too many wrong attempts. The account is locked for 1 minute. You can reset your password with OTP.")
+			return nil, unauthorized("Too many wrong attempts. The account is locked for 5 minutes. You can reset your password with OTP.")
 		}
 		_, _ = creds.Update(ctx, bson.M{"employee_id": id}, bson.M{"$set": bson.M{"fails": fails}})
 		_ = audit(ctx, s.st.DB, who, "Wrong password", "employee", id, nil, map[string]any{"ip": ip, "attemptsLeft": loginMaxFails - fails})

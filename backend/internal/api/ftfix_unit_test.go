@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"fmt"
 	"mime/multipart"
 	"net/http/httptest"
 	"testing"
@@ -86,24 +87,35 @@ func TestFtDoubleTap(t *testing.T) {
 	}
 }
 
-// AUTH-041, AUTH-042: in production an address is stopped after 10 failures and 10 OTPs in 15 minutes.
+// AUTH-041, AUTH-042 (owner, 27 Nov 2026): failures and OTPs are counted per Employee ID and address, so one
+// person's mistakes don't stop others on the same office Wi-Fi; the address as a whole has a higher ceiling.
 func TestFtAuthLimiterProduction(t *testing.T) {
 	l := newAuthLimiter(false)
 	for i := 0; i < 10; i++ {
-		if l.blocked("1.2.3.4") != nil {
+		if l.blocked("1.2.3.4", "EMP-1") != nil {
 			t.Fatalf("blocked after %d failures", i)
 		}
-		l.failed("1.2.3.4")
+		l.failed("1.2.3.4", "EMP-1")
 	}
-	if l.blocked("1.2.3.4") == nil || l.blocked("5.6.7.8") != nil {
-		t.Error("the 11th try from the address is not refused, or another address is")
+	if l.blocked("1.2.3.4", "EMP-1") == nil {
+		t.Error("the 11th try for the ID from the address is not refused")
+	}
+	if l.blocked("1.2.3.4", "EMP-2") != nil || l.blocked("5.6.7.8", "EMP-1") != nil {
+		t.Error("another person on the same Wi-Fi, or the same ID elsewhere, is refused")
 	}
 	for i := 0; i < 10; i++ {
-		if l.otpSend("9.9.9.9") != nil {
+		if l.otpSend("9.9.9.9", "EMP-1") != nil {
 			t.Fatalf("OTP %d refused", i+1)
 		}
 	}
-	if l.otpSend("9.9.9.9") == nil {
-		t.Error("11th OTP from one address allowed")
+	if l.otpSend("9.9.9.9", "EMP-1") == nil || l.otpSend("9.9.9.9", "EMP-2") != nil {
+		t.Error("11th OTP for one ID allowed, or another ID on the same address refused")
+	}
+	// The address as a whole: many IDs tried from one machine stop at authIPFailMax.
+	for i := 0; i < authIPFailMax; i++ {
+		l.failed("7.7.7.7", fmt.Sprintf("EMP-X%d", i))
+	}
+	if l.blocked("7.7.7.7", "EMP-NEW") == nil {
+		t.Error("an address past its ceiling may still try new IDs")
 	}
 }

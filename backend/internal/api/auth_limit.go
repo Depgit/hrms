@@ -8,34 +8,42 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
-// authLimiter slows down guessing from one address (AUTH-041, AUTH-042): wrong passwords, unknown Employee IDs and
-// wrong OTPs count as failures, and past authFailMax in authWindow the address gets 429 on sign-in and OTP checks
-// until the window passes. OTP sends are counted per address too (authOTPMax in authWindow), and each Employee ID
+// authLimiter slows down guessing (AUTH-041, AUTH-042): wrong passwords, unknown Employee IDs and wrong OTPs count as
+// failures per Employee ID AND address (owner, 27 Nov 2026: a whole office signs in from one Wi-Fi address, so one
+// person's mistakes must not lock everyone out): past authFailMax in authWindow that ID from that address gets 429
+// until the window passes. The address as a whole has a much higher ceiling (authIPFailMax) so one machine still
+// cannot try many IDs. OTP sends are counted per address too (authOTPMax in authWindow), and each Employee ID
 // gets at most authOTPPerDay OTPs a day (counted from the stored OTPs, so a restart does not reset it), which caps
 // the SMS cost and stops anyone flooding a person's phone. The per-address counts live in memory.
 type authLimiter struct {
-	mu    sync.Mutex
-	fails map[string][]time.Time
-	otps  map[string][]time.Time
+	mu      sync.Mutex
+	fails   map[string][]time.Time // by address|ID
+	otps    map[string][]time.Time // by address|ID
+	ipFails map[string][]time.Time // by address
+	ipOTPs  map[string][]time.Time // by address
 	// otpMax and failMax are authOTPMax and authFailMax, or the Dev values with OTP_DEV_ECHO on: test scripts sign
 	// many people in from one address, trying a password before activating with OTP. The per-ID daily cap still
 	// applies.
-	otpMax, failMax int
+	otpMax, failMax, ipFailMax, ipOTPMax int
 }
 
 const (
-	authWindow     = 1 * time.Minute // owner, 27 Nov 2026: was 15
+	authWindow     = 5 * time.Minute // owner, 27 Nov 2026: was 15
 	authFailMax    = 10
 	authOTPMax     = 10
 	authOTPMaxDev  = 300
 	authOTPPerDay  = 10
 	authFailMaxDev = 300
+	// The whole address (an office on one Wi-Fi): enough for many people's mistakes, not for trying IDs in bulk.
+	authIPFailMax = 100
+	authIPOTPMax  = 100
 )
 
 func newAuthLimiter(dev bool) *authLimiter {
-	l := &authLimiter{fails: map[string][]time.Time{}, otps: map[string][]time.Time{}, otpMax: authOTPMax, failMax: authFailMax}
+	l := &authLimiter{fails: map[string][]time.Time{}, otps: map[string][]time.Time{}, ipFails: map[string][]time.Time{}, ipOTPs: map[string][]time.Time{},
+		otpMax: authOTPMax, failMax: authFailMax, ipFailMax: authIPFailMax, ipOTPMax: authIPOTPMax}
 	if dev {
-		l.otpMax, l.failMax = authOTPMaxDev, authFailMaxDev
+		l.otpMax, l.failMax, l.ipFailMax, l.ipOTPMax = authOTPMaxDev, authFailMaxDev, authFailMaxDev, authOTPMaxDev
 	}
 	return l
 }
@@ -54,33 +62,48 @@ func (l *authLimiter) recent(m map[string][]time.Time, ip string) []time.Time {
 	return v
 }
 
-var errTooMany = &apiError{Status: 429, Message: "Too many attempts from this device. Wait 1 minute and try again."}
+var errTooMany = &apiError{Status: 429, Message: "Too many attempts for this Employee ID. Wait 5 minutes and try again."}
+var errTooManyIP = &apiError{Status: 429, Message: "Too many attempts from this network. Wait 5 minutes and try again."}
 
-// blocked: the address is past its failures; it may not try a password or an OTP now.
-func (l *authLimiter) blocked(ip string) error {
+func limitKey(ip, id string) string { return ip + "|" + id }
+
+// blocked: this ID from this address, or the address as a whole, is past its failures; no password or OTP now.
+func (l *authLimiter) blocked(ip, id string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if len(l.recent(l.fails, ip)) >= l.failMax {
+	if len(l.recent(l.ipFails, ip)) >= l.ipFailMax {
+		return errTooManyIP
+	}
+	if len(l.recent(l.fails, limitKey(ip, id))) >= l.failMax {
 		return errTooMany
 	}
 	return nil
 }
 
-// failed records a wrong password, an unknown ID or a wrong OTP from ip.
-func (l *authLimiter) failed(ip string) {
+// failed records a wrong password, an unknown ID or a wrong OTP for id from ip.
+func (l *authLimiter) failed(ip, id string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.fails[ip] = append(l.recent(l.fails, ip), time.Now())
+	now := time.Now()
+	k := limitKey(ip, id)
+	l.fails[k] = append(l.recent(l.fails, k), now)
+	l.ipFails[ip] = append(l.recent(l.ipFails, ip), now)
 }
 
-// otpSend records an OTP request from ip and says whether it may go ahead.
-func (l *authLimiter) otpSend(ip string) error {
+// otpSend records an OTP request for id from ip and says whether it may go ahead.
+func (l *authLimiter) otpSend(ip, id string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if len(l.recent(l.otps, ip)) >= l.otpMax {
+	if len(l.recent(l.ipOTPs, ip)) >= l.ipOTPMax {
+		return errTooManyIP
+	}
+	k := limitKey(ip, id)
+	if len(l.recent(l.otps, k)) >= l.otpMax {
 		return errTooMany
 	}
-	l.otps[ip] = append(l.otps[ip], time.Now())
+	now := time.Now()
+	l.otps[k] = append(l.otps[k], now)
+	l.ipOTPs[ip] = append(l.ipOTPs[ip], now)
 	return nil
 }
 

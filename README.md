@@ -717,8 +717,8 @@ The 105 FAILs outside payroll were fixed, found already fixed, or left for a dec
 - **Sign-in:**
   - Setting the password needs the one-time `verifyToken` that `/api/auth/otp/verify` now returns, so knowing someone's
     Employee ID after they verified is not enough. Scripts that sign in must pass it (Go tests, e2e and parity do).
-  - From one address, 10 failed sign-ins (wrong password, unknown ID or wrong OTP) in 1 minute give 429 until the
-    window passes. OTPs: 10 per address per minute and 10 per Employee ID a day. With `OTP_DEV_ECHO` (development
+  - Failures are counted per Employee ID and address (an office shares one Wi-Fi address): 10 failed sign-ins (wrong password, unknown ID or wrong OTP) for one ID from one address in 5 minutes give 429 for that ID there until the
+    window passes. OTPs: 10 per ID and address per 5 minutes; the address as a whole stops at 100 failures or 100 OTPs in 5 minutes; and 10 per Employee ID a day. With `OTP_DEV_ECHO` (development
     and test scripts only) the two per-address limits are 300.
   - Sign-in, wrong password, account lock and sign-out are in the audit log (with the address, no secrets).
   - EMP1002, emp1002 and EMP 1002 sign in as EMP-1002. A session of someone moved back to Pre-boarding ends.
