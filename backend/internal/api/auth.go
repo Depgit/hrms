@@ -27,7 +27,7 @@ const (
 	otpResend       = 30 * time.Second
 	passwordGrace   = 10 * time.Minute
 	loginMaxFails   = 5
-	loginLock       = 15 * time.Minute
+	loginLock       = 1 * time.Minute // owner, 27 Nov 2026: was 15
 	sessionLifetime = 12 * time.Hour
 )
 
@@ -303,7 +303,7 @@ func (s *Server) login(r *http.Request) (any, error) {
 		if fails >= loginMaxFails {
 			_, _ = creds.Update(ctx, bson.M{"employee_id": id}, bson.M{"$set": bson.M{"fails": 0, "locked_until": time.Now().Add(loginLock)}})
 			_ = audit(ctx, s.st.DB, who, "Account locked after wrong passwords", "employee", id, nil, map[string]any{"ip": ip, "minutes": int(loginLock.Minutes())})
-			return nil, unauthorized("Too many wrong attempts. The account is locked for 15 minutes. You can reset your password with OTP.")
+			return nil, unauthorized("Too many wrong attempts. The account is locked for 1 minute. You can reset your password with OTP.")
 		}
 		_, _ = creds.Update(ctx, bson.M{"employee_id": id}, bson.M{"$set": bson.M{"fails": fails}})
 		_ = audit(ctx, s.st.DB, who, "Wrong password", "employee", id, nil, map[string]any{"ip": ip, "attemptsLeft": loginMaxFails - fails})

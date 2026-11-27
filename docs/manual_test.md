@@ -886,11 +886,11 @@ Fresh `seed -sample`, API restarted (the sweep runs on start). Everyone in the s
       refuses it too.
 - [ ] Every download (report, employee export, bulk template) appears in Reports › Activity log as "Downloaded …",
       with who and when.
-- [ ] Wrong password 5 times: "Too many wrong attempts. Try again in 15 minutes, or reset your password with OTP."
+- [ ] Wrong password 5 times: "Too many wrong attempts. Try again in 1 minute, or reset your password with OTP."
 - [ ] A wrong OTP 3 times: "Too many wrong OTP entries. Request a new OTP." An OTP older than 5 minutes is refused.
 - [ ] A session ends after 12 hours; the next click returns to sign-in.
 - [ ] Without `OTP_DEV_ECHO` (as in production), ten failed sign-ins in a row from one browser (any IDs): the next try
-      says "Too many attempts from this device. Wait 15 minutes". With the echo on, the limit is 300. After an OTP is verified, `POST /api/auth/password` without the `verifyToken` is refused.
+      says "Too many attempts from this device. Wait 1 minute". With the echo on, the limit is 300. After an OTP is verified, `POST /api/auth/password` without the `verifyToken` is refused.
 
 ---
 

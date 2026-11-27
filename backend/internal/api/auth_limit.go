@@ -24,7 +24,7 @@ type authLimiter struct {
 }
 
 const (
-	authWindow     = 15 * time.Minute
+	authWindow     = 1 * time.Minute // owner, 27 Nov 2026: was 15
 	authFailMax    = 10
 	authOTPMax     = 10
 	authOTPMaxDev  = 300
@@ -54,7 +54,7 @@ func (l *authLimiter) recent(m map[string][]time.Time, ip string) []time.Time {
 	return v
 }
 
-var errTooMany = &apiError{Status: 429, Message: "Too many attempts from this device. Wait 15 minutes and try again."}
+var errTooMany = &apiError{Status: 429, Message: "Too many attempts from this device. Wait 1 minute and try again."}
 
 // blocked: the address is past its failures; it may not try a password or an OTP now.
 func (l *authLimiter) blocked(ip string) error {
