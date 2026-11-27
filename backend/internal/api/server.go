@@ -151,6 +151,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("GET /api/approvals/settings", s.a(s.approvalSettings))
 	m.HandleFunc("PUT /api/approvals/settings", s.a(s.approvalSettingsPut))
 	m.HandleFunc("GET /api/approvals/approvers", s.a(s.approverNames))
+	m.HandleFunc("PUT /api/approvals/approvers/slot", s.a(s.approverSlotPut)) // pick a name in a cell (approver_slot.go)
 	m.HandleFunc("GET /api/approvals/health", s.a(s.approvalHealth))
 	m.HandleFunc("GET /api/approvals/columns", s.a(s.approvalColumnsGet))
 	m.HandleFunc("POST /api/approvals/{id}/escalate", s.a(s.approvalEscalateNow))

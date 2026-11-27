@@ -153,6 +153,41 @@ func bulkApprName(s *Server, ctx context.Context, tx store.Q, c *Ctx, r bulkRow,
 	if empIn == "" {
 		return res, nil // nobody picked: skipped
 	}
+	sl, msg, err := apprSlotFind(ctx, tx, roleIn, levelIn, code, placeIn)
+	if err != nil || msg != "" {
+		if msg != "" {
+			res.Errors = append(res.Errors, msg)
+		}
+		return res, err
+	}
+	res.ID, res.Name = sl.Role, sl.Label
+	e, msg, err := apprSlotPerson(ctx, tx, apprEmpID(empIn), empIn)
+	if err != nil || msg != "" {
+		if msg != "" {
+			res.Errors = append(res.Errors, msg)
+		}
+		return res, err
+	}
+	ch, msg, err := apprSlotSet(ctx, tx, c, sl, e, "Bulk update: approver names")
+	if msg != "" {
+		res.Errors = append(res.Errors, msg)
+	}
+	if ch != nil {
+		res.Changes = append(res.Changes, *ch)
+	}
+	return res, err
+}
+
+// apprSlot is one approver name of the directory: a role at a property, a department, a corporate department or the
+// company, resolved against the masters.
+type apprSlot struct {
+	Role, Level, PlaceID, Place, Label string
+	Corp                               bool
+}
+
+// apprSlotFind resolves a role, level and place (its code, else its name) as the Approver names tab lists them.
+// msg is a refusal for the person (the row or the cell), err a failure.
+func apprSlotFind(ctx context.Context, tx store.Q, roleIn, levelIn, code, placeIn string) (sl apprSlot, msg string, err error) {
 	level := apprPick(levelIn, slotProperty, slotDept, slotCorpDept, slotCompany)
 	var role string
 	switch level {
@@ -165,17 +200,12 @@ func bulkApprName(s *Server, ctx context.Context, tx store.Q, c *Ctx, r bulkRow,
 	case slotCompany:
 		role = apprPick(roleIn, companyRoleList...)
 	default:
-		res.Errors = append(res.Errors, "Level must be Property, Department, Corporate department or Company. Keep the row as downloaded")
-		return res, nil
+		return sl, "Level must be Property, Department, Corporate department or Company. Keep the row as downloaded", nil
 	}
 	if role == "" {
-		res.Errors = append(res.Errors, fmt.Sprintf("“%s” is not an approver role at the %s level. Keep the row as downloaded", or(roleIn, "(blank)"), strings.ToLower(level)))
-		return res, nil
+		return sl, fmt.Sprintf("“%s” is not an approver role at the %s level. Keep the row as downloaded", or(roleIn, "(blank)"), strings.ToLower(level)), nil
 	}
-	res.ID = role
-	// The place.
-	var placeID, place string
-	corp := false
+	sl.Role, sl.Level = role, level
 	switch level {
 	case slotProperty:
 		loc, err := bulkFindCI(ctx, tx, "location", "_id", code, nil, "name", "status")
@@ -183,94 +213,101 @@ func bulkApprName(s *Server, ctx context.Context, tx store.Q, c *Ctx, r bulkRow,
 			loc, err = bulkFindCI(ctx, tx, "location", "name", placeIn, nil, "name", "status")
 		}
 		if err != nil {
-			return res, err
+			return sl, "", err
 		}
 		if loc == nil || str(loc["status"]) != "Active" {
-			res.Errors = append(res.Errors, fmt.Sprintf("Property “%s” not found or not active", or(placeIn, code)))
-			return res, nil
+			return sl, fmt.Sprintf("Property “%s” not found or not active", or(placeIn, code)), nil
 		}
-		placeID, place = str(loc["id"]), str(loc["name"])
+		sl.PlaceID, sl.Place = str(loc["id"]), str(loc["name"])
 	case slotDept, slotCorpDept:
 		dp, err := bulkFindCI(ctx, tx, "department", "_id", code, nil, "name", "status", "corporate")
 		if err == nil && dp == nil && code == "" && placeIn != "" {
 			dp, err = bulkFindCI(ctx, tx, "department", "name", placeIn, nil, "name", "status", "corporate")
 		}
 		if err != nil {
-			return res, err
+			return sl, "", err
 		}
 		if dp == nil || str(dp["status"]) != "Active" {
-			res.Errors = append(res.Errors, fmt.Sprintf("Department “%s” not found or not active", or(placeIn, code)))
-			return res, nil
+			return sl, fmt.Sprintf("Department “%s” not found or not active", or(placeIn, code)), nil
 		}
-		placeID, place, corp = str(dp["id"]), str(dp["name"]), dp["corporate"] == true
-		if level == slotCorpDept && !corp {
-			res.Errors = append(res.Errors, fmt.Sprintf("%s is not a corporate department: its HRBP is the property HRBP", place))
-			return res, nil
+		sl.PlaceID, sl.Place, sl.Corp = str(dp["id"]), str(dp["name"]), dp["corporate"] == true
+		if level == slotCorpDept && !sl.Corp {
+			return sl, fmt.Sprintf("%s is not a corporate department: its HRBP is the property HRBP", sl.Place), nil
 		}
 	default:
-		placeID, place = slotCompanyCode, "the whole company"
+		sl.PlaceID, sl.Place = slotCompanyCode, "the whole company"
 	}
-	label := role + " for " + place
+	sl.Label = role + " for " + sl.Place
 	if level == slotCompany {
-		label = role
+		sl.Label = role
 	}
-	res.Name = label
-	// The person: an active employee, as Map a role asks.
-	id := apprEmpID(empIn)
+	return sl, "", nil
+}
+
+// apprSlotPerson finds the employee picked (by Employee ID); typed is what the person wrote, for the refusal.
+func apprSlotPerson(ctx context.Context, tx store.Q, id, typed string) (store.Row, string, error) {
 	e, err := bulkFindCI(ctx, tx, "employee", "_id", id, nil, "name", "status")
 	if err != nil {
-		return res, err
+		return nil, "", err
 	}
 	if e == nil || id == "" {
-		res.Errors = append(res.Errors, fmt.Sprintf("Employee “%s” not found. Pick a name from the list", empIn))
-		return res, nil
+		return nil, fmt.Sprintf("Employee “%s” not found. Pick a name from the list", typed), nil
 	}
+	return e, "", nil
+}
+
+// apprSlotHolder is who holds the slot now, as the Approver names tab decides it.
+func apprSlotHolder(ctx context.Context, tx store.Q, sl apprSlot) (Person, error) {
+	maps, err := loadMappings(ctx, tx, sl.Role)
+	if err != nil {
+		return unassigned, err
+	}
+	switch sl.Level {
+	case slotProperty:
+		return pickHolder(sl.Role, &subject{LocationID: sl.PlaceID}, maps), nil
+	case slotDept:
+		return pickHolder(sl.Role, &subject{Department: sl.Place, Corporate: sl.Corp}, maps), nil
+	case slotCorpDept:
+		for _, m := range maps {
+			if containsStr(m.depts, sl.Place) {
+				return Person{m.id, m.name}, nil
+			}
+		}
+		return unassigned, nil
+	}
+	return pickHolder(sl.Role, &subject{}, maps), nil
+}
+
+// apprSlotSet names e (an employee row) for an empty slot, the way Role mapping stores it: the person's mapping of the
+// role gets the place added, or a new mapping is made. A slot someone else holds is refused (msg); the same person
+// again is no change (nil). how names the screen in the audit ("Bulk update: approver names", "Approver names").
+func apprSlotSet(ctx context.Context, tx store.Q, c *Ctx, sl apprSlot, e store.Row, how string) (*bulkChange, string, error) {
+	role, level, placeID, place, label := sl.Role, sl.Level, sl.PlaceID, sl.Place, sl.Label
 	empID, name := str(e["id"]), str(e["name"])
 	who := name + " (" + empID + ")"
 	if str(e["status"]) != "Active" {
-		res.Errors = append(res.Errors, who+" is not active. Only active employees can hold a role")
-		return res, nil
+		return nil, who + " is not active. Only active employees can hold a role", nil
 	}
 	if err := roleAssignable(ctx, tx, role); err != nil {
-		return res, err
+		return nil, "", err
 	}
-	// Who holds the slot now, as the Approver names tab decides it.
-	maps, err := loadMappings(ctx, tx, role)
+	holder, err := apprSlotHolder(ctx, tx, sl)
 	if err != nil {
-		return res, err
-	}
-	var holder Person
-	switch level {
-	case slotProperty:
-		holder = pickHolder(role, &subject{LocationID: placeID}, maps)
-	case slotDept:
-		holder = pickHolder(role, &subject{Department: place, Corporate: corp}, maps)
-	case slotCorpDept:
-		holder = unassigned
-		for _, m := range maps {
-			if containsStr(m.depts, place) {
-				holder = Person{m.id, m.name}
-				break
-			}
-		}
-	default:
-		holder = pickHolder(role, &subject{}, maps)
+		return nil, "", err
 	}
 	if holder.ID == empID {
-		return res, nil // named already
+		return nil, "", nil // named already
 	}
 	if holder.ID != "" {
-		res.Errors = append(res.Errors, fmt.Sprintf("%s is %s now. Change it on Access › Role mapping", label, holder.Name+" ("+holder.ID+")"))
-		return res, nil
+		return nil, fmt.Sprintf("%s is %s now. Change it on Access › Role mapping", label, holder.Name+" ("+holder.ID+")"), nil
 	}
 	// The person's mapping of the role: added to, or a new one.
 	cur, err := tx.C("user_role_map").FindOne(ctx, bson.M{"employee_id": empID, "role_name": role})
 	if err != nil {
-		return res, err
+		return nil, "", err
 	}
-	byHand := func(why string) (bulkResult, error) {
-		res.Errors = append(res.Errors, who+" "+why+". Change it on Access › Role mapping")
-		return res, nil
+	byHand := func(why string) (*bulkChange, string, error) {
+		return nil, who + " " + why + ". Change it on Access › Role mapping", nil
 	}
 	var m roleMap
 	note := ""
@@ -304,39 +341,38 @@ func bulkApprName(s *Server, ctx context.Context, tx store.Q, c *Ctx, r bulkRow,
 			}
 			m.Departments = append(append([]string{}, m.Departments...), place)
 		default:
-			return res, nil // an active company-wide mapping makes them the holder already
+			return nil, "", nil // an active company-wide mapping makes them the holder already
 		}
 		note = "Added to " + name + "'s " + role + " mapping"
 	}
 	ov, err := overlaps(ctx, tx, m)
 	if err != nil {
-		return res, err
+		return nil, "", err
 	}
 	if len(ov) > 0 {
-		res.Errors = append(res.Errors, "Overlap not allowed. "+ov[0])
-		return res, nil
+		return nil, "Overlap not allowed. " + ov[0], nil
 	}
-	res.Changes = append(res.Changes, bulkChange{Field: label, From: "Not mapped", To: who, Note: note})
+	ch := &bulkChange{Field: label, From: "Not mapped", To: who, Note: note}
 	if cur == nil { // as Map a role (roleMapCreate)
 		doc := bson.M{"employee_id": empID, "role_name": role, "access": m.Access, "location_ids": m.LocationIDs, "departments": m.Departments, "created_by": c.Name}
 		mid, err := tx.C("user_role_map").Insert(ctx, doc)
 		if err != nil {
-			return res, err
+			return nil, "", err
 		}
 		row, err := tx.C("user_role_map").FindOne(ctx, bson.M{"_id": mid})
 		if err != nil {
-			return res, err
+			return nil, "", err
 		}
 		accessStripArea(row)
-		return res, audit(ctx, tx, c, "Mapped "+name+" as "+role+" (Bulk update: approver names)", "user_role_map", fmt.Sprint(row["id"]), nil, row)
+		return ch, "", audit(ctx, tx, c, "Mapped "+name+" as "+role+" ("+how+")", "user_role_map", fmt.Sprint(row["id"]), nil, row)
 	}
 	// As Edit on Role mapping (roleMapUpdate).
 	set := bson.M{"access": m.Access, "location_ids": m.LocationIDs, "departments": m.Departments, "active": true, "role_name": m.Role}
 	row, err := tx.C("user_role_map").FindOneAndUpdate(ctx, bson.M{"_id": m.ID}, bson.M{"$set": set})
 	if err != nil {
-		return res, err
+		return nil, "", err
 	}
 	accessStripArea(cur)
 	accessStripArea(row)
-	return res, audit(ctx, tx, c, "Changed role mapping (Bulk update: approver names)", "user_role_map", m.ID, cur, row)
+	return ch, "", audit(ctx, tx, c, "Changed role mapping ("+how+")", "user_role_map", m.ID, cur, row)
 }

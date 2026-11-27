@@ -121,6 +121,15 @@ sign-ins, what each role sees, every page, the end-to-end flows, security, and t
   escalation) is a periodic River job every 5 minutes, scheduled only by the elected leader when several API servers
   run. `Server.Enqueue` inserts a job inside a database transaction, so later work such as payroll runs and bulk
   imports is queued only if the data change commits.
+- **Approver names picked in the cell (owner, 26 Nov 2026).** On Approvals › Approver names, who has Role mapping at
+  Edit (`acc.users` 2) gets a searchable picker of active employees ("Name · EMP-…", the Role mapping picker) in every
+  cell of Properties, Departments and Company-wide; others see names as before. A pick asks to confirm (who gets which
+  role's access where, who loses it), then `PUT /api/approvals/approvers/slot {role, level, place, employeeId|null}`
+  saves it with the bulk upload's code (`apprSlotSet`): added to the person's mapping or a new one. A name already set
+  moves: the place leaves the old holder's mapping (switched off when it was their only place), then the new person
+  gets it, one transaction, audited "(Approver names)"; "Not mapped" clears it the same way. Refused like the bulk
+  (inactive, overlap, switched-off/area mappings) and a holder by all locations, by cluster/city/state or by every
+  department: "Change it on Access › Role mapping". `api/approver_slot.go`, test `TestApproverSlotCell`.
 - **Bulk upload of approver names (owner, 26 Nov 2026).** The red "Approver names missing" box on Approvals ›
   Approval flow has **Bulk upload names** next to Add names (Role mapping at Edit, `acc.users` 2; also Bulk update ›
   Approvals › Approver names, `apprnames`). Download template = one row per missing name (the same list as the box,

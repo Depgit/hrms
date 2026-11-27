@@ -296,6 +296,12 @@ Start the API with `OTP_DEV_ECHO=true` and no `SMTP_HOST` (emails go to the API 
 - [ ] After a change, Check a flow shows the new route for a real employee, and All flows at a glance lists the
       rules in use in order with Otherwise last.
 - [ ] Approver names: "No one mapped for…" lists the gaps. "Check overlaps" shows when two people hold one place.
+- [ ] Approver names, **pick in the cell** (26 Nov, HR Admin): each cell is a searchable employee picker. Pick a person
+      for a "Not mapped" property: confirm names the role and place, toast, the table and red box update, Access › Role
+      mapping shows the place on their mapping. Pick someone else in the same cell: the first person loses the place
+      (mapping switched off if it was the only one). Pick "Not mapped": cleared. An inactive person cannot be picked;
+      a holder by all locations or by cluster is refused ("Change it on Access › Role mapping"). A role without Role
+      mapping Edit sees plain names.
 - [ ] Approval flow, red "Approver names missing" box › **Bulk upload names** (26 Nov): Download template lists every
       missing name once (Role, Level, Place, Place Code, Where, Needed By, Employee). Employee is a drop-down of active
       employees "Name (EMP-…)". Pick two, leave the rest blank, Check file: two rows to apply, blanks "No change"; an

@@ -943,15 +943,40 @@ const COMPANY_ROLES = ['Payroll', 'Payroll Manager', 'CHRO', 'Finance Head'];
 const inOrder = (keys: string[], order: string[]) => [...order.filter((k) => keys.includes(k)), ...keys.filter((k) => !order.includes(k))];
 const NameCell = ({ p }: { p?: { id: string; name: string } }) => (p?.id ? <>{p.name}</> : <span style={{ color: 'var(--bad,#b3261e)', fontWeight: 600 }}>Not mapped</span>);
 
+/** One approver name, picked in the cell (owner, 26 Nov 2026) by who may edit Role mapping: saved as a role mapping
+ *  (PUT /approvals/approvers/slot), so the person gets that role's access there. A name already set moves to the new
+ *  person; "Not mapped" clears it. Without the right the cell stays read-only. */
+function SlotCell({ p, role, level, place, where, edit, onSaved }: { p?: { id: string; name: string }; role: string; level: string; place: string; where: string; edit: boolean; onSaved: () => void }) {
+  const [busy, setBusy] = useState(false);
+  if (!edit) return <NameCell p={p} />;
+  const cur = p?.id ? p : null;
+  const change = async (id: string, x: Person | null) => {
+    if (id === (cur?.id ?? '')) return;
+    const at = level === 'Company' ? 'the whole company' : where;
+    const lines = [x ? `${x.name} (${x.id}) will be mapped as ${role} for ${at} on Access › Role mapping and get the ${role} role's access there.` : `${role} for ${at} will be Not mapped.`];
+    if (cur) lines.push(`${cur.name} (${cur.id}) loses ${role} for ${at} (their ${role} mapping is switched off if it had no other place).`);
+    if (!confirm(lines.join('\n\n'))) return;
+    setBusy(true);
+    try {
+      await api('/approvals/approvers/slot', { method: 'PUT', body: { role, level, place, employeeId: id || null } });
+      toast(x ? `${x.name} is now ${role} for ${at}` : `${role} for ${at} cleared`);
+      onSaved();
+    } catch (e: any) { toast(e.message || 'Not saved'); } finally { setBusy(false); }
+  };
+  return <PersonPicker label={`${role} for ${where}`} value={cur?.id ?? ''} selected={cur} search="&status=Active" empty="Not mapped" disabled={busy}
+    onChange={change} style={{ minWidth: 210 }} />;
+}
+
 function ApproverNames() {
   const { can } = useAuth();
   const nav = useNavigate();
   const { data: d, error, reload } = useLoad(() => api('/approvals/approvers'), []);
   const [bulk, setBulk] = useState(false);
+  const edit = can('acc.users', 2);
   if (!d) return <Loading error={error} />;
   const locRoles = inOrder(Object.keys(d.locations[0]?.people || {}), LOC_ROLES);
   return <>
-    <p className="ink2" style={{ margin: '0 0 14px', fontSize: 13.5 }}>These names come from Access control, under Role mapping. To change an approver, map the role there. The Line Manager comes from the employee record.</p>
+    <p className="ink2" style={{ margin: '0 0 14px', fontSize: 13.5 }}>These names come from Access control, under Role mapping. {edit ? 'Pick a name in a cell to map that person to the role there (they get the role’s access); pick Not mapped to clear it.' : 'To change an approver, map the role there.'} The Line Manager comes from the employee record.</p>
     {d.gaps.length ? <div className="note bad" style={{ marginBottom: 14 }}>{d.gaps.length} not mapped: {d.gaps.slice(0, 8).join(', ')}{d.gaps.length > 8 ? '…' : ''}</div>
       : <div className="note ok" style={{ marginBottom: 14 }}>Every approver in use has a name.</div>}
     {d.overlaps?.length > 0 && <div className="note" style={{ marginBottom: 14 }}><b>Check overlaps:</b> {d.overlaps.slice(0, 4).join(' ')}</div>}
@@ -960,15 +985,15 @@ function ApproverNames() {
     {bulk && <BulkModal tpl="apprnames" title="Bulk upload: approver names" onClose={() => setBulk(false)} onApplied={() => reload()} />}
     <div className="card" style={{ marginBottom: 14 }}><h3>Properties</h3><div className="tw"><table>
       <thead><tr><th>Property</th>{locRoles.map((r) => <th key={r}>{r}</th>)}</tr></thead>
-      <tbody>{d.locations.map((l: any) => <tr key={l.id}><td><b>{l.name}</b><div className="mute" style={{ fontSize: 12 }}>{l.path}</div></td>{locRoles.map((r) => <td key={r}><NameCell p={l.people[r]} /></td>)}</tr>)}</tbody>
+      <tbody>{d.locations.map((l: any) => <tr key={l.id}><td><b>{l.name}</b><div className="mute" style={{ fontSize: 12 }}>{l.path}</div></td>{locRoles.map((r) => <td key={r}><SlotCell p={l.people[r]} role={r} level="Property" place={l.id} where={l.name} edit={edit} onSaved={reload} /></td>)}</tr>)}</tbody>
     </table></div></div>
     <div className="card" style={{ marginBottom: 14 }}><h3>Departments</h3><div className="tw"><table>
       <thead><tr><th>Department</th><th>Approval flow</th><th>Function Head</th><th>HRBP (corporate departments)</th></tr></thead>
       <tbody>{d.departments.map((x: any) => <tr key={x.id}><td><b>{x.name}</b></td><td><Pill k={x.corporate ? 'info' : 'n'}>{x.corporate ? 'Corporate' : 'Operations'}</Pill></td>
-        <td><NameCell p={x.people['Function Head']} /></td><td>{x.corporate ? <NameCell p={x.people.HRBP} /> : <span className="mute">Uses the property HRBP</span>}</td></tr>)}</tbody>
+        <td><SlotCell p={x.people['Function Head']} role="Function Head" level="Department" place={x.id} where={x.name} edit={edit} onSaved={reload} /></td><td>{x.corporate ? <SlotCell p={x.people.HRBP} role="HRBP" level="Corporate department" place={x.id} where={x.name} edit={edit} onSaved={reload} /> : <span className="mute">Uses the property HRBP</span>}</td></tr>)}</tbody>
     </table></div></div>
     <div className="card"><h3>Company-wide</h3><p className="ink2" style={{ margin: '0 0 10px', fontSize: 13 }}>The Receiving Function Head is the Function Head of the receiving department.</p>
-      <div className="tw"><table><thead><tr><th>Role</th><th>Name</th></tr></thead><tbody>{inOrder(Object.keys(d.company), COMPANY_ROLES).map((r) => <tr key={r}><td><b>{r}</b></td><td><NameCell p={d.company[r]} /></td></tr>)}</tbody></table></div></div>
+      <div className="tw"><table><thead><tr><th>Role</th><th>Name</th></tr></thead><tbody>{inOrder(Object.keys(d.company), COMPANY_ROLES).map((r) => <tr key={r}><td><b>{r}</b></td><td><SlotCell p={d.company[r]} role={r} level="Company" place="COMPANY" where="the whole company" edit={edit} onSaved={reload} /></td></tr>)}</tbody></table></div></div>
   </>;
 }
 
