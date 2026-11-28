@@ -126,6 +126,7 @@ Sign in as **HR Admin** unless a line says otherwise.
 - [ ] Activate with OTP: the code shows; a weak password is refused, with the rule shown.
 - [ ] The ID typed as EMP1002, emp1002 or EMP 1002 signs in as EMP-1002.
 - [ ] Forgot password: same OTP flow; afterwards the old password no longer works.
+- [ ] With a real mailbox (`SMTP_HOST`) and a personal email on the employee: the OTP arrives by SMS and by email (subject "… HRMS sign-in OTP", code only in the body); the screen says "Sent to your mobile 98••••45 and your email ab•••@…."
 - [ ] The header shows name · ID · Sign out. Sign out returns to sign-in, and Back does not reopen the app.
 - [ ] A person with several roles can switch role in the header. The menu changes to match Part C.
 
@@ -285,17 +286,28 @@ Start the API with `OTP_DEV_ECHO=true` and no `SMTP_HOST` (emails go to the API 
 - [ ] Approval flow › Test a request: enter grade / days / amount / exit type …, Test shows "Rule N decides: …" (or
       "No rule fits, so Otherwise decides") and the approvers in order. Moving a rule above another changes which
       one decides.
-- [ ] Approval flow › "Approval hierarchy required (untick to let HR skip approval)" tick (top of each flow, every
-      request type incl. Interview): untick it for, say, Reimbursement claim › Operations (asks first). Raise a claim
-      as an Operations employee: it still waits for the same approvers. As HR Admin open it: "Skip approval" shows;
-      with a blank reason nothing happens; with a reason it is Approved at once, its history says "Approval skipped by
-      <your name>: <reason>", the amount reaches the open month and it leaves the approvers' queue. Payroll, a manager
-      or the employee see no Skip approval. As HR, raise a payroll item for an Operations employee: "Skip approval"
-      sits next to "Send for approval". All flows at a glance shows "HR can skip approval"; Test a request shows the
-      route and the same note. Tick it again: no Skip approval anywhere, a new claim waits as before.
+- [ ] Approvals › All flows at a glance: each flow has an "Approval required" tick (only who can edit flows sees
+      the tick). Untick Shortlist › Operations and Interview › Operations (asks first). Shortlist an Operations
+      candidate: it is approved at once and the candidate goes straight to Selected, ready for the offer; the
+      request history says "Approved automatically: approval hierarchy is off". Untick Reimbursement claim ›
+      Operations: an employee's claim is Approved at once and reaches the open month. Test a request says nobody is
+      asked. A claim raised before unticking still waits; as HR Admin it shows "Skip approval" (reason required).
+      Tick it again: a new claim waits for the approvers as before. The Approval flow tab has no tick (rules only),
+      and Interview is not listed there.
 - [ ] After a change, Check a flow shows the new route for a real employee, and All flows at a glance lists the
       rules in use in order with Otherwise last.
 - [ ] Approver names: "No one mapped for…" lists the gaps. "Check overlaps" shows when two people hold one place.
+- [ ] Approver names, **pick in the cell** (26 Nov, HR Admin): each cell is a searchable employee picker. Pick a person
+      for a "Not mapped" property: confirm names the role and place, toast, the table and red box update, Access › Role
+      mapping shows the place on their mapping. Pick someone else in the same cell: the first person loses the place
+      (mapping switched off if it was the only one). Pick "Not mapped": cleared. An inactive person cannot be picked;
+      a holder by all locations or by cluster is refused ("Change it on Access › Role mapping"). A role without Role
+      mapping Edit sees plain names.
+- [ ] Approval flow, red "Approver names missing" box › **Bulk upload names** (26 Nov): Download template lists every
+      missing name once (Role, Level, Place, Place Code, Where, Needed By, Employee). Employee is a drop-down of active
+      employees "Name (EMP-…)". Pick two, leave the rest blank, Check file: two rows to apply, blanks "No change"; an
+      inactive person is refused. Apply: the box loses those two, Access › Role mapping shows the place added to the
+      person's mapping (or a new one). A role without Role mapping Edit does not see the button.
 - [ ] **My view has no Approvals** (9 Nov): an employee's requests start from their own pages (D18, D19, D9) and are
       followed on the Dashboard (D2). Check a flow is no longer reachable in My view; each request form shows its
       own approval route instead.
@@ -434,8 +446,8 @@ Start the API with `OTP_DEV_ECHO=true` and no `SMTP_HOST` (emails go to the API 
 - [ ] Rest of 11 h, "Do not allow the change": rostering N the night before an M day is refused with the rest
       message. Switch to "Allow it with a warning": it saves with the warning.
 - [ ] Notice of 5 days: a roster change 4 days ahead asks for a reason and counts as a late change.
-- [ ] Night shift card: night hours and "Night shift allowance a night" have no ◦ marker; the allowance is still
-      paid in the payroll run for nights worked.
+- [ ] There is no Night shift card (removed 24 Nov 2026, see Part AF): no night hours, no night shift allowance in
+      payroll.
 - [ ] Roster discipline: no "Working this many minutes more than the planned shift is flagged as extra hours".
       "Leave not allowed when the discipline score is below" sits under the points setting (0 = off).
 - [ ] What counts as a deviation: no extra-hours, short-rest or "working on a weekly off, holiday or leave day"
@@ -450,8 +462,9 @@ Start the API with `OTP_DEV_ECHO=true` and no `SMTP_HOST` (emails go to the API 
       record, the confirmation-due report and alert use the 3 months, and their resignation uses the notice after
       confirmation. 0 months = no probation. More than 24 is refused.
 - [ ] Applies to: map by location, department, grade and so on. Coverage shows who has which policy. The note reads
-      "When a person matches more than one policy: Individual (employee) > Location > Cluster > City > State >
-      Department > Designation > Grade > Employment type". Map one person's city to policy A and their department
+      "When a person matches more than one policy: Individual (employee) > Department + Location > Department +
+      Cluster > Department + City > Department + State > Location > Cluster > City > State > Department > Designation >
+      Grade > Employment type" (Department + place since 24 Nov, Part AD). Map one person's city to policy A and their department
       to policy B: Coverage and the employee record show A via City.
 - [ ] **Discipline score start:** someone who joined on the 21st of a 30-day month shows "Started at 33 (joined
       21 Nov)" in My time › Roster discipline, Shift and roster › Discipline and the discipline score report, and is
@@ -874,11 +887,11 @@ Fresh `seed -sample`, API restarted (the sweep runs on start). Everyone in the s
       refuses it too.
 - [ ] Every download (report, employee export, bulk template) appears in Reports › Activity log as "Downloaded …",
       with who and when.
-- [ ] Wrong password 5 times: "Too many wrong attempts. Try again in 15 minutes, or reset your password with OTP."
+- [ ] Wrong password 5 times: "Too many wrong attempts. Try again in 5 minutes, or reset your password with OTP."
 - [ ] A wrong OTP 3 times: "Too many wrong OTP entries. Request a new OTP." An OTP older than 5 minutes is refused.
 - [ ] A session ends after 12 hours; the next click returns to sign-in.
 - [ ] Without `OTP_DEV_ECHO` (as in production), ten failed sign-ins in a row from one browser (any IDs): the next try
-      says "Too many attempts from this device. Wait 15 minutes". With the echo on, the limit is 300. After an OTP is verified, `POST /api/auth/password` without the `verifyToken` is refused.
+      says "Too many attempts from this device. Wait 5 minutes". With the echo on, the limit is 300. After an OTP is verified, `POST /api/auth/password` without the `verifyToken` is refused.
 
 ---
 
@@ -891,8 +904,8 @@ left empty follows the policy, as before. Use a test shift, e.g. code `TS`, 10:0
 ### G1. The form
 - [ ] The Masters › Shifts list has "Effective from" ("From the start", or "Next from …" when a change is waiting)
       and a rules column ("Policy rules" when none are set).
-- [ ] Add shift and Edit open a full-width "Set shift" form, with sections Shift, Punch rules, Single punch rules,
-      Attendance rules and Version history, as on the client's screen. Read-only roles get View instead of Edit.
+- [ ] Add shift and Edit open a full-width "Set shift" form, with sections Shift, Attendance rules and Version history
+      (Punch rules and Single punch rules were removed on 24 Nov 2026, see Part AF). Read-only roles get View instead of Edit.
 - [ ] Each rule field is empty, with "Policy: …" under it showing the value it falls back to. Once a rule is set,
       a "Use work policy" button appears and empties it again.
 - [ ] Save asks for the effective date and an optional note.
@@ -929,13 +942,7 @@ Set Absent < 04:00, Half day < 06:00, Full day > 08:00.
 - [ ] Monthly adjustment covers what the weekly one left, up to its cap.
 
 ### G5. Punch rules
-- [ ] Single punch = Absent full day / Present half day / Present full day: a day with one punch still shows
-      "Missing punch" (so it can be regularized), but its loss of pay follows the choice: 1, ½ or none.
-- [ ] Add missing last out entry ticked, no out punch → out = forced time out (if set), otherwise the shift end.
-- [ ] Consider shift start from shift start time: arriving at 09:30 for 10:00 adds no hours. Unticked: it does.
-- [ ] Consider shift end from shift end time: leaving at 20:00 for 19:00 adds no hours.
-- [ ] Maximum early in 01:00: a punch at 08:30 for 10:00 is not taken as the in punch.
-- [ ] Maximum late out 02:00: a punch at 22:00 for 19:00 is not taken as the out punch.
+Removed from shifts on 24 Nov 2026: the work policy decides (Part AF).
 
 ### G6. Night shifts
 The existing Night shift (`N`) keeps the old behaviour (a night split across two dates) until it is saved once
@@ -947,8 +954,6 @@ that also rebuilds that month's punch-machine days.
 Or make shift `NS` 22:00–06:00, ending next day = Yes, and roster EMP-1020 on it.
 - [ ] Punch in 21:55 on day 1, out 06:05 on day 2 → **one** Present day on day 1 (not "Missing out punch").
 - [ ] Two nights in a row: each night pairs its own in and out; no punch is used twice.
-- [ ] Consider shift in = Previous day on a 00:30–08:30 shift: the duty shows on the evening's date.
-- [ ] Consider shift in = Next day: the duty shows on the following date.
 - [ ] A regularized night keeps the approved times.
 
 ### G7. Sending test punches (for G5 and G6)
@@ -972,12 +977,9 @@ Built as below; confirm each is what they mean:
 - [ ] **Short hours:** the band between the Half day and Full day rules. The day counts present; the missing hours
       (measured against Office hour time) must be covered by extra hours in the week, then the month, oldest day
       first, in full or not at all; a day not covered becomes a half day.
-- [ ] **Single punch:** "Present full day" removes the loss of pay but keeps the Missing punch status. Should it
-      also clear the status?
 - [ ] **Based on Punch:** an in punch with no out counts as a full day. The late mark still applies.
 - [ ] **Shortfall inclusion:** all hours worked on a weekly off, holiday or optional holiday count as extra hours.
-- [ ] **Punch window:** 4 hours either side by default. "Previous day" means counted on the day before the shift
-      starts.
+- [ ] **Punch window:** 4 hours either side when the work policy sets no limit (Part AF).
 - [ ] **Break minutes** on the shift are for display only; no break is taken off the hours worked (decided 8 Nov).
 
 ---
@@ -1081,7 +1083,7 @@ role's download right (the old register's rule); every download is in the audit 
 3. The full register's columns, in order: Emp ID, Name, Designation, Department, Grade, Employment type, City,
    Location, Date of joining, Last working day, PAN, UAN, ESIC no, Bank, Account number, IFSC; Days in month, Paid
    days, LOP days, Days outside employment; Monthly gross (structure), CTC a month; Basic, HRA, Special allowance,
-   Bonus, Variable pay, Night shift allowance, Arrears, Reimbursements, Salary advance, Uniform refund, Held salary
+   Bonus, Variable pay, Arrears, Reimbursements, Salary advance, Uniform refund, Held salary
    released, Other earnings, Total earnings; Employee PF, Employee ESI, LWF (employee), TDS, Meal, Accommodation,
    Advance recovery, Uniform recovery, Asset recovery, Other recoveries, Total deductions, Rounding off, Net pay;
    Employer EPF, Employer EPS, EDLI, EPFO admin charges, Employer ESI, Employer LWF, Medical insurance, Gratuity
@@ -1137,6 +1139,19 @@ Sign in as Payroll (EMP-1011), Payroll Manager (EMP-1012) or HR Admin (EMP-1002)
    "Set by hand" shows; the sweep no longer changes it; the audit log has "PF exemption changed by hand". "Decided by
    the rule" hands it back to the rule. No reason: refused.
 7. Someone already paid PF in an earlier month is not changed when their gross or UAN answer changes.
+
+**M1c. PF on the offer (26 Nov 2026)**
+1. Raise an offer (Permanent): "Provident Fund › Does the employee want PF?" shows with Select; sending without an
+   answer lists "Does the employee want PF? Choose Yes or No". Switch the type to Retainer: the card disappears.
+2. No with gross ₹25,000: red note and the error "Gross is up to ₹25,000: an employee who does not want PF must be a
+   Retainer. Change the employment type to Retainer."; sending refused.
+3. No with gross ₹30,000: breakup Basic ₹30,000, HRA/SA 0, no employee or employer PF; letter says PF not deducted.
+   Approve, release, accept, Mark joined: PF card shows PF exempt, "No PF: paid as all Basic", by Offer. Timeline has
+   "PF choice on the offer".
+4. Yes: normal Basic/HRA/SA with PF.
+5. Offer No, then joining details (HR or the joiner's link) "Do you want PF deducted?" prefilled No; change to Yes:
+   offer breakup returns to normal; after Mark joined the employee is a PF member (by Joining form); timeline "PF
+   choice changed on the joining details/form".
 
 **M1b. PF choice, UAN number and one medical plan (19 Nov 2026)**
 1. Payroll › PF for new joiners shows ₹25,000 when the company never saved a value (a saved value is kept).
@@ -1511,25 +1526,52 @@ Work on a copy of the data. Sign in as HR Admin (EMP-1002).
 11. **Scope.** Map a Property Manager to one property and give the role `cost.view` View: they see only that property
     (no "Not tied to a property" row), no People button, and cannot change budgets.
 
-## Part V. Sending employees to the Realtime portal (17 Nov)
+## Part V. Automatic sending to the Realtime portal (19 Nov; replaces the 17 Nov Send button)
 
-Work on a copy of the data. Sign in as HR Admin (EMP-1002). Never test sends against the live portal: HR's first live
-send is a real joiner (README, "Sending employees to the portal").
+Work on a copy of the data. Sign in as HR Admin (EMP-1002). Never test against the live portal: the first live write
+is a real joiner (README, "Sending employees to the Realtime portal").
 
-1. **Not switched on.** With `realtime.Spec` empty, the employee file's Realtime portal card shows the status and
-   "Sending is not switched on yet"; the Send buttons are disabled.
-2. **Rights.** Roles and rights lists "Realtime portal: send employees". An Employee sees no card; a role with View
-   sees the card and the list, without buttons.
-3. **Statuses.** An active employee without an Attendance code: "Not on portal". With a code: "On portal" ("never
-   sent from the HRMS"). An inactive one with a code (exit after the start date): listed as "Mark left".
-4. **Mapping.** Attendance › Punch machine setup › Realtime portal › Mapping and code rule: departments,
-   designations, properties and shifts that active people have; a property with a mapped machine shows its portal
-   branch. Leave a department unmapped: the person's card says "Map the department … first" and Send is disabled.
-5. **Send (fake or trial portal only).** Map everything, Send to portal: the dialog suggests the next free code, the
-   preview lists every portal field and value; Confirm: "Saved on the portal", the code is now the Attendance code,
-   the audit log has the fields and the reply. Change the person's designation: "Changed since last send"; send the
-   changes. Mark the person inactive: "Mark left on portal" sends the leaving date.
-6. **Refusal.** A portal refusal shows the portal's own words and changes nothing in the HRMS.
+1. **Switched off (trial build with `Spec.Send = false` only; sending is on since 25 Nov).** Mark a candidate joined:
+   their Realtime portal card says "Waiting to send" and "Sending is switched off"; Attendance › Punch machine setup ›
+   Realtime portal lists them under Waiting. There is no Send button anywhere.
+2. **Rights.** An Employee sees no card; a role with `att.portal` View sees the card and the list, without Retry.
+3. **Mapping hold (fake or trial portal only).** Leave the joiner's department unmapped and mark them joined: the
+   card shows "Held: mapping needed" with "Map the department … first"; you get a bell. Map it: within a minute the
+   card shows "On portal" with the new code, which is now the Attendance code; the audit log has the fields and reply.
+4. **Changes and exits.** Change that person's designation: within a minute the portal is updated ("Writes" lists an
+   update). Make them inactive: they are marked left with the leaving date.
+5. **Failure.** Make the (fake) portal refuse: the card shows "Failed" and the portal's words, you get a bell, and
+   nothing is sent again by itself (wait two minutes; "Writes" still lists one). Press **Retry**: one more write.
+6. **Backlog.** With items Waiting (left from before 25 Nov, or a build with sending off), press **Send waiting (n)**
+   once; each goes out.
+7. **Punch machine on a create (25 Nov; fake or trial portal only).** Map a machine (serial as on the portal's
+   "Select Devices" list, e.g. RSS20230761581) to the joiner's property and mark them joined: the card's "Writes" line
+   reads "create · code … · saved · punch machine RSS20230761581 / Gulmohar Marg"; on the portal the employee's Select
+   Devices shows that machine. With no machine mapped to the cluster, or the cluster full (capacity used up), or a
+   serial the portal's list does not have: the create still goes, without a device, and the line shows "No punch
+   machine chosen: …; HR adds them to a machine on the portal". Change their designation: the update leaves the
+   device as it is. No device button (Connect, Upload Name, Enable/Disable/Delete User) is pressed.
+
+## Part Z. Company accommodation from the offer (19 Nov)
+
+1. **Offer form.** Raise an offer: the card **Company accommodation** has No / Yes. Yes without a cluster: "Choose the
+   cluster…". The cluster list shows only clusters with accommodation units, with free beds.
+- [ ] Release the offer: the release asks the same question (prefilled); the offer shows "Company accommodation:
+      Yes, in <cluster>"; the salary breakup does not change.
+2. **Mark joined.** The candidate shows "Company accommodation: Yes, in <cluster>". Mark joined: Accommodation ›
+   Check-in and check-out shows a stay from the joining date, note "Allocated automatically from the offer"; the
+   employee timeline has the same line; nothing was added by hand.
+3. **No bed.** Fill the cluster's beds and mark another tagged joiner joined: no stay; Accommodation › **Waiting for a
+   bed** lists them; HR gets a bell. Check someone out of that cluster: within 5 minutes the waiting joiner has the
+   bed (check-in that day) and leaves the list. "No longer needed" (with a reason) removes someone from the list.
+4. **Payroll.** Payslip, register and CTC of the joiner are unchanged by the accommodation.
+
+## Part AA. Skip approval on onboarding raises (19 Nov)
+
+1. With the Shortlist, Joining (offer) or Payroll verification flow's "Approval hierarchy required" unticked, as HR
+   Admin: the shortlist, offer and "Send to Payroll" show **Skip approval** next to the send button; it asks a reason
+   and the request is approved at once (history "Approval skipped by …"). With the box ticked, or as a non-HR role,
+   the button is not shown and the server refuses `?skipApproval=`.
 
 ## Part W. New joiners for insurer, EPF and ESIC; which report each role sees (18 Nov)
 
@@ -1550,6 +1592,27 @@ send is a real joiner (README, "Sending employees to the portal").
 - [ ] HR Admin: the list is greyed with "HR Admin always sees every report".
 - [ ] Add a role copied from HRBP while a report is unticked: the new role has it unticked too.
 - [ ] Activity log shows "Reports of role “HRBP” changed" with before and after.
+
+## Manager sees two levels, filter Direct / All under me (27 Nov)
+1. Sign in as a manager whose reports also have reports; switch to Line Manager view.
+- [ ] Top bar shows a drop-down "All employees under me" / "Direct employees" (only in Line Manager view).
+- [ ] All under me: Employees, Roster, Attendance list the direct reports and their reports; the roster cells of the second level can be changed.
+- [ ] Direct employees: only the people reporting to me; the page reloads on change and the choice stays after a refresh.
+
+## Roster bulk upload: several departments, From–To, past dates (27 Nov)
+1. Shift and roster › Bulk upload.
+- [ ] Department is a list of check boxes with "All departments" on top; tick two: the employee count and the downloaded file cover both (rows grouped by property and department).
+- [ ] Tick "All departments": every department of the city/property.
+- [ ] From and To dates: the file has one column per date from From to To; To before From, or more than 62 days, is refused.
+- [ ] Upload a file with a changed cell for yesterday: refused "date has passed. The bulk upload does not change past dates" (even when the work policy's "Dates that have already passed" is Open to edit).
+- [ ] Work policies › Roster discipline › "Past dates in the roster bulk upload" = Same as the roster screen, with past dates Open to edit: the same file is accepted.
+
+## Offer letter again by email or WhatsApp (27 Nov)
+1. Release an offer, open the candidate › Offer letter: a "Send the letter again" box shows the offer's email and mobile.
+- [ ] Type another address, Email the letter: the mail arrives there (email must be set up; otherwise a clear message); the offer's email is unchanged.
+- [ ] Again with "Use this address on the offer from now on" ticked: the offer's email changes (audit line).
+- [ ] Share on WhatsApp with another number: WhatsApp opens with the letter text for that number.
+- [ ] Each send is a line on the candidate's timeline. Before release, or with the letter held until joining, the box is not shown.
 
 ## Part X. Role and Skill required, hiring IDs for every employee, offer letter at joining (18 Nov)
 
@@ -1593,10 +1656,400 @@ send is a real joiner (README, "Sending employees to the portal").
 4. **Retainer fee.** On a test copy, a Retainer employee:
 - [ ] Salary calculator / Compensation preview with type Retainer: one "Retainer fee" line, no Basic/HRA/Special
       allowance, no PF/ESI; TDS as before.
-- [ ] Offer for a Retainer: breakup and letter `{{breakup}}` say "Retainer fee: ₹… a month (TDS under section 194J)".
+- [ ] Offer for a Retainer: breakup and letter `{{breakup}}` say "Retainer fee: ₹… a month (TDS 1% of gross)" (25 Nov; was "section 194J").
 - [ ] Payroll dry run: the payroll sheet, register and full salary register have a "Retainer fee" column (only when a
       retainer is paid); Basic/HRA/Special allowance are 0 for the retainer; the net is the same as before.
 - [ ] Employee file › Salary: "Retainer fee" line, TDS (194J), net pay unchanged.
+
+## Part AB. Half-day leave, short leave, Reimbursement in fixed pay (20 Nov)
+
+1. **Half day.** Policies › a leave plan: "Half-day leave allowed" Yes.
+- [ ] My leave › Apply: tick Half day, choose "Second half on leave": the To date goes, the preview says "Half a day";
+      after sending, the request shows "(second half)" and the balance shows 0.5 waiting.
+- [ ] Approvals › New leave request as HR for someone else: "Half day" list (first / second half) does the same.
+- [ ] Approve a half-day Casual leave on a past day with punches 14:00–18:00 (G shift): attendance "Casual leave (half
+      day, …) + Present", no LOP. With 14:00–15:30 (under the half-day hours): "+ Absent", 0.5 LOP.
+- [ ] A half-day Loss of pay with the other half worked: 0.5 LOP in the month and in the payroll dry run.
+- [ ] Bulk update › Opening leave balances with 4.5: accepted and shown as 4.5.
+2. **Short leave.** Policies › leave plan › Short leave: allowed, 2 a month, 2 hours (defaults).
+- [ ] My leave › Apply › Leave type "Short leave": date, from-time, to-time; 09:00–11:30 is refused ("at most 2
+      hours"); 09:00–11:00 goes to the leave approvers (same route as casual leave); no balance changes.
+- [ ] A second one in the month is accepted, a third is refused ("2 times a month"). On a weekly off: refused.
+- [ ] HR raises one for an employee with "Skip approval" and a reason: approved at once, history says skipped.
+- [ ] After approval, punches 11:00–18:00 on a 09:00–18:00 shift: the day is Present, note "Short leave 2h", no late
+      mark, no deviation; without the short leave the same punches are a half day / late.
+- [ ] A short leave 16:00–18:00 and an out punch at 16:00: no early exit.
+- [ ] Reports › Attendance and roster › Short leave lists it with the hours and status. My leave shows date and times.
+3. **Reimbursement.** (Superseded 25 Nov: the reimbursement is now outside the gross; test it with Part AK.) On a test copy, Employees › someone permanent on Version 1, gross ₹30,000 › Edit pay options.
+- [ ] Reimbursement 3,000: the preview shows Basic 15,000, HRA 7,500, Reimbursement 3,000, Special allowance 4,500,
+      gross 30,000; employee PF on Basic only. Save, then the pay section shows "₹3,000 a month, inside the gross".
+- [ ] Reimbursement 7,600 is refused ("more than what is left after Basic and HRA (₹7500 …)").
+- [ ] Payroll dry run: payslip has a "Reimbursement" line, the payroll sheet a "Reimbursement" column, the full
+      salary register "Reimbursement (fixed pay)"; net pay and gross unchanged, Special allowance lower by the amount.
+- [ ] Bulk update › Salary breakup: download shows the Reimbursement (₹) column; change it and upload with a reason and
+      Effective From; a value above the room is refused on Check.
+- [ ] Compensation › Pay components: "Reimbursement" is in the library, method "Amount set on each employee", flags
+      taxable only; every structure lists it before Special allowance.
+- [ ] Payroll › Salary calculator: "Reimbursement, ₹ a month" input changes the breakup the same way.
+- [ ] Offer form › Compensation: Reimbursement 3,000 on gross 26,000 shows in the offer breakup and letter; 7,000 is
+      refused before raising. After acceptance and Mark joined, the employee's pay section shows ₹3,000.
+
+## Part AC. Hiring IDs from the Employee code; blank nomination forms (24 Nov)
+
+1. **Hiring IDs** (on a test copy; migration 025 runs at start).
+- [ ] An existing imported employee EMP-1020: the employee file header shows SI-1020 · OI-1020 · JI-1020; Status and
+      stage shows "from the Employee code"; the timeline has one "Hiring IDs: SI-1020, OI-1020, JI-1020" entry whose
+      reason names the old SI-00xx IDs. A person hired through Onboarding still shows the candidate's SI-00xx.
+- [ ] Import employees with codes ZZ-000004 and 7350: SI-000004 / OI-000004 / JI-000004 and SI-7350.
+- [ ] Import a code whose number a candidate or another employee has (e.g. CON-1020 next to EMP-1020): a
+      candidate-series number (SI-0xxx), and the timeline reason says "already used by employee EMP-1020".
+- [ ] Onboarding › new shortlist after the import: the number is above the highest imported number (SI-7351 here).
+2. **Blank nomination form.** Policies › Nominations › Nomination policy › Edit "Provident fund (EPF) nomination".
+- [ ] Documents needed to enrol has a Blank form column; on "Signed nomination form" Attach a PDF: the file name shows;
+      Replace with a .docx: the new name shows; an .exe is refused. A row added but not saved says "Save first".
+- [ ] A permanent employee, My pay › Nominations › Add nominees: "Download blank form" next to Signed nomination form
+      downloads the .docx under its name; they fill it and upload it in the same field as before.
+- [ ] A contractual employee (the nomination does not apply) cannot download it (the file link gives 403).
+- [ ] Remove: the link goes from the employee's form; `audit_log` has "Blank form attached / replaced / removed …".
+- [ ] With Google Drive connected: the form appears in the Company folder as "Blank form Signed nomination form
+      (Provident fund (EPF) nomination).docx"; after Remove it is renamed "(replaced …)".
+
+## Part AD. Work policies: a department at a place, hours and minutes, holiday calendars (24 Nov)
+
+1. **Department + place.** Work policies › Operations – 24x7 rotational › Applies to › Add mapping › Department +
+   Location › Front Office at Gurugram – Sector 29 Hub › Add.
+- [ ] Saved with no conflict dialog; the table reads "Department + Location · Front Office at Gurugram – Sector 29
+      Hub" with the hub's Front Office headcount; the note lists the new order (Individual > Department + Location >
+      … > Employment type). EMP-1009's employee file › Work policy: through "the Front Office department at location
+      Gurugram – Sector 29 Hub". Coverage gains a "Department + Location" column.
+- [ ] Add policy "FO cluster" › Department + Cluster › Front Office at the hub's cluster: the conflict dialog lists the
+      hub people "through the Front Office department at location …"; Cancel saves nothing.
+- [ ] Switch the combined mapping off: EMP-1009 is back "through the Front Office department"; the row stays (off).
+- [ ] A person mapped by name stays on that policy whatever combined mapping matches them.
+- [ ] **Already applied.** Front Office is on Operations – 24x7 rotational. Open Operations – 6 day › Applies to ›
+      Add Department › Front Office: "Already applied to Operations – 24x7 rotational. Switch it off there or edit that
+      mapping." and nothing is saved. The same for a Department + Location pair that another policy has, and for
+      switching on a switched-off row whose twin is on elsewhere. Adding a mapping the policy already has: "Already
+      applied to this policy". Department on one policy and Department + Location on another is allowed (the conflict
+      dialog asks about the people).
+- [ ] Add mapping opens on **Department + Location** (department, then location); the other levels are in the list.
+- [ ] **Edit.** Every switched-on row has Edit: change the department or location (or the value) and Save; or pick
+      another Work policy: "Move … from A to B?" with the people who move, Confirm move. A value another policy has is
+      refused. The old row stays, switched off; History on both policies shows "Mapping moved"; the Activity log has
+      "Work policy mapping edited".
+- [ ] **Bulk upload** (button on Applies to opens a dialog on the same page, or Bulk update › Leave and time › Work policy mapping): download the
+      current data (the pairs on now). A file with a pair on another policy and Move blank: "Already applied to …";
+      Move = Yes: moved, with "N people's work policy changes"; Active = No: switched off; a misspelt policy, department
+      or location: "… not found"; the same pair twice: the later row "Appears again (first on line …)".
+2. **Hours and minutes.** Policy › Working time › Working hours.
+- [ ] Full-day hours, Half-day hours and Maximum spread over show two boxes, h and min. Set 8 h 30 min, save, reopen:
+      8 h 30 min (Summary: "Full day 8 h 30 min"); History shows the change in h and min. A stored 9.75 shows 9 h 45 min.
+- [ ] Half day above full day, or full day above the spread over, is refused with a message.
+3. **Holiday calendars.** Policies › Holiday calendars.
+- [ ] Add calendar "QA 2027": the Year box fills with 2027 and "Start empty" is the default; it is added with no
+      holidays. Add another with "Copy from NCR 2026": the holidays are copied.
+- [ ] Open a calendar › change a holiday's date, name or type › Save on that row: saved; Activity log has it. A date in
+      another year ("not in 2026"), or a date that is already a holiday, is refused. With a payroll month approved or
+      published, moving a holiday into or out of it, adding one there or switching one there off is refused
+      ("… is already paid").
+- [ ] The Active switch on NCR 2026 (used by policies) is refused, naming the policies. On an unused calendar it goes
+      off; that calendar no longer appears in a policy's Holidays tab, and saving a policy with it is refused.
+- [ ] Rename a calendar in its dialog (Save name); a name another calendar has is refused.
+
+## Part AE. Leave earned by working days: paid days, credited the day after (24 Nov)
+
+Policies › Leave plans › Standard leave plan › tab **Earn by working days**. Use a copy of the data.
+- [ ] No rule at first; Add rule shows an empty **Paid days** box and one empty row (Leave type, Days earned): nothing
+      is filled in. The note says working days here are "paid days (present, half day 0.5, paid leave, weekly off and
+      holiday; loss of pay days do not count)", credited "from the day after the Nth paid day". Type Paid days 7,
+      Casual leave 1; Add leave type, Privilege leave 1; Save changes: "Saved". History shows "Earn by working days:
+      — → every 7 paid days: Casual leave 1, Privilege leave 1".
+- [ ] Add a second rule with Casual leave again: Save says "Casual leave is already in the rule for every 7 paid
+      days. A leave type can be in only one rule". A rule without paid days, without a leave type or with days earned
+      0.3 is refused with its reason.
+- [ ] Leave types tab: Casual leave's Credit reads "By working days (see Earn by working days)"; Days a year says it is
+      an optional cap (blank or 0: no cap); the card text names paid days and "credited the day after the Nth paid
+      day". The plans list shows "… Casual, Privilege by working days".
+- [ ] The policy's Leave section and the Leave simulator say "CL earned by working days, 1 day for every 7 paid
+      days…". The simulator's Paid days in a month is empty; type 31 and pick a joining date of 15 Jan: CL and PL get
+      1 day on 22 Jan, 29 Jan, 5 Feb, … (the day after every 7th day), shown in "Credited on", starting again with the
+      leave year. With Paid days 30 on the rule instead, the first credit is on 14 Feb (not 1 Mar).
+- [ ] An employee of that plan, My leave: Casual leave shows "Earned by working days, 1 day for every 7 paid days,
+      credited the day after the 7th paid day: X earned from N paid days up to <yesterday>, last credited on …; …
+      more paid days to the next block". Open it: paid days by month with each credit's date. Check a past month
+      against My attendance: every day of the month less its loss of pay (Present, Late, paid leave, Week off and
+      Holiday 1, Half day 0.5, Absent / loss of pay leave 0); payroll's paid days for that month are the same less
+      any late-mark half days. No upfront 8 days any more.
+- [ ] A No punch day of this week (inside the regularization window) counts 1 today. Once the window has passed and
+      it is loss of pay, the count drops by 1 (and a block, if that one completed it).
+- [ ] Regularize an absence of last month to present and approve it: the paid days rise by 1 (and a block when it
+      completes one, credited the day after the day that completed it).
+- [ ] Apply for Casual leave from a date next month: the balance shown is the balance on that date, counting the paid
+      days over by today only.
+- [ ] Mark a test employee inactive with a last working day of last week: their Casual leave counts paid days up to
+      that day only, nothing after. A Pre-boarding joiner's Casual leave stays 0 until they are active.
+- [ ] Days a year 2 on Casual leave: the credit stops at 2 ("capped at 2 for the leave year").
+- [ ] Remove the rule and save: Casual leave is back to its Credit (Monthly / Upfront) and the balances are what they
+      were before.
+
+## Part AF. Shifts: punch rules in the work policy, split shifts; no night shift card (24 Nov)
+
+Working time and Attendance tabs of a work policy, Masters › Shifts. Use a copy of the data.
+- [ ] Working time has no **Night shift** card. Attendance › Punching still has "Night shift counts on". The policy
+      History shows no lines about night hours, the allowance or women at night, even old ones.
+- [ ] A payroll dry run of the open month for someone who worked nights: no "Night shift allowance" line; every net
+      pay is as before. The full register has no Night shift allowance column.
+- [ ] Attendance › Punching has **Maximum early in punch allowed** and **Maximum late out punch allowed**, each as
+      h + min, both 0 h 0 min. 12 h 30 min is refused ("… must be from 0 to 12 h"); 12 h saves.
+- [ ] Roster someone on a 09:00–18:00 shift for a past day and send punches 07:30, 08:10, 18:40 and 20:30 (G7). With
+      both limits 0 the day is 07:30–20:30. Set early 1 h 0 min, late 2 h 0 min, Applies from that day, Save: the day
+      becomes 08:10–18:40 (07:30 and 20:30 are outside the window). Set both back to 0: 07:30–20:30 again. A day in a
+      month locked by payroll does not change.
+- [ ] "A day with a missing punch counts as" lists **Half day until regularized**, Absent, Present until regularized.
+      With it, a day with one punch is half a day of loss of pay; an approved regularization clears it.
+- [ ] Masters › Shifts › Set shift has no Punch rules and no Single punch rules card. The Shift card has **Second
+      part start** and **Second part end** (the Attendance rules card went later the same day: Part AJ). A shift with old punch rules saved
+      before today opens and saves, without them; its version history does not show them.
+- [ ] Add shift SP: 06:00 to 10:00, second part 15:00 to 19:00, Save. The list shows "06:00–10:00 + 15:00–19:00"; so
+      do Set shift ("In effect today"), its version history, the shift pickers (Hire › offer, Change of shift
+      request) and the roster (legend under the grid, the cell's tooltip).
+- [ ] Refused with the reason: a second part start without an end; a second part starting at 09:00 or at 10:00
+      ("must start after the first part ends (10:00)"); 15:00–15:00; a second part on a shift that ends the next day
+      ("A split shift must start and end on the same day").
+- [ ] Roster EMP-1020 on SP for past days and regularize (or punch) these, on an 8 h / 4 h policy:
+      06:00–19:00 → Present (8 h: the 5 h gap does not count); 06:00–10:00 → Half day; 15:00–19:00 → Half day;
+      06:00–13:00 → Half day (leaving in the gap); 06:30–19:00 → Half day (7 h 30 min, late from 06:00);
+      06:30–19:30 → Late.
+- [ ] With "If out punch is missing" = Auto-close at shift end, an in at 06:00 and no out closes at 19:00 (8 h).
+- [ ] Master update workbook › Shifts has "Second part start" and "Second part end"; "None" removes the second part
+      (from today, as a new version); a blank cell changes nothing.
+- [ ] Set shift: "No second part" clears both times; saved, the shift reads 06:00–10:00 again.
+
+## Part AG. Deviation allowances; called to work on a holiday or leave day (24 Nov)
+
+Use a copy of the data. EMP-1020 on a 10:00–18:00 shift (or read the times below against their own shift), on a policy
+with Late-mark grace 15, Late marks allowed in a month 0, After that limit "Half day of leave or loss of pay".
+- [ ] Policies › the policy › Attendance › **Deviation allowances**: Early check-in, Late check-in, Early check-out, each
+      Off with empty Minutes allowed and Times allowed in a month. Switch Late check-in on with Minutes 120 and no Times,
+      Save: refused ("Late check-in is on: enter the minutes allowed and the times allowed in a month, or switch it
+      off"). Times 2, Save: saved; History shows "Late check-in: on", "minutes allowed", "times allowed in a month".
+- [ ] Punch (or MIS upload) four past days of this month at 11:00–19:00. My time › My attendance (and Attendance ›
+      Records › By employee › EMP-1020): the first two are **Present** with "Late check-in allowed, 1 h (1 of 2)" and
+      "(2 of 2)"; the 3rd and 4th are **Late** with "Late check-in 1 h, 3rd this month (allowed 2): beyond the
+      allowance". Pills "2 late check-in allowed", "2 beyond the deviation allowance". Loss of pay counts only the two
+      late marks (1 day), not four (2 days).
+- [ ] A day at 12:30 (150 min late) is a Late mark noted "more than the 2 h allowed" and does not use up the count.
+      A day at 11:00–18:00 within the count is a Half day (7 h): no hours are credited.
+- [ ] As HR Admin (and as EMP-1020's manager): the bell has "… (EMP-1020): late check-in 1 h on <date>, 3rd this month
+      (allowed 2)" for a day today or in the last two days, once (it does not repeat every 5 minutes), with Attendance
+      alerts all off.
+- [ ] Regularize one of the allowed days: it no longer counts; the next late day takes its place in the count.
+- [ ] Early check-in on with 120 and 1; set the shift's Attendance based on Shift (hours from the shift start). A day
+      08:00–16:00: Present, 8 h, "Early check-in allowed, 2 h (1 of 1)", and no Early exit / Shift deviation in Roster
+      discipline. A second such day: Half day (6 h from 10:00), reported.
+- [ ] Early check-out on with 60 and 1: a day 10:00–17:00 is "Early check-out allowed, 1 h (1 of 1)" and no Early exit
+      deviation; the next 10:00–17:30 is reported. Today's early check-out is only judged tomorrow.
+- [ ] Switch all three off and save: every day reads as before (Late marks, Shift / Early exit deviations).
+- [ ] Attendance › **Called to work** (HR Admin): Call to work EMP-1020 on a working day: refused ("… is not a holiday or
+      a day of approved leave for …"). No reason: refused. A line manager sees the list without the Call to work and
+      Remove buttons; My view has no such tab.
+- [ ] Approve a Casual leave for EMP-1020 on a past day, note the balance on My leave, punch that day 10:00–18:05, then
+      Call to work on it with a reason. The list shows "Worked"; My attendance shows the day **Present**, "Called to
+      work, worked 8:05; Casual leave returned (1 day)"; My leave shows the balance 1 higher; the leave request (still
+      Approved) has "Called to work on …" and, within 5 minutes, "Worked on a leave day … 1 day of Casual leave
+      returned".
+- [ ] A Loss of pay leave day called and worked: Present, the month's loss of pay is one day less. A half-day Casual
+      leave called and worked: 0.5 returned.
+- [ ] A holiday called and worked: Present (Called to work); loss of pay unchanged. Called and punched only in: Present,
+      "Called to work, came (in …, no out punch)". Called and worked 3 h: Present. Called, no punch: Holiday,
+      "Called to work, no punch: the holiday stands"; no loss of pay.
+- [ ] A leave plan with Earn by working days: the called holiday counts 1 working day.
+- [ ] Remove a call: the day goes back to the holiday / leave (balance back). Publish (or approve) that payroll month:
+      adding or removing a call there is refused ("… is already paid …").
+
+## Part AH. Individual roster changes: cell picker, called to work, other time, own deviation allowances (24 Nov)
+
+Use a copy of the data. Shift and roster › Roster, a city and department with EMP-1020, a week with a holiday on their
+calendar. HR Admin unless said otherwise.
+- [ ] Click any cell: a picker opens (no more cycling) with each shift and its timing, WO, PH and Other time for this day.
+      Pick another shift: the cell changes as before (late change reason, rest warning or refusal, lock of past dates).
+- [ ] A holiday cell (PH from the calendar): the picker has WO and PH under Roster and a **Called to work** box with a
+      Shift list and a Reason. Call to work with no reason: refused. With shift G and a reason: the cell shows **G***
+      with a dashed border; the tooltip says "Called to work (holiday): G 09:00–18:00. <reason>. By …"; On duty counts
+      them; Attendance › Called to work lists the call with "Shift G (from the roster)".
+- [ ] Bulk upload a roster file that puts a shift on a calendar holiday: refused for that cell ("… is a holiday … A
+      shift on a holiday calls them to work …"). Changing the called cell to WO: refused ("Remove the call to work
+      first").
+- [ ] A past holiday called with a shift, no punch: My attendance shows **Holiday**, "Called to work, no punch: the
+      holiday stands", no loss of pay. Punch it (any punch): **Present**, measured against shift G.
+- [ ] An approved Casual leave cell (L): the picker says to cancel the leave for roster changes and offers Called to work.
+      Call with a shift, punch the day: Present; My leave shows the balance 1 higher. An approved Loss of pay day
+      called and punched: its loss of pay goes.
+- [ ] Open a called cell: **Remove the call** puts PH / L back (balance back). Choosing another shift and Save changes
+      the call's shift. In a published payroll month the call and its removal are refused ("… is already paid …").
+- [ ] As a Line Manager (roster edit, att.records View only): the Called to work box is not shown; the API answers 403.
+- [ ] **Other time for this day** on a future working day: Start 10:00, End 14:00, tick Two parts, 17:00–21:00, Set
+      other time: the cell shows **OT** (tooltip "Other time 10:00–14:00 + 17:00–21:00"), the footer has an Other time
+      row, On duty counts it. Second part 13:00–21:00: refused ("The second part must start after the first part ends
+      (14:00)"). A day in one part 22:00–06:00 is accepted (recorded like a night shift).
+- [ ] On a past day (work policy Roster › past changes "free"): OT 06:00–10:00 + 15:00–19:00 with punches 06:00–17:00
+      is a **Half day** (6 h: the 10:00–15:00 gap does not count); 06:30–19:30 is **Late**; 06:00–19:00 is **Present**.
+      With the lock on, the past day is refused like any change. Inside the lead days, no reason: refused.
+- [ ] With the work policy's Maximum early in punch set, an OT day's in punch outside the window is not taken (the
+      punch window follows the OT start).
+- [ ] Click EMP-1020's **name**: Deviation allowances shows the policy's rules and the ones in effect. Late check-in
+      **On** with Minutes 120 and no Times: Save refused. Times 4, Applies from the 1st of the month: saved; History
+      shows the version "In effect"; the row says "own deviation rules". With the policy at 120 minutes 2 times, four
+      days 60 minutes late are all Present ("Late check-in allowed … (4 of 4)").
+- [ ] Same date, Late check-in **Use the policy's rule**: back to 2 allowed, 2 late marks. **Off for this employee**: 4
+      late marks, and the bell gets "beyond the allowance" messages for today and the last two days.
+- [ ] Applies from a date in a published payroll month: refused. As a Line Manager: the dialog opens read-only (no
+      Change from a date); the API refuses a save with 403.
+
+## Part AI. Deviation allowances: the Action beyond the allowance (24 Nov)
+
+Use a copy of the data. EMP-1020 on a 10:00–18:00 shift (read the times against their own shift), on a policy with
+Late-mark grace 15, Late marks allowed in a month 0, After that limit "Half day of leave or loss of pay", Full-day 8 h,
+Half-day 4 h.
+- [ ] Policies › the policy › Attendance › Deviation allowances: the intro explains the four actions and "the harsher
+      action wins"; each rule has an **Action** dropdown showing **Select**. Late check-in On, Minutes 120, Times 1, no
+      Action, Save: refused ("Late check-in is on: choose the action for a day beyond the allowance, or switch it off").
+      Pick **Half day until regularized**, Save: saved; History shows "Late check-in: action beyond the allowance".
+- [ ] Punch three past days of this month 11:00–19:00. My time › My attendance: the 1st is Present ("Late check-in
+      allowed, 1 h (1 of 1)"); the 2nd and 3rd are **Half day until regularized**, loss of pay 0.5 each, note "Late
+      check-in 1 h, 2nd this month (allowed 1): beyond the allowance → Half day until regularized", with a
+      **Regularize** button. Late marks: 0 (no late mark on top; nothing over the late-mark limit). Pill "2 half day
+      until regularized".
+- [ ] Action **Absent**: those days are **Absent until regularized**, loss of pay 1 each. **Present until regularized**:
+      Present until regularized, no loss of pay, still with Regularize. **No action**: Late, two late marks over the
+      limit (1 day), as before.
+- [ ] Half day until regularized, a day 15:00–18:00 (5 h late, 3 h worked): **Absent (short hours)**, loss of pay 1 (not
+      1.5), note "… → Half day until regularized; the hours or punches give more loss of pay: Absent (short hours)", Regularize shown.
+- [ ] Early check-out On, 30 minutes, 5 times, Action Absent; Late check-in 30, 5, Present until regularized. A day
+      11:00–17:00: **Absent until regularized** (the harsher action wins).
+- [ ] Attendance › Issues (HR Admin) lists the days until regularized with Regularize. Raise a regularization for one
+      of them older than the regularization window: refused ("Regularization is allowed within … days"). Within the
+      window (or with an exception): send, approve; the day becomes **Present** (source Regularized), no loss of pay;
+      the next day beyond keeps its action (the count does not move to it if it was beyond the minutes).
+- [ ] The bell to HR Admins and the manager ends with "→ Half day until regularized" (or the chosen action).
+- [ ] Payroll cut-off reminder (Attendance alerts on): Half day until regularized days are in its list.
+- [ ] Roster › click EMP-1020's name: the policy's rule reads "on, 30 min, 5 times a month, beyond: …". Late check-in
+      **On** for this employee with Minutes and Times but no Action: refused. With Action **Absent**: their late days
+      beyond are Absent until regularized while the policy says Half day. **Use the policy's rule**: back to the
+      policy's action.
+- [ ] Payroll for the month (copy only): loss of pay matches the register; the half days count in Half day, the absent
+      ones in No punch, the present ones in Present.
+
+## Part AJ. Shifts: no Attendance rules card; Department + Location mapping with bulk upload (24 Nov)
+
+Masters › Shifts, the roster, Onboarding. Use a copy of the data.
+- [ ] Set shift has no **Attendance rules** card (no Max Hrs:mins, Attendance based on, Absent / Half day / Full day
+      rule, Weekly or Monthly adjustment, Inclusion in shortfall hours, no "Not here yet" line). The header says "The
+      work policy decides the attendance rules (policy name, N on this shift)". The shift list has no Rules column;
+      Details ends with "Applies to: …".
+- [ ] Weekly and monthly adjustments, "Attendance based on" and the max-hours cap are gone from the product: a day of
+      6 h on an 8 h / 4 h policy is a Half day whatever the shift; no day reads "Short hours".
+- [ ] After migration 029 every shift lists the same people as before: a shift with All locations reads "All
+      departments at all locations"; one with selected locations has one row "All departments at <location>" each.
+      Roster codes and the Onboarding shift picker offer the same shifts as before for every employee.
+- [ ] Add shift: Save without a row is refused ("Add at least one row …"). Add "Front Office at all locations", Save:
+      the shift is created with that row; Applies to: history shows "Added with the shift".
+- [ ] Set shift › Applies to: add "All departments at Noida"; adding it again is refused ("… is already on this
+      shift"). Switch a row off and on; Remove a row (confirm). Each change shows a toast and a history line with who
+      and when. Switching off or removing the last switched-on row is refused ("This is the shift's last row
+      switched on …").
+- [ ] Map shift N to Front Office at one location only. On the roster, a Front Office employee there is offered N in
+      the cell picker; a Housekeeping employee at the same location is not; their default shift and planned cells do
+      not change if they were already on N (the roster warns "Shift N is not mapped to this department and
+      location"). Setting N on their cell is refused: "Shift N does not apply to Housekeeping at …".
+- [ ] The roster download has one drop-down per department and property block; uploading N for the Housekeeping
+      employee is refused ("“N” is not a shift mapped to Housekeeping at …").
+- [ ] Onboarding offer and joining verification: the Shift list shows only shifts mapped to the chosen department and
+      location. Employee › job change to a shift, location or department the rows do not allow is refused; changing
+      something else (grade) for someone outside the rows still saves. Import employees refuses an unmapped shift.
+- [ ] Masters › Shifts › **Bulk upload** opens a dialog (no move to Bulk update): Download template, Download current
+      data (Shift Code, Department, Location, Active for the rows on now), Check, Apply. Rows: "N,Front Office,<loc>,"
+      adds or switches on; "G,All,All,No" switches off; "G,,," switches it back on; an unknown shift, department or
+      location, "Maybe" in Active, a row not on the shift with No, and the same row twice are refused with the reason.
+      Bulk update lists the same template under Leave and time › Shift mapping.
+- [ ] Master update workbook › Shifts: the old Locations column is "Applies to (read-only …)" listing the rows; edits
+      in it are ignored. A shift added in the workbook applies to all departments at all locations.
+
+## Part AK. Retainer TDS 1%, reimbursement outside the gross, portal code = ID number, RET codes (25 Nov)
+
+Use a copy of the data (migration `030_retainer_tds_1pct` runs on it).
+1. **Retainer TDS.**
+- [ ] Compensation › Salary structure › Version 1: "Retainer TDS" shows **TDS, % of gross (editable)** = 1 (was 10;
+      Audit log has "Retainer TDS set to 1% (was the old default 10%)"). A structure set to anything other than 10 keeps it.
+- [ ] Salary calculator, type Retainer, gross ₹30,000: Retainer fee 30,000, TDS 300 ("1% of gross (editable: structure
+      or employee)"), net 29,700. No text says "section 194J" or 10%.
+- [ ] Employees › a retainer › pay section shows "TDS, % of gross (editable)": "1% of gross (the structure's rate)".
+      Edit pay options: type 3, choose a reason, save → "3% of gross (set for this employee)", Change history "TDS %:
+      Structure rate → 3% of gross". Payroll dry run: the retainer's TDS is 3% of the earned fee; payslip "TDS, 3% of
+      gross". Clear the box and save → back to the structure's rate. 60 is refused; a permanent employee has no box.
+2. **Reimbursement outside the gross.** A permanent employee on Version 1, gross ₹30,000 › Edit pay options.
+- [ ] Reimbursement, ₹ a month (outside the gross) 3,000: preview Basic 15,000, HRA 7,500, Special allowance 7,500,
+      Gross 30,000, then "Reimbursement, outside the gross" 3,000; PF on Basic only (1,800), ESI/bonus as without it; net
+      and CTC higher by 3,000. 12,000 is accepted too (no "what Basic and HRA leave" limit). Pay section says "₹3,000 a
+      month, paid on top of the gross".
+- [ ] Payroll dry run: payslip lists Basic, HRA, Special allowance, then "Reimbursement — Outside the gross"; a person
+      with 10 of 30 days LOP gets 2,000 (by days paid, like the gross). Payroll sheet column "Reimbursement (outside the
+      gross)" after Special allowance; full register the same; ESI/PF wages unchanged.
+- [ ] Cost and budget: the salary figure includes it (hover: "Plus reimbursement outside the gross"); Excel column
+      "Reimbursement (outside the gross)". My tax › Estimated tax shows "Reimbursement a month, outside the gross".
+- [ ] Offer › Compensation "Reimbursement, ₹ a month (outside the gross)" 3,000: the offer letter breakup has
+      "Reimbursement (outside the gross): ₹3,000 a month"; Mark joined carries it to the employee.
+3. **Realtime portal code = the ID's number, 6 digits** (rtfake / a test portal only; never the live portal).
+- [ ] Mark joined JI-0017 (mapped): the create sends Employee code **000017** (card 00000017); the employee's Attendance
+      code becomes 000017 and pulled punches with EmpCode 17 or 000017 match. EMP-1054 → 001054.
+- [ ] If another employee already has that Attendance code, the create is held with "Attendance code … is already …'s:
+      set …'s Attendance code by hand (Employees) if they are already on the portal".
+4. **Employee codes by type** (Employees › Employee codes: one series for everyone, EMP-, 4 digits, next 1055).
+- [ ] Give a Permanent an Employee ID → EMP-1055; then a Retainer → RET-1056; then a Permanent → EMP-1057 (one counter,
+      same width). Contractual → EMP-…. Import employees without a code: the same. "Next code" for type Retainer shows RET-….
+
+## Part AL. Offer at joining (26 Nov)
+
+1. **Choose.** Select a candidate (interview Selected), open it, Offer › **Offer at joining**: expected date today, note "UT hire".
+- [ ] Pipeline has an **Offer at joining** filter with a count; the row says "Offer at joining: waiting for the joining day, expected on …".
+- [ ] Timeline "Offer at joining chosen"; Mark joined is not offered. A past date is refused.
+- [ ] With a date in the future, "Raise offer at joining" is disabled until that day; **Raise offer v1 instead** switches back (timeline "Switched back to the usual offer").
+2. **Raise offer at joining** on the day: the usual offer form opens with the joining date prefilled; send it.
+- [ ] The candidate says "Offer at joining v1: waiting for offer approval"; Joining says "Mark joined: Waiting for offer approval…".
+- [ ] The offer screen has no Release button and explains the letter is given at joining.
+3. **Approve** the offer in Approvals as usual, then **Mark joined** today.
+- [ ] The candidate gets JI-…; the Offer ID (OI-…) appears; offer version v1 shows Accepted · frozen; the offer screen shows the letter "Released at joining on …".
+- [ ] Timeline: Offer at joining chosen → Offer v1 raised at joining → Offer v1 approved → Offer accepted at joining → Offer letter released at joining → Joined.
+4. **Outcomes.** Another offer-at-joining candidate: Reschedule joining moves the expected date; No show (on the day) starts the waiting window; Offer declined closes it.
+- [ ] The normal path (Raise offer v1 → approval → release → Accepted → Mark joined) works exactly as before.
+
+## Part AM. All-inclusive gross from a month (26 Nov)
+
+1. **Setting.** Compensation › Salary structure › All-inclusive gross from month: pick the open payroll month, Save.
+- [ ] Pill "On from …"; a month already approved or published is refused; Switch off is refused once a month on the rule is approved.
+- [ ] Someone without Payroll settings (Edit) sees the month but cannot change it. Audit log has the change.
+2. **Breakup.** Try an offer, Permanent, gross 18,000 (at or below the bonus ceiling), Haryana.
+- [ ] Basic 8,708.45, HRA 4,354.23, Special allowance 4,354.23, Statutory bonus 583.10, Gross salary 18,000.
+- [ ] Deductions: Employee PF 1,045, Employer PF 1,045, Employee ESI 131, Employer ESI 567, EDLI 43.54, LWF 34, Employer LWF 68; net 15,066.46.
+- [ ] CTC: 18,000 + admin 43.54 + gratuity 418.88 + PL encashment 362.85 = 18,825.27 (+ variable target + reimbursement).
+- [ ] Gross 28,000: no bonus line, no ESI; Basic 14,000.
+3. **Payroll.** Dry run the month: payslip lists Statutory bonus after Special allowance, Employer PF/ESI/EDLI/LWF under deductions, variable pay "Pro-rata, additional" with no amount entered.
+- [ ] Payroll › Variable pay for that month says variable pay is automatic; entering an amount (screen or bulk) is refused.
+- [ ] Sheet/register: Statutory bonus, Gross salary (G), employer shares deducted; cost console shows no employer PF/ESI for the month.
+- [ ] The earlier (published) month's payslip and register are unchanged.
+
+## Part AN. Shortlisting stage in Form setup (26 Nov)
+
+1. **Form setup** (HR Admin): both tables have a **Shortlisting** column before Offer release.
+- [ ] Defaults: names, mobile, personal email, date of birth, gender, department, designation, work city, reporting location Mandatory; current address Optional; the rest and every document Not needed.
+- [ ] First name, Department, Work city, Approval flow and Work policy cannot be changed at Shortlisting. Audit log has each change.
+2. Set **Aadhaar number** Mandatory, **Gender** Not needed and the **PAN card** document Mandatory at Shortlisting.
+- [ ] Onboarding › Shortlist shows Aadhaar number (with *) in an "Identity and statutory" card, no Gender, and a Documents card with PAN card.
+- [ ] Send without them: "Aadhaar number is required" and "PAN card must be uploaded with the shortlist". Fill and upload: sent.
+3. Open the candidate, approve, Selected, **Raise offer v1**.
+- [ ] The candidate shows the Aadhaar number and the PAN card under Shortlist; the hiring manager in Approvals sees the PAN card listed (opening it needs the government ID right) but not the number.
+- [ ] The offer form is prefilled; the PAN card shows Uploaded. After approval and acceptance the joining details show the Aadhaar number and the PAN card uploaded (not asked again); the joiner's link shows them too.
+4. Set Employment type Mandatory at Shortlisting and a document Applies to Retainer only, Mandatory: the shortlist asks it only when Retainer is chosen.
 
 ## Part H. Known, deliberate differences from the prototype (not bugs)
 
@@ -1628,3 +2081,19 @@ Expected:   what should happen (quote the prototype if it is a look/wording issu
 Got:        what happened (exact message; screenshot; console error if any)
 Data:       request or employee IDs involved (e.g. LV-3005, EMP-1020, November 2026)
 ```
+
+## Offer breakup later, HR copied, grade not tied to designation (27–28 Nov 2026)
+
+- [ ] Masters › Designations: no Grades field; add a designation with just a department.
+- [ ] Offer form: pick any designation; the Grade list shows every active grade.
+- [ ] Employee › Job change: any grade with the current designation is accepted.
+- [ ] Raise and release an offer; open the candidate: in the versions table the gross is a link, and on the timeline "gross ₹20,000" on "Offer v1 raised" (and "See the breakup" on "Offer v1 sent") opens the breakup as it was decided.
+- [ ] Change the salary structure afterwards: the version's breakup does not change.
+- [ ] An offer raised before this change shows the breakup with a yellow note "worked out again".
+- [ ] With a real mailbox, Offer letter › Send the letter again by email: the HR who raised the offer gets a copy (Cc); the timeline says "(copy to <name>)".
+
+## People are matched by codes only, never names (28 Nov 2026)
+
+- [ ] Attendance › Realtime match › Fetch: Sure only where the portal code (or card) is the Employee ID's number (or the old Joining ID's); two people with the same name and different codes each get their own code; a name-only match is None.
+- [ ] An earlier fetch's list is not shown until you fetch again.
+- [ ] Import employees with "Reporting Manager L1" given as a name: refused "is not an active Employee ID"; with EMP-… or "Name (EMP-…)": accepted.

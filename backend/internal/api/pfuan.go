@@ -185,7 +185,7 @@ func pfFactsOf(ctx context.Context, q store.Q, id string) (*pfFacts, error) {
 	f.Pay, _ = q.C("employee_pay").FindOne(ctx, bson.M{"employee_id": id})
 	f.Choice = str(f.Pay["pf_choice"])
 	_, st := structureFor(ctx, q, id, ym+"-01")
-	f.Basic = calc.Round2(calc.Calc(calc.Input{Type: calc.EmploymentType(f.Type), Gross: f.Gross, Structure: &st, AllBasic: payOptsOf(f.Pay).allBasicIn(ym)}).Basic)
+	f.Basic = calc.Round2(calc.Calc(calc.Input{Type: calc.EmploymentType(f.Type), Gross: f.Gross, Structure: &st, AllBasic: payOptsOf(f.Pay).allBasicIn(ym), AllIn: allInOn(ctx, q, ym)}).Basic)
 	f.History, _ = q.C("payroll_row").Exists(ctx, bson.M{"employee_id": id, "ym": bson.M{"$lt": open}, "data.r.eePF": bson.M{"$gt": 0}})
 	return f, nil
 }
@@ -388,6 +388,9 @@ func pfStatus(ctx context.Context, q store.Q, c *Ctx, id string) (map[string]any
 		choice["by"], choice["at"], choice["reason"] = str(f.Pay["pf_choice_by"]), payengineStamp(f.Pay["pf_choice_at"], "02 Jan 2006 15:04"), str(f.Pay["pf_choice_reason"])
 	}
 	out["choice"] = choice
+	if f.Choice == store.PfChoiceOptOut && calc.RulesFor(calc.EmploymentType(f.Type)).Statutory && f.Gross > 0 && f.Gross <= rules.ExemptGross {
+		out["retainer"] = pfRetainerNote(rules.ExemptGross) // chose no PF on a gross up to the threshold (pf_offer.go)
+	}
 	if c.Show("salary", 1, id) != nil {
 		out["gross"], out["basic"] = f.Gross, f.Basic
 	}
@@ -495,26 +498,46 @@ func pfChoiceFrom(ctx context.Context, q store.Q, doj string) string {
 	return from
 }
 
-// applyJoinPfChoice records the joining form's PF choice on the employee (only when it was asked: no existing UAN
-// and a gross above the threshold) and decides the exemption again. An unchanged answer changes nothing.
-func applyJoinPfChoice(ctx context.Context, tx store.Q, empID string, d map[string]string) error {
-	choice := pfChoiceWord(d["pfChoice"])
-	if choice == "" || !pfChoiceAsked(d, loadPfRules(ctx, tx).ExemptGross) {
+// applyJoinPfChoice records the PF answer in force (the joining form's, else the offer's; pf_offer.go) on the
+// employee when it was asked (no existing UAN and a gross above the threshold, or the offer said No) and decides the
+// exemption again. An unchanged answer changes nothing. A No on a gross up to the threshold is recorded (PF still
+// applies by the rule) and HR is told the type must be Retainer.
+func applyJoinPfChoice(ctx context.Context, tx store.Q, empID, cand string, d map[string]string) error {
+	choice := pfAnswer(d)
+	rules := loadPfRules(ctx, tx)
+	if choice == "" || !(pfChoiceAsked(d, rules.ExemptGross) || pfOfferNo(d)) {
+		return nil
+	}
+	e, _ := tx.C("employee").FindOne(ctx, bson.M{"_id": empID}, options.FindOne().SetProjection(bson.M{"doj": 1, "type": 1}))
+	if !calc.RulesFor(calc.EmploymentType(str(e["type"]))).Statutory { // a Retainer: no PF, the answer is ignored
 		return nil
 	}
 	p, _ := tx.C("employee_pay").FindOne(ctx, bson.M{"employee_id": empID}, options.FindOne().SetProjection(bson.M{"pf_choice": 1}))
-	if str(p["pf_choice"]) == choice {
+	was := str(p["pf_choice"])
+	if was == choice {
 		return nil
 	}
-	e, _ := tx.C("employee").FindOne(ctx, bson.M{"_id": empID}, options.FindOne().SetProjection(bson.M{"doj": 1}))
-	if err := setPfChoice(ctx, tx, empID, choice, "Joining form", "Answered on the joining form", pfChoiceFrom(ctx, tx, str(e["doj"]))); err != nil {
+	by, why := pfAnswerSource(d)
+	if err := setPfChoice(ctx, tx, empID, choice, by, why, pfChoiceFrom(ctx, tx, str(e["doj"]))); err != nil {
 		return err
 	}
-	if err := audit(ctx, tx, nil, "PF choice recorded from the joining form", "pf_exempt", empID, map[string]any{"choice": str(p["pf_choice"])}, map[string]any{"choice": choice}); err != nil {
+	if err := audit(ctx, tx, nil, "PF choice recorded from the "+strings.ToLower(by), "pf_exempt", empID, map[string]any{"choice": was}, map[string]any{"choice": choice, "reason": why}); err != nil {
 		return err
 	}
-	_, err := syncPfExempt(ctx, tx, []string{empID})
-	return err
+	if err := lifeEvent(ctx, tx, nil, lifeEv{Subject: "employee", Cand: cand, Emp: empID, Action: "PF choice recorded", From: pfWantText(was), To: pfWantText(choice), Reason: why}); err != nil {
+		return err
+	}
+	if _, err := syncPfExempt(ctx, tx, []string{empID}); err != nil {
+		return err
+	}
+	if choice != store.PfChoiceOptOut {
+		return nil
+	}
+	f, err := pfFactsOf(ctx, tx, empID)
+	if err != nil || f.Gross <= 0 || f.Gross > rules.ExemptGross {
+		return err
+	}
+	return pfRetainerAlert(ctx, tx, f, rules.ExemptGross)
 }
 
 // pfChoicePut is PUT /api/employees/{id}/pf-choice {choice: member | optout, reason}: HR changes the PF choice
@@ -556,7 +579,8 @@ func (s *Server) pfChoicePut(r *http.Request, c *Ctx) (any, error) {
 			return bad("The PF choice cannot change after the employee has left")
 		}
 		rules := loadPfRules(ctx, tx)
-		if why := pfChoiceOpen(f, rules); why != "" {
+		// Back to PF from a No recorded outside the usual case (a gross up to the threshold; pf_offer.go) is allowed.
+		if why := pfChoiceOpen(f, rules); why != "" && !(b.Choice == store.PfChoiceMember && f.Choice == store.PfChoiceOptOut) {
 			return bad("%s", why)
 		}
 		if b.Choice == store.PfChoiceOptOut && f.History {
@@ -576,6 +600,10 @@ func (s *Server) pfChoicePut(r *http.Request, c *Ctx) (any, error) {
 			return err
 		}
 		if out, err = pfStatus(ctx, tx, c, id); err != nil {
+			return err
+		}
+		if err := lifeEvent(ctx, tx, c, lifeEv{Subject: "employee", Emp: id, Action: "PF choice changed", From: pfWantText(str(before["choice"])), To: pfWantText(b.Choice),
+			Reason: b.Reason}); err != nil {
 			return err
 		}
 		return audit(ctx, tx, c, "PF choice changed", "pf_exempt", id, before, map[string]any{"choice": b.Choice, "exempt": want, "reason": b.Reason})
@@ -650,6 +678,7 @@ func pfFigures(ctx context.Context, q store.Q, ym string, list []*emp) (map[stri
 	for _, g := range govs {
 		uan[str(g["employee_id"])] = validUan(g["uan"])
 	}
+	allIn := allInOn(ctx, q, ym) // the all-inclusive gross (allin.go)
 	for _, e := range list {
 		g := grossInMonth(hist[e.ID], ym)
 		sid := smap[e.ID]
@@ -660,7 +689,7 @@ func pfFigures(ctx context.Context, q store.Q, ym string, list []*emp) (map[stri
 		if !ok {
 			st = calc.DefaultStructure
 		}
-		res := calc.Calc(calc.Input{Type: calc.EmploymentType(e.Type), Gross: g, Structure: &st, PfExempt: exempt[e.ID], AllBasic: allBasic[e.ID]})
+		res := calc.Calc(calc.Input{Type: calc.EmploymentType(e.Type), Gross: g, Structure: &st, PfExempt: exempt[e.ID], AllBasic: allBasic[e.ID], AllIn: allIn})
 		out[e.ID] = &pfFigure{Gross: g, Basic: calc.Round2(res.Basic), EePF: res.EePF, Exempt: exempt[e.ID], HasUan: uan[e.ID]}
 	}
 	return out, nil

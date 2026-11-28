@@ -6,6 +6,8 @@ import { Chain, Field, Loading, Modal, Pill, Switch, Tabs, download, toast, useL
 import PersonPicker, { type Person } from '../components/PersonPicker';
 import { CandidateBlock, InterviewForm } from './Onboarding';
 import { SkipApprovalButton, SkipWaitingButton } from '../components/SkipApproval';
+import { shiftOffered } from './ShiftForm';
+import { BulkModal } from './Bulk';
 
 /** Request types, in the prototype's order (WFS). */
 export const WORKFLOWS: Record<string, string> = {
@@ -38,8 +40,9 @@ const FILTER_WF: [string, string][] = [...Object.entries(WORKFLOWS).flatMap(([k,
   (k === 'p_ded' ? [['p_pip', EXTRA_WF.p_pip], [k, l]] : k === 'shortlist' ? [[k, l], ['interview', EXTRA_WF.interview]] : [[k, l]])), ['p_tax', EXTRA_WF.p_tax]];
 /** The prototype's WFS: every request type with an approval flow, the improvement plan included (MX.p_pip). */
 const FLOW_WF: [string, string][] = FILTER_WF.filter(([k]) => k !== 'p_tax' && k !== 'interview'); // the interview is always the hiring manager's
-/** The Approval flow tab: every request type with a flow, the interview too (only its "Approval hierarchy" tick). */
-const EDIT_WF: [string, string][] = FILTER_WF.filter(([k]) => k !== 'p_tax');
+/** The Approval flow tab: every request type with a flow (the "Approval required" tick is in Check a flow › All flows
+ *  at a glance only, 21 Nov 2026). */
+const EDIT_WF: [string, string][] = FLOW_WF;
 export const wfName = (k: string) => WORKFLOWS[k] ?? EXTRA_WF[k] ?? (k.startsWith('leave') ? `Leave, ${k === 'leaveC' ? 'casual and sick' : 'privilege and other'}` : k);
 const COND: Record<string, string> = {
   always: 'Every request', days: 'Leave days in the last 30 days', grades: 'Grade is', cnt: 'Requests this month', budget: 'Above budget (headcount or pay band)',
@@ -48,10 +51,10 @@ const COND: Record<string, string> = {
 };
 const COND_OK: Record<string, string[]> = {
   shortlist: ['always'],
-  joining: ['always', 'budget'], verify: ['always'], leave: ['always', 'days', 'grades'], regularize: ['always', 'cnt', 'grades'], transfer: ['always', 'grades', 'tkind'],
-  resign: ['always', 'grades', 'waive', 'skind'], p_claim: ['always', 'amount', 'ctype', 'grades'], p_adv: ['always', 'amount', 'grades'], p_arrear: ['always', 'amount'],
-  p_ded: ['always', 'amount', 'grades'], p_change: ['always', 'ckind'], p_fnf: ['always', 'amount'],
-  p_pip: ['always', 'amount'], // the prototype copies the arrear's (COND_OK.p_pip)
+  joining: ['always', 'budget', 'grades'], verify: ['always', 'grades'], leave: ['always', 'days', 'grades'], regularize: ['always', 'cnt', 'grades'], transfer: ['always', 'grades', 'tkind'],
+  resign: ['always', 'grades', 'waive', 'skind'], p_claim: ['always', 'amount', 'ctype', 'grades'], p_adv: ['always', 'amount', 'grades'], p_arrear: ['always', 'amount', 'grades'],
+  p_ded: ['always', 'amount', 'grades'], p_change: ['always', 'ckind', 'grades'], p_fnf: ['always', 'amount', 'grades'],
+  p_pip: ['always', 'amount', 'grades'], // the prototype copies the arrear's (COND_OK.p_pip)
   p_ack: ['always', 'grades'],
 };
 const TKINDS = ['Within city', 'Cross city', 'Cross state', 'Cross region'];
@@ -237,7 +240,7 @@ function titleOf(r: any, ctx: { offer?: any; locs?: { locs: any[]; cities: any[]
     case 'shortlist': return `Shortlist ${r.candidate_id} · ${r.designation ?? ''} · approve to send the candidate to the interview`;
     case 'interview': return `Interview of ${r.candidate_id} · the hiring manager records Selected or Not selected`;
     case 'verify': { const o = ctx.offer; return o ? `Joining verification · ${o.joining?.done ?? 0} of ${o.joining?.total ?? 0} mandatory items complete · ${Object.keys(o.docs || {}).length} documents uploaded` : 'Joining verification'; }
-    case 'leave': { const d = f.days ?? 1, roll = f.roll ?? d; return `${p.ltype}, ${d} day${d > 1 ? 's' : ''}${roll > d ? ` (${roll} in 30 days)` : ''} · ${fmtD(p.from)} to ${fmtD(p.to)}`; }
+    case 'leave': { if (p.short) return `Short leave, ${p.fromTime} to ${p.toTime} · ${fmtD(p.from)}`; const d = f.days ?? 1, roll = f.roll ?? d; return `${p.ltype}, ${d === 0.5 ? `half a day${p.halfOf ? ` (${p.halfOf} half)` : ''}` : `${d} day${d > 1 ? 's' : ''}`}${roll > d ? ` (${roll} in 30 days)` : ''} · ${fmtD(p.from)} to ${fmtD(p.to)}`; }
     case 'regularize': {
       // A "Roster changed" regularization names the change behind it (prototype makeWfReq).
       const x = r.rosterChange;
@@ -467,7 +470,38 @@ export function TeamCover({ from, to, teamOff, team, location, dept }: { from: s
       : <div style={{ marginTop: 4 }}>Nobody else in the team is off on these days or either side.</div>}</div>;
 }
 
+/** A short leave's length, "2h" or "1h 30m". */
+export const shortHrs = (p: any) => {
+  const m = (t: string) => { const [h, mm] = String(t || '').split(':').map(Number); return h * 60 + mm; };
+  const n = m(p.toTime) - m(p.fromTime);
+  return n > 0 ? `${Math.floor(n / 60) ? `${Math.floor(n / 60)}h` : ''}${n % 60 ? ` ${n % 60}m` : ''}`.trim() : '';
+};
+
+export const SHORT = 'Short leave';
+
+/** The leave payload as the server takes it: a short leave's times, a half day's half, else the dates. */
+export function leavePayload(cur: any, p: any, to: string) {
+  if (cur?.short) return { short: true, ltype: SHORT, from: p.from, to: p.from, fromTime: p.fromTime, toTime: p.toTime };
+  return { ltype: cur?.type, from: p.from, to, half: p.half || undefined, halfOf: p.half ? p.halfOf : undefined, doc: p.doc || undefined };
+}
+
 /** The prototype's leave count line: how many days the leave type counts, and the weekly offs and holidays inside. */
+/** What a paid day is for leave earned by working days (owner, 24 Nov 2026, evening: "Working days means Paid days for leaves"). */
+export const PAID_DAYS = 'paid days (present, half day 0.5, paid leave, weekly off and holiday; loss of pay days do not count)';
+/** 7 → "7th", 1 → "1st", 22 → "22nd"; a half number as it is ("10.5th"). */
+export const ordinal = (v: number) => `${v}${Number.isInteger(v) && (v % 100 < 11 || v % 100 > 13) ? (['th', 'st', 'nd', 'rd'][v % 10] ?? 'th') : 'th'}`;
+/** How a balance earned by working days was earned (owner, 24 Nov 2026; evening: paid days, credited the day after the
+ *  Nth paid day), from the balance's `worked`; '' for others. */
+export function workedLine(w: any): string {
+  if (!w) return '';
+  const n = (v: number, x: string) => `${v} ${x}${v === 1 ? '' : 's'}`;
+  const capped = w.earned > w.credit ? `, capped at ${w.cap} for the leave year` : '';
+  const upto = w.through ? `${n(w.days, 'paid day')} up to ${fmtD(w.through)}` : 'no paid day counted yet';
+  const last = w.credits?.length ? `, last credited on ${fmtD(w.credits[w.credits.length - 1].on)}` : '';
+  return `Earned by working days, ${n(w.per, 'day')} for every ${n(w.every, 'paid day')}, credited the day after the ${ordinal(w.every)} paid day: `
+    + `${w.credit} earned from ${upto}${last}${capped}; ${n(w.toNext, 'more paid day')} to the next block`;
+}
+
 export function leaveCountLine(ltype: string, days: number, offs: number, range: number): ReactNode {
   const hide = range - days;
   return <><b>{days === 0.5 ? 'Half a day' : `${days} day${days === 1 ? '' : 's'}`}</b> will be counted as {ltype.toLowerCase()}{offs ? `. ${offs} weekly off or holiday day${offs > 1 ? 's are' : ' is'} inside these dates${hide > 0 ? ` and ${hide > 1 ? 'are' : 'is'} not counted` : ' and counted'}` : ''}.</>;
@@ -480,7 +514,7 @@ type VDoc = { key: string; label: string; state: 'Mandatory' | 'Optional' | 'Oth
 const vStr = (m: Record<string, unknown> | null | undefined): Record<string, string> => Object.fromEntries(Object.entries(m || {}).filter(([, v]) => v != null && typeof v !== 'object').map(([k, v]) => [k, String(v)]));
 const vApplies = (f: VField, d: Record<string, string>) => f.key === 'uan' ? d.uanAvail === 'Yes'
   : f.key === 'spouse' ? d.marital === 'Married'
-    : f.key === 'pfChoice' ? d.uanAvail === 'No' && Number(d.gross) > (f.threshold || 25000)
+    : f.key === 'pfChoice' ? (d.pfWant === 'No' && d.uanAvail !== 'Yes') || (d.uanAvail === 'No' && Number(d.gross) > (f.threshold || 25000))
       : true;
 
 /** Open a document of a joining verification in a new tab (through the request, so whoever may see it may open it). */
@@ -496,11 +530,16 @@ async function openVerifyDoc(id: string, doc: string) {
 function useVerifyLists(on: boolean) {
   const get = (path: string) => (on ? api<any>(path).catch(() => null) : Promise.resolve(null));
   const shifts = useLoad(() => get('/masters/shift?status=Active'), [on]);
+  const depts = useLoad(() => get('/masters/department'), [on]);
   const modes = useLoad(() => get('/masters/attendance_mode?status=Active'), [on]);
   const quals = useLoad(() => get('/masters/qualification?status=Active'), [on]);
-  return (f: VField): [string, string][] | null => {
+  return (f: VField, d: Record<string, string>): [string, string][] | null => {
     switch (f.key) {
-      case 'shift': return shifts.data ? (shifts.data as any[]).map((s) => [s.code, `${s.name} (${s.start_time}–${s.end_time})`]) : null;
+      case 'shift': { // the shifts mapped to the joiner's department and location (shift_maps.go)
+        if (!shifts.data) return null;
+        const deptId = ((depts.data as any[]) ?? []).find((x) => x.name === d.dept)?.id ?? '';
+        return (shifts.data as any[]).filter((s) => shiftOffered(s, deptId, d.loc ?? '')).map((s) => [s.code, `${s.name} (${s.start_time}–${s.end_time}${s.start2_time ? ` + ${s.start2_time}–${s.end2_time}` : ''})`]);
+      }
       case 'attMode': return modes.data ? (modes.data as any[]).map((x) => [x.name, x.name]) : null;
       case 'qual': return quals.data ? (quals.data as any[]).map((x) => [x.name, x.name]) : null;
     }
@@ -541,7 +580,7 @@ function VerifyPanel({ id, o, canEdit, onSaved }: { id: string; o: any; canEdit:
     const set = (x: string) => setD({ ...d, [f.key]: x });
     // Reporting managers: any active employee, found by typing (PersonPicker).
     if (f.key === 'l1' || f.key === 'l2') return <PersonPicker label={f.label} value={val} onChange={(id) => set(id)} search="&status=Active" placeholder="Select" />;
-    const opts = lists(f);
+    const opts = lists(f, d);
     if (opts) {
       const list = val && !opts.some(([k]) => k === val) ? [[val, val] as [string, string], ...opts] : opts;
       return <select aria-label={f.label} value={val} onChange={(e) => set(e.target.value)} style={{ width: '100%' }}><option value="">Select</option>{list.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>;
@@ -750,8 +789,10 @@ export function NewRequest({ wf, title, onClose, onDone }: { wf: string; title?:
   const sep = useLoad(() => (wf === 'resign' ? api(`/me/separation${who !== myId ? `?employeeId=${who}` : ''}`) : Promise.resolve(null)), [wf, who]);
   // Leave types and balances come from the employee's leave plan.
   const bal = useLoad(() => (wf === 'leave' ? api(`/leave/balances/${who === myId ? 'me' : who}`).catch(() => null) : Promise.resolve(null)), [wf, who]);
-  const ltypes: any[] = bal.data?.types ?? [];
+  // A short leave (part of a day) is offered as the type "Short leave" when the employee's leave plan allows it.
+  const ltypes: any[] = [...(bal.data?.types ?? []), ...(bal.data?.short ? [{ type: SHORT, short: true }] : [])];
   const lt = ltypes.find((t) => t.type === p.ltype) ?? ltypes[0];
+  const isShort = !!lt?.short;
   // The system record for the day being corrected.
   const ym = String(p.date || '').slice(0, 7);
   const recOk = wf === 'regularize' && !!ym && (who === myId || can('att.records'));
@@ -769,7 +810,8 @@ export function NewRequest({ wf, title, onClose, onDone }: { wf: string; title?:
   const body = () => {
     let x: Record<string, any> = {};
     // scoreOverride: HR's reason for letting this one request through a low discipline score (audited).
-    if (wf === 'leave') x = { ltype: lt?.type ?? p.ltype, from: p.from, to: p.to || p.from, note: p.note, doc: p.doc, scoreOverride: p.scoreOverride?.trim() || undefined };
+    if (wf === 'leave') x = { ...leavePayload(lt, { ...p, halfOf: p.halfOf || 'first' }, p.half ? p.from : p.to || p.from), note: p.note, doc: isShort ? undefined : p.doc,
+      scoreOverride: p.scoreOverride?.trim() || undefined };
     if (wf === 'regularize') x = { date: p.date, rtype, reason: p.reason, in: p.in, out: p.out, note: p.note };
     if (wf === 'transfer') x = { toLocation: p.toLocation || cityLocs[0]?.id, toDepartment: p.toDepartment, toDesignation: p.toDesignation, toManager: p.toManager, effective: p.effective, note: p.note };
     if (wf === 'resign') {
@@ -817,10 +859,14 @@ export function NewRequest({ wf, title, onClose, onDone }: { wf: string; title?:
         {wf === 'leave' && !(noLeave && solo) && <div className="form">
           {empSel}
           <Field label="Leave type"><select value={lt?.type ?? ''} onChange={(e) => set('ltype', e.target.value)}>{ltypes.map((t) => <option key={t.type}>{t.type}</option>)}</select></Field>
-          <Field label="From"><input type="date" value={p.from || ''} onChange={(e) => set('from', e.target.value)} /></Field>
-          <Field label="To"><input type="date" value={p.to || p.from || ''} onChange={(e) => set('to', e.target.value)} /></Field>
+          <Field label={isShort ? 'Date' : 'From'}><input type="date" value={p.from || ''} onChange={(e) => set('from', e.target.value)} /></Field>
+          {isShort ? <><Field label="From time"><input type="time" value={p.fromTime || ''} onChange={(e) => set('fromTime', e.target.value)} /></Field>
+            <Field label="To time"><input type="time" value={p.toTime || ''} onChange={(e) => set('toTime', e.target.value)} /></Field></>
+            : !p.half && <Field label="To"><input type="date" value={p.to || p.from || ''} onChange={(e) => set('to', e.target.value)} /></Field>}
+          {bal.data?.half && !isShort && <Field label="Half day"><select value={p.half ? p.halfOf || 'first' : ''} onChange={(e) => setP({ ...p, half: !!e.target.value, halfOf: e.target.value || undefined })}>
+            <option value="">No, full days</option><option value="first">First half on leave</option><option value="second">Second half on leave</option></select></Field>}
           <label className="field full"><span>Reason</span><input type="text" value={p.note || ''} onChange={(e) => set('note', e.target.value)} /></label>
-          {lt?.docAfter > 0 && <label className="field full"><span>{lt.docLabel || 'Document'} (needed when more than {lt.docAfter} day{lt.docAfter > 1 ? 's' : ''})</span>
+          {!isShort && lt?.docAfter > 0 && <label className="field full"><span>{lt.docLabel || 'Document'} (needed when more than {lt.docAfter} day{lt.docAfter > 1 ? 's' : ''})</span>
             <input type="file" accept="application/pdf,image/png,image/jpeg" onChange={async (e) => {
               const f = e.target.files?.[0]; if (!f) return;
               try { const d = await uploadDoc('employee', who, `leave-${Date.now()}`, f); setP({ ...p, doc: d.id }); setDocName(f.name); } catch (x: any) { toast(x.message); }
@@ -865,9 +911,10 @@ export function NewRequest({ wf, title, onClose, onDone }: { wf: string; title?:
         </>}
       </div>
       <div className="card" style={{ marginTop: 14 }}>
-        {wf === 'leave' && lt && p.from && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>{lt.type} balance on {fmtD(p.from)}: <b>{lt.balance?.on ? lt.balance.bal : 'not applicable'}</b>{lt.balance?.on ? ` (credited ${lt.balance.credit}, used ${lt.balance.used}, waiting ${lt.balance.pending})` : ''}</p>}
+        {wf === 'leave' && isShort && bal.data?.short && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>Short leave: up to {bal.data.short.maxHours} hours, {bal.data.short.perMonth} a month. No balance is used.</p>}
+        {wf === 'leave' && lt && !isShort && p.from && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>{lt.type} balance on {fmtD(p.from)}: <b>{lt.balance?.on ? lt.balance.bal : 'not applicable'}</b>{lt.balance?.on ? ` (credited ${lt.balance.credit}, used ${lt.balance.used}, waiting ${lt.balance.pending})` : ''}{lt.balance?.worked && <><br /><span className="mute" style={{ fontSize: 12 }}>{workedLine(lt.balance.worked)}</span></>}</p>}
         {noLeave && !solo && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>No leave in this employee's plan.</p>}
-        {wf === 'leave' && preview?.days != null && lt && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>{leaveCountLine(lt.type, preview.days, preview.offs ?? 0, preview.range ?? 0)}</p>}
+        {wf === 'leave' && preview?.days != null && lt && !isShort && <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>{leaveCountLine(lt.type, preview.days, preview.offs ?? 0, preview.range ?? 0)}</p>}
         {wf === 'leave' && preview?.team != null && p.from && <div style={{ marginBottom: 12 }}><TeamCover from={p.from} to={p.to || p.from} teamOff={preview.teamOff} team={preview.team} location={preview.location} dept={preview.department} /></div>}
         {wf === 'regularize' && p.date && month.data && <><h3>System record for {fmtD(p.date)}</h3>
           <p className="ink2" style={{ margin: '0 0 12px', fontSize: 13 }}>In <b>{rec?.in || '—'}</b> · Out <b>{rec?.out || '—'}</b> · {rec?.src || 'No data'} {rec?.status && <Pill k={rec.tone || 'n'}>{rec.status}</Pill>}</p></>}
@@ -896,29 +943,57 @@ const COMPANY_ROLES = ['Payroll', 'Payroll Manager', 'CHRO', 'Finance Head'];
 const inOrder = (keys: string[], order: string[]) => [...order.filter((k) => keys.includes(k)), ...keys.filter((k) => !order.includes(k))];
 const NameCell = ({ p }: { p?: { id: string; name: string } }) => (p?.id ? <>{p.name}</> : <span style={{ color: 'var(--bad,#b3261e)', fontWeight: 600 }}>Not mapped</span>);
 
+/** One approver name, picked in the cell (owner, 26 Nov 2026) by who may edit Role mapping: saved as a role mapping
+ *  (PUT /approvals/approvers/slot), so the person gets that role's access there. A name already set moves to the new
+ *  person; "Not mapped" clears it. Without the right the cell stays read-only. */
+function SlotCell({ p, role, level, place, where, edit, onSaved }: { p?: { id: string; name: string }; role: string; level: string; place: string; where: string; edit: boolean; onSaved: () => void }) {
+  const [busy, setBusy] = useState(false);
+  if (!edit) return <NameCell p={p} />;
+  const cur = p?.id ? p : null;
+  const change = async (id: string, x: Person | null) => {
+    if (id === (cur?.id ?? '')) return;
+    const at = level === 'Company' ? 'the whole company' : where;
+    const lines = [x ? `${x.name} (${x.id}) will be mapped as ${role} for ${at} on Access › Role mapping and get the ${role} role's access there.` : `${role} for ${at} will be Not mapped.`];
+    if (cur) lines.push(`${cur.name} (${cur.id}) loses ${role} for ${at} (their ${role} mapping is switched off if it had no other place).`);
+    if (!confirm(lines.join('\n\n'))) return;
+    setBusy(true);
+    try {
+      await api('/approvals/approvers/slot', { method: 'PUT', body: { role, level, place, employeeId: id || null } });
+      toast(x ? `${x.name} is now ${role} for ${at}` : `${role} for ${at} cleared`);
+      onSaved();
+    } catch (e: any) { toast(e.message || 'Not saved'); } finally { setBusy(false); }
+  };
+  return <PersonPicker label={`${role} for ${where}`} value={cur?.id ?? ''} selected={cur} search="&status=Active" empty="Not mapped" disabled={busy}
+    onChange={change} style={{ minWidth: 210 }} />;
+}
+
 function ApproverNames() {
   const { can } = useAuth();
   const nav = useNavigate();
-  const { data: d, error } = useLoad(() => api('/approvals/approvers'), []);
+  const { data: d, error, reload } = useLoad(() => api('/approvals/approvers'), []);
+  const [bulk, setBulk] = useState(false);
+  const edit = can('acc.users', 2);
   if (!d) return <Loading error={error} />;
   const locRoles = inOrder(Object.keys(d.locations[0]?.people || {}), LOC_ROLES);
   return <>
-    <p className="ink2" style={{ margin: '0 0 14px', fontSize: 13.5 }}>These names come from Access control, under Role mapping. To change an approver, map the role there. The Line Manager comes from the employee record.</p>
+    <p className="ink2" style={{ margin: '0 0 14px', fontSize: 13.5 }}>These names come from Access control, under Role mapping. {edit ? 'Pick a name in a cell to map that person to the role there (they get the role’s access); pick Not mapped to clear it.' : 'To change an approver, map the role there.'} The Line Manager comes from the employee record.</p>
     {d.gaps.length ? <div className="note bad" style={{ marginBottom: 14 }}>{d.gaps.length} not mapped: {d.gaps.slice(0, 8).join(', ')}{d.gaps.length > 8 ? '…' : ''}</div>
       : <div className="note ok" style={{ marginBottom: 14 }}>Every approver in use has a name.</div>}
     {d.overlaps?.length > 0 && <div className="note" style={{ marginBottom: 14 }}><b>Check overlaps:</b> {d.overlaps.slice(0, 4).join(' ')}</div>}
-    {can('acc.users') && <div style={{ marginBottom: 14 }}><button className="btn" onClick={() => nav('/access?tab=users')}>Open Role mapping</button></div>}
+    {can('acc.users') && <div className="row" style={{ marginBottom: 14, gap: 8 }}><button className="btn" onClick={() => nav('/access?tab=users')}>Open Role mapping</button>
+      {can('acc.users', 2) && <button className="btn primary" onClick={() => setBulk(true)}>Bulk upload names</button>}</div>}
+    {bulk && <BulkModal tpl="apprnames" title="Bulk upload: approver names" onClose={() => setBulk(false)} onApplied={() => reload()} />}
     <div className="card" style={{ marginBottom: 14 }}><h3>Properties</h3><div className="tw"><table>
       <thead><tr><th>Property</th>{locRoles.map((r) => <th key={r}>{r}</th>)}</tr></thead>
-      <tbody>{d.locations.map((l: any) => <tr key={l.id}><td><b>{l.name}</b><div className="mute" style={{ fontSize: 12 }}>{l.path}</div></td>{locRoles.map((r) => <td key={r}><NameCell p={l.people[r]} /></td>)}</tr>)}</tbody>
+      <tbody>{d.locations.map((l: any) => <tr key={l.id}><td><b>{l.name}</b><div className="mute" style={{ fontSize: 12 }}>{l.path}</div></td>{locRoles.map((r) => <td key={r}><SlotCell p={l.people[r]} role={r} level="Property" place={l.id} where={l.name} edit={edit} onSaved={reload} /></td>)}</tr>)}</tbody>
     </table></div></div>
     <div className="card" style={{ marginBottom: 14 }}><h3>Departments</h3><div className="tw"><table>
       <thead><tr><th>Department</th><th>Approval flow</th><th>Function Head</th><th>HRBP (corporate departments)</th></tr></thead>
       <tbody>{d.departments.map((x: any) => <tr key={x.id}><td><b>{x.name}</b></td><td><Pill k={x.corporate ? 'info' : 'n'}>{x.corporate ? 'Corporate' : 'Operations'}</Pill></td>
-        <td><NameCell p={x.people['Function Head']} /></td><td>{x.corporate ? <NameCell p={x.people.HRBP} /> : <span className="mute">Uses the property HRBP</span>}</td></tr>)}</tbody>
+        <td><SlotCell p={x.people['Function Head']} role="Function Head" level="Department" place={x.id} where={x.name} edit={edit} onSaved={reload} /></td><td>{x.corporate ? <SlotCell p={x.people.HRBP} role="HRBP" level="Corporate department" place={x.id} where={x.name} edit={edit} onSaved={reload} /> : <span className="mute">Uses the property HRBP</span>}</td></tr>)}</tbody>
     </table></div></div>
     <div className="card"><h3>Company-wide</h3><p className="ink2" style={{ margin: '0 0 10px', fontSize: 13 }}>The Receiving Function Head is the Function Head of the receiving department.</p>
-      <div className="tw"><table><thead><tr><th>Role</th><th>Name</th></tr></thead><tbody>{inOrder(Object.keys(d.company), COMPANY_ROLES).map((r) => <tr key={r}><td><b>{r}</b></td><td><NameCell p={d.company[r]} /></td></tr>)}</tbody></table></div></div>
+      <div className="tw"><table><thead><tr><th>Role</th><th>Name</th></tr></thead><tbody>{inOrder(Object.keys(d.company), COMPANY_ROLES).map((r) => <tr key={r}><td><b>{r}</b></td><td><SlotCell p={d.company[r]} role={r} level="Company" place="COMPANY" where="the whole company" edit={edit} onSaved={reload} /></td></tr>)}</tbody></table></div></div>
   </>;
 }
 
@@ -1014,23 +1089,42 @@ function CheckFlow({ goNames }: { goNames?: () => void }) {
   </>;
 }
 
-/** Every flow on one page, read as sentences: each rule in use, in order, with its approvers. */
+/** Ticks or clears a flow's "Approval required" in All flows at a glance (21 Nov 2026). Cleared: a new request of this type and flow
+ *  goes to nobody and is approved at once; requests already waiting keep their approvers (HR can skip them). Asks
+ *  first before clearing. Returns how many requests wait, or null when not changed. */
+async function putHierarchy(key: string, flow: string, on: boolean): Promise<number | null> {
+  if (!on && !confirm(`Untick "Approval hierarchy required" for ${wfName(key)}, ${flow} flow?\n\nNo approval: every new request of this type in this flow is approved at once, nobody is asked. The rules and approvers are kept for when you tick it again. Requests already waiting stay with their approvers (HR can skip them).`)) return null;
+  try {
+    const r = await api<{ waiting: number }>(`/approvals/flows/${key}/${flow}/hierarchy`, { method: 'PUT', body: { on } });
+    toast(on ? 'Approval hierarchy on. The rules apply again' : 'No approval needed. New requests are approved automatically');
+    return r.waiting;
+  } catch (x: any) { toast(x.message || 'Not saved'); return null; }
+}
+
+/** Every flow on one page, read as sentences: each rule in use, in order, with its approvers. Who sets up approval
+ *  flows ticks or clears "Approval required" on each flow here. */
 function FlowGlance() {
-  const { data, error } = useLoad(() => api<any[]>('/approvals/flows'), []);
+  const { can } = useAuth();
+  const edit = can('appr.setup', 2);
+  const { data, error, reload } = useLoad(() => api<any[]>('/approvals/flows'), []);
   if (!data) return <Loading error={error} />;
+  const tick = async (m: any, on: boolean) => { if ((await putHierarchy(m.wf, m.flow, on)) !== null) reload(); };
   const groups: Record<string, any[]> = {};
   data.forEach((m) => { const b = m.wf.startsWith('leave') ? 'leave' : m.wf; (groups[b] ||= []).push(m); });
   const keys = inOrder(Object.keys(groups), GLANCE);
   const flowRank = (f: string) => (f === 'Operations' ? 0 : 1);
   return <div className="card"><h3>All flows at a glance</h3>
-    <p className="ink2" style={{ margin: '0 0 10px', fontSize: 13 }}>Each flow is a list of rules, checked from the top. The first rule that fits a request decides who approves. Open a request type to see it. Change it in the Approval flow tab.</p>
+    <p className="ink2" style={{ margin: '0 0 10px', fontSize: 13 }}>Each flow is a list of rules, checked from the top. The first rule that fits a request decides who approves. Open a request type to see it. Change it in the Approval flow tab.{edit && <> Untick <b>Approval required</b> on a flow and its requests are approved automatically, nobody is asked.</>}</p>
     {keys.map((b) => <details key={b} style={{ borderTop: '1px solid var(--line)', padding: '8px 0' }}>
       <summary style={{ cursor: 'pointer', fontWeight: 600 }}>{wfName(b)}</summary>
       <div className="tw" style={{ marginTop: 8 }}><table><thead><tr><th>Flow</th><th>Rule</th><th>Approvers, in order</th><th>Also told</th></tr></thead><tbody>
-        {[...groups[b]].sort((x, y) => x.wf.localeCompare(y.wf) || flowRank(x.flow) - flowRank(y.flow)).flatMap((m) => [m.hierarchy_off
-          ? <tr key={m.wf + m.flow + 'skip'} style={{ verticalAlign: 'top' }}><td className="ink2" style={{ fontSize: 12.5 }}>{b === 'leave' ? wfName(m.wf) + ' · ' : ''}{m.flow}</td>
-            <td colSpan={3}><b>HR can skip approval</b><div className="mute" style={{ fontSize: 12 }}>Requests go to the approvers below; HR can skip with a reason.{m.waiting > 0 && ` ${m.waiting} waiting.`}</div></td></tr>
-          : null, ...(m.rules as Rule[]).map((x, i) => {
+        {[...groups[b]].sort((x, y) => x.wf.localeCompare(y.wf) || flowRank(x.flow) - flowRank(y.flow)).flatMap((m) => [
+          <tr key={m.wf + m.flow + 'req'} style={{ verticalAlign: 'top', background: 'var(--bg2, transparent)' }}><td className="ink2" style={{ fontSize: 12.5 }}>{b === 'leave' ? wfName(m.wf) + ' · ' : ''}{m.flow}</td>
+            <td colSpan={3}>{edit
+              ? <label className="chkl" style={{ fontWeight: 600 }}><input type="checkbox" checked={!m.hierarchy_off} onChange={(e) => tick(m, e.target.checked)} />Approval required</label>
+              : <b>{m.hierarchy_off ? 'No approval' : 'Approval required'}</b>}
+              {m.hierarchy_off && <div className="mute" style={{ fontSize: 12 }}>Every new request is approved automatically, nobody is asked.{m.waiting > 0 && ` ${m.waiting} raised before still ${m.waiting === 1 ? 'waits' : 'wait'} (HR can skip).`}</div>}</td></tr>,
+          ...(m.hierarchy_off ? [] : m.rules as Rule[]).map((x, i) => {
           const last = i === m.rules.length - 1;
           if (!x.on && !last) return null;
           return <tr key={m.wf + m.flow + x.id} style={{ verticalAlign: 'top' }}><td className="ink2" style={{ fontSize: 12.5 }}>{b === 'leave' ? wfName(m.wf) + ' · ' : ''}{m.flow}</td>
@@ -1216,7 +1310,6 @@ function TestRequest({ wf, path, grades, saves }: { wf: string; path: string; gr
     <div className="row" style={{ marginTop: 10 }}><button className="btn" onClick={run}>Test</button></div>
     {err && <div className="note bad" style={{ marginTop: 10 }}>{err}</div>}
     {res && <div id="flow-test-result" style={{ marginTop: 10 }}>
-      {res.hierarchyOff && <div className="note warn" style={{ marginBottom: 6 }}>Approval hierarchy not required for this flow: the request goes to the approvers below, and HR can skip approval with a reason.</div>}
       <p style={{ margin: '0 0 6px', fontSize: 13 }}>{res.otherwise ? <>No rule fits, so <b>Otherwise</b> decides.</> : <>Rule {res.rule} decides: <b>{res.label}</b></>}</p>
       {res.chain.length ? <Chain steps={res.chain} /> : <div className="note">Nobody needs to approve. The request is approved automatically.</div>}
       {res.notify.length > 0 && <p className="mute" style={{ fontSize: 12.5, margin: '6px 0 0' }}>Also told: {res.notify.map((n: any) => n.role).join(', ')}</p>}
@@ -1233,6 +1326,8 @@ function FlowEditor({ goNames }: { goNames: () => void }) {
   const grades = useLoad(() => api<any[]>('/masters/grade?status=Active').then((l) => l.map((g) => g.name as string)), []);
   const names = useLoad(() => api('/approvals/approvers'), []);
   const settings = useLoad(() => api<{ slaHours: number }>('/approvals/settings'), []);
+  const { can } = useAuth();
+  const [bulkNames, setBulkNames] = useState(false);
   const [wf, setWf] = useState('joining');
   const [flow, setFlow] = useState<'Operations' | 'Corporate'>('Operations');
   const [grp, setGrp] = useState<'C' | 'P'>('C');
@@ -1244,8 +1339,6 @@ function FlowEditor({ goNames }: { goNames: () => void }) {
   /** What stops the list on screen from being saved: the rule it is about (if any) and the message. */
   const [problem, setProblem] = useState<{ id?: string; msg: string } | null>(null);
   const [saves, setSaves] = useState(0);
-  /** The "Approval hierarchy" tick as changed here, by flow: off, and how many requests raised before still wait. */
-  const [hier, setHier] = useState<Record<string, { off: boolean; waiting: number }>>({});
   const saved = useRef<Record<string, FlowDraft>>({});
   /** Rules added here that are switched off only because they have no approver yet. */
   const fresh = useRef<Set<string>>(new Set());
@@ -1271,17 +1364,6 @@ function FlowEditor({ goNames }: { goNames: () => void }) {
   const gl = grades.data || [];
   /** Moving to another flow drops a change that is not saved: ask first. */
   const leave = (go: () => void) => { if (!problem || confirm('Your last change to this flow is not saved. Leave it and lose it?')) go(); };
-  const flowRow = data?.find((x) => x.wf === key && x.flow === flow);
-  const hs = hier[k] ?? { off: !!flowRow?.hierarchy_off, waiting: +(flowRow?.waiting ?? 0) };
-  const setHierarchy = async (on: boolean) => {
-    if (!on && !confirm(`Untick "Approval hierarchy required" for ${wfName(key)}, ${flow} flow?\n\nRequests of this type in this flow still go to the approvers as usual, but HR gets a "Skip approval" option (with a reason) when raising one and on one already waiting. The rules and approvers stay as they are.`)) return;
-    try {
-      const r = await api<{ waiting: number }>(`/approvals/flows/${k}/hierarchy`, { method: 'PUT', body: { on } });
-      setHier((h) => ({ ...h, [k]: { off: !on, waiting: r.waiting } }));
-      setSaves((n) => n + 1);
-      toast(on ? 'Approval hierarchy on. The rules apply again' : 'Approval hierarchy not required. HR can skip approval');
-    } catch (x: any) { toast(x.message || 'Not saved'); }
-  };
   const putBack = () => { const s = lastSaved(); setDraft(s ? structuredClone(s) : null); setProblem(null); };
   const save = async (d: FlowDraft, msg = 'Saved') => {
     setDraft(d);
@@ -1328,25 +1410,20 @@ function FlowEditor({ goNames }: { goNames: () => void }) {
     <>
       <Tabs tabs={wfs.map((w) => [w, wfName(w)] as [string, string])} value={wf} onChange={(w) => leave(() => setWf(w))} />
       <p className="ink2" style={{ margin: '0 0 14px', fontSize: 13.5 }}>{WFNOTE[wf]}</p>
-      {gaps.length > 0 && <div className="note bad" style={{ marginBottom: 14 }}><b>Approver names missing:</b> {gaps.slice(0, 8).join(', ')}{gaps.length > 8 ? ` and ${gaps.length - 8} more` : ''}. <button className="btn sm" onClick={goNames}>Add names</button></div>}
+      {gaps.length > 0 && <div className="note bad" style={{ marginBottom: 14 }}><b>Approver names missing:</b> {gaps.slice(0, 8).join(', ')}{gaps.length > 8 ? ` and ${gaps.length - 8} more` : ''}. <button className="btn sm" onClick={goNames}>Add names</button>{can('acc.users', 2) && <> <button className="btn sm" onClick={() => setBulkNames(true)}>Bulk upload names</button></>}</div>}
+      {bulkNames && <BulkModal tpl="apprnames" title="Bulk upload: approver names" onClose={() => setBulkNames(false)} onApplied={() => names.reload()} />}
       <div className="card" style={{ marginBottom: 14 }}>
         <div className="row sp" style={{ marginBottom: 10, flexWrap: 'wrap' }}>
           <div className="seg">{(['Operations', 'Corporate'] as const).map((f) => <button key={f} className={flow === f ? 'on' : ''} onClick={() => leave(() => setFlow(f))}>{f} flow</button>)}</div>
           {wf === 'leave' && <div className="seg">{([['C', 'Casual and sick leave'], ['P', 'Privilege and other leave']] as const).map(([g, l]) => <button key={g} className={grp === g ? 'on' : ''} onClick={() => leave(() => setGrp(g))}>{l}</button>)}</div>}
         </div>
-        {flowRow && <div style={{ marginBottom: 12 }}>
-          <label className="chkl" style={{ fontWeight: 600 }}><input type="checkbox" checked={!hs.off} onChange={(e) => setHierarchy(e.target.checked)} />Approval hierarchy required (untick to let HR skip approval)</label>
-          <div className="mute" style={{ fontSize: 12.5, marginTop: 2 }}>Ticked: {wf === 'interview' ? 'the hiring manager takes the interview' : 'the rules below decide who approves'}, and nobody can skip it. Not ticked: requests still go to the approvers, but HR (HR Admin, HR roles with Approval flows at Edit, or the HR person who raised it) can skip approval with a reason.</div>
-          {hs.off && <div className="note warn" style={{ marginTop: 8 }}><b>HR can skip approval.</b> A skipped request is approved at once, with “Approval skipped by &lt;name&gt;: &lt;reason&gt;” in its history.
-            {hs.waiting > 0 && ` ${hs.waiting} ${hs.waiting === 1 ? 'request is' : 'requests are'} waiting now.`}</div>}
-        </div>}
         {wf === 'interview' ? null : <>
         {wf === 'leave' && <p className="mute" style={{ margin: '0 0 8px', fontSize: 12.5 }}>Which leave type uses which list is set in the work policy, under leave rules.</p>}
         <p className="mute" style={{ margin: '0 0 10px', fontSize: 12.5 }}>Rules are checked from the top. The <b>first rule that fits</b> the request decides who approves, one after the other, and who is also told. If no rule fits, <b>Otherwise</b> decides. A rule that is switched off is skipped. Operations or corporate is set on the department.</p>
         {problem && <div className="note bad" role="alert" style={{ marginBottom: 10 }}><b>Not saved.</b> {problem.msg}. Your changes to this flow are kept on screen but are not saved until this is fixed.{' '}
           <button className="btn sm" onClick={putBack}>Put back the saved rules</button></div>}
         {!data ? <Loading /> : !draft ? <p className="mute">This flow has no rules yet.</p> : <>
-          <div id="flow-rules" style={hs.off ? { opacity: 0.6 } : undefined}>{rules.map((r, i) => {
+          <div id="flow-rules">{rules.map((r, i) => {
             const last = i === n - 1, isOpen = open === r.id, bad = problem?.id === r.id;
             const named = whenText(r.when);
             return <div key={r.id} className={`flow-rule${bad ? ' bad' : ''}`} style={{ borderTop: '1px solid var(--line)', padding: '10px 0', opacity: r.on || last ? 1 : 0.5 }}>

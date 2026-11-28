@@ -178,7 +178,7 @@ func (s *Server) statRows(ctx context.Context, c *Ctx, file, from, to, ym, city 
 			if gross == 0 {
 				gross = pc.grossAt(id, str(p["doj"])[:7])
 			}
-			res := calc.Calc(calc.Input{Type: typ, Gross: gross, Structure: st})
+			res := calc.Calc(calc.Input{Type: typ, Gross: gross, Structure: st, AllIn: pc.allIn(ym)})
 			joined := str(p["doj"]) >= from && str(p["doj"]) <= to
 			left := p["status"] == "Inactive" && str(p["lwd"]) >= from && str(p["lwd"]) <= to
 			death := strings.Contains(strings.ToLower(str(p["exit_reason"])), "death") || strings.Contains(strings.ToLower(str(p["exit_reason"])), "disab")

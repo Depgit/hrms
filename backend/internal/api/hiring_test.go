@@ -128,7 +128,8 @@ func TestHireOfferVersions(t *testing.T) {
 	if s, _ := c.do("POST", "/api/offers", "EMP-1004", "HRBP", map[string]any{"data": od, "candidate": si}); s != 400 {
 		t.Fatal("the accepted version is frozen")
 	}
-	if a := hireActions(x); !strings.Contains(a, "Shortlisted | Shortlist approved | Selected at the interview | Offer v1 raised | Offer v1 approved | Offer v1 sent | Question about the breakup (v1) | Offer v2 raised | Offer v2 approved | Offer v2 sent | Offer accepted: Offer ID OI-0001") {
+	// "Offer v1 raised" and "PF choice on the offer" are written in one transaction at the same time: either order.
+	if a := strings.Replace(hireActions(x), "PF choice on the offer | Offer v1 raised", "Offer v1 raised | PF choice on the offer", 1); !strings.Contains(a, "Shortlisted | Shortlist approved | Selected at the interview | Offer v1 raised | PF choice on the offer | Offer v1 approved | Offer v1 sent | Question about the breakup (v1) | Offer v2 raised | Offer v2 approved | Offer v2 sent | Offer accepted: Offer ID OI-0001") {
 		t.Fatalf("timeline: %s", a)
 	}
 }

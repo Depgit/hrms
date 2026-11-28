@@ -299,7 +299,7 @@ func weekOffLine(s policy.Settings) string {
 func days(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
 
 // leaveLine is the prototype's plText and clText for the plan's leave type.
-func leaveLine(cfg *leave.TypeCfg, typ, short string, pl bool) string {
+func leaveLine(cfg *leave.TypeCfg, lv leave.LV, name, typ, short string, pl bool) string {
 	if cfg == nil || !cfg.On || (len(cfg.Types) > 0 && !containsStr(cfg.Types, typ)) || !calc.RulesFor(calc.EmploymentType(typ)).Leave {
 		return short + " not applicable"
 	}
@@ -312,7 +312,13 @@ func leaveLine(cfg *leave.TypeCfg, typ, short string, pl bool) string {
 		if cfg.Catchup {
 			back = " with back-dated credit"
 		}
+		if blk, in := lv.BlockFor(name, *cfg); in {
+			return fmt.Sprintf("%s earned by working days, %s, accrues %s%s", short, blk.Text(cfg.Days), from, back)
+		}
 		return fmt.Sprintf("%s %s a year, accrues %s%s", short, days(cfg.Days), from, back)
+	}
+	if blk, in := lv.BlockFor(name, *cfg); in {
+		return fmt.Sprintf("%s earned by working days, %s", short, blk.Text(cfg.Days))
 	}
 	credit := "credited upfront"
 	if cfg.Credit == "monthly" {
@@ -347,8 +353,12 @@ func candidatePolicy(ctx context.Context, q store.Q, empID string, j offerJob) *
 	}
 	p, via := ts.policyFor(e)
 	out := &offerPolicy{ID: p.ID, Name: p.Name, Via: via, WeekOff: weekOffLine(p.S), Probation: p.S.ProbMonths(e.Grade)}
-	out.PL = leaveLine(ts.typeCfg(p, "Privilege leave"), typ, "PL", true)
-	out.CL = leaveLine(ts.typeCfg(p, "Casual leave"), typ, "CL", false)
+	var lv leave.LV
+	if pl := ts.plan(p); pl != nil {
+		lv = pl.LV
+	}
+	out.PL = leaveLine(ts.typeCfg(p, "Privilege leave"), lv, "Privilege leave", typ, "PL", true)
+	out.CL = leaveLine(ts.typeCfg(p, "Casual leave"), lv, "Casual leave", typ, "CL", false)
 	return out
 }
 
@@ -609,20 +619,19 @@ func ui2CompSameText(v string) bson.M {
 	return bson.M{"$regex": "^" + regexp.QuoteMeta(v) + "$", "$options": "i"}
 }
 
-// managerRef finds an active employee by Employee ID or by exact name (the name must be unique).
+// managerRef finds an active employee by Employee ID only: never by name, people share names (owner, 28 Nov 2026).
+// "Name (EMP-1002)" as the drop-downs write it gives the ID in brackets.
 func managerRef(ctx context.Context, q store.Q, v string) (string, string) {
-	if e, _ := q.C("employee").FindOne(ctx, bson.M{"_id": ui2CompSameText(v), "status": "Active"}, options.FindOne().SetProjection(compFields("id"))); e != nil {
+	if m := reIDInBrackets.FindStringSubmatch(v); m != nil {
+		v = m[1]
+	}
+	if e, _ := q.C("employee").FindOne(ctx, bson.M{"_id": ui2CompSameText(strings.TrimSpace(v)), "status": "Active"}, options.FindOne().SetProjection(compFields("id"))); e != nil {
 		return str(e["id"]), ""
 	}
-	ids, _ := q.C("employee").Find(ctx, bson.M{"name": ui2CompSameText(v), "status": "Active"}, options.Find().SetProjection(compFields("id")).SetLimit(2))
-	switch len(ids) {
-	case 1:
-		return str(ids[0]["id"]), ""
-	case 0:
-		return "", "unknown"
-	}
-	return "", "matches more than one employee. Give the Employee ID"
+	return "", "is not an active Employee ID. Give the manager's Employee ID (names are not used)"
 }
+
+var reIDInBrackets = regexp.MustCompile(`\(([A-Za-z]+-?\d+)\)\s*$`)
 
 // bulkNewEmp checks one row of "Import employees" (prototype newEmpValidate) and creates the employee.
 // Rows are created inside the upload's transaction even on Check, which is rolled back, so codes and
@@ -703,7 +712,6 @@ func bulkNewEmp(s *Server, ctx context.Context, tx store.Q, c *Ctx, r bulkRow, a
 	}
 	var deptID, deptName, deptStatus string
 	var desID, desName, desStatus string
-	var grades []string
 	if d := byName("department", V("Department"), nil); d == nil {
 		add("Department “%s” not in master", V("Department"))
 		deptID = ""
@@ -714,7 +722,7 @@ func bulkNewEmp(s *Server, ctx context.Context, tx store.Q, c *Ctx, r bulkRow, a
 		if g := byName("designation", V("Designation"), bson.M{"department_id": deptID}); g == nil {
 			add("Designation “%s” does not exist under %s", V("Designation"), deptName)
 			desID = ""
-		} else if desID, desName, desStatus, grades = str(g["id"]), str(g["name"]), str(g["status"]), compStrs(g["grades"]); desStatus != "Active" {
+		} else if desID, desName, desStatus = str(g["id"]), str(g["name"]), str(g["status"]); desStatus != "Active" {
 			add("Designation is inactive")
 		}
 	}
@@ -723,18 +731,18 @@ func bulkNewEmp(s *Server, ctx context.Context, tx store.Q, c *Ctx, r bulkRow, a
 		add("Grade “%s” not in master", V("Grade"))
 	} else if grade, gradeStatus = str(g["name"]), str(g["status"]); gradeStatus != "Active" {
 		add("Grade is inactive")
-	} else if desID != "" && len(grades) > 0 && !containsStr(grades, grade) {
-		add("Grade %s is not mapped to %s", grade, desName)
 	}
 	shift := strings.ToUpper(or(V("Shift"), "G"))
 	var shiftStatus string
 	var shiftOK bool
-	if sh, _ := tx.C("shift").FindOne(ctx, bson.M{"code": ui2CompSameText(shift)}, options.FindOne().SetProjection(compFields("status", "location_ids"))); sh == nil {
+	if sh, _ := tx.C("shift").FindOne(ctx, bson.M{"code": ui2CompSameText(shift)}, options.FindOne().SetProjection(compFields("id", "status"))); sh == nil {
 		add("Shift “%s” not in master", V("Shift"))
 	} else if shiftStatus = str(sh["status"]); shiftStatus != "Active" {
 		add("Shift is inactive")
-	} else if shiftOK = locID == "" || sh["location_ids"] == nil || containsStr(compStrs(sh["location_ids"]), locID); !shiftOK {
-		add("Shift %s is not mapped to %s", shift, locName)
+	} else if shiftOK = locID == "" || deptID == ""; !shiftOK {
+		if shiftOK, _ = shiftRowFor(ctx, tx, str(sh["id"]), deptID, locID); !shiftOK {
+			add("%s", shiftNotForMsg(shift, deptName, locName))
+		}
 	}
 	l1, l2 := "", ""
 	if v := V("Reporting Manager L1"); v == "" {

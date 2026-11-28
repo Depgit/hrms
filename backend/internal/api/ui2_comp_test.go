@@ -142,7 +142,8 @@ func TestUI2CompOffers(t *testing.T) {
 		}
 	}
 	data := map[string]any{"first": "Riya", "last": "Sharma", "type": "Permanent", "doj": today(), "dept": "Front Office", "desig": "Front Office Supervisor",
-		"grade": "G3", "city": city, "loc": hub, "gross": 26000, "phone": "9876501234", "email": "riya.sharma@example.com", "jobRole": "Front desk", "jobSkill": "Guest service"}
+		"grade": "G3", "city": city, "loc": hub, "gross": 26000, "phone": "9876501234", "email": "riya.sharma@example.com", "jobRole": "Front desk", "jobSkill": "Guest service",
+		"pfWant": "Yes"}
 	draft := "DRAFT-ui2comp-0001"
 
 	_, chk := c.do("POST", "/api/offers/check", "EMP-1004", "HRBP", map[string]any{"data": data, "draft": draft})

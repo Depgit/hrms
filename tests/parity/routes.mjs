@@ -203,6 +203,8 @@ export const ROUTES = [
   ['GET /api/attendance/pull-config', () => ['/api/attendance/pull-config']],
   ['GET /api/attendance/realtime', () => ['/api/attendance/realtime']],
   ['GET /api/attendance/alerts', () => ['/api/attendance/alerts']],
+  ['GET /api/attendance/called', (c) => c.months.map((m) => `/api/attendance/called?ym=${m}`)],
+  ['GET /api/attendance/dev-allow/{id}', perEmp('/api/attendance/dev-allow/{id}')],
   ['GET /api/attendance/realtime/match', () => ['/api/attendance/realtime/match', '/api/attendance/realtime/match?level=All&q=emp&page=1&size=20']],
   ['GET /api/attendance/realtime/match/download', () => ['/api/attendance/realtime/match/download?format=csv', '/api/attendance/realtime/match/download?what=portal&format=csv']],
   ['GET /api/attendance/machines', () => ['/api/attendance/machines']],
@@ -257,6 +259,8 @@ export const ROUTES = [
 
   // compensation
   ['GET /api/comp', () => ['/api/comp']],
+  // The all-inclusive gross from a month (allin.go, 26 Nov 2026; no Postgres counterpart: 404 there).
+  ['GET /api/comp/all-in', () => ['/api/comp/all-in']],
   ['GET /api/salary/structures', () => ['/api/salary/structures']],
   ['GET /api/comp/structures/{id}/maps', (c) => c.sort(c.arr('/api/salary/structures').map((s) => s.id)).map((id) => `/api/comp/structures/${enc(id)}/maps`)],
   ['GET /api/comp/structure-map/candidates', (c) => [`/api/comp/structure-map/candidates?date=${c.today}`, `/api/comp/structure-map/candidates?date=${c.today}&city=${c.gurugram}&type=Permanent`]],
@@ -328,6 +332,9 @@ export const ROUTES = [
   ['GET /api/hst/attention', () => ['/api/hst/attention']],
   ['GET /api/hst/board', (c) => ['/api/hst/board', `/api/hst/board?ym=${c.ym}`]],
   ['GET /api/hst/board.xlsx', (c) => [`/api/hst/board.xlsx?ym=${c.ym}&format=csv`]],
+  // Waiting for a bed and the offer form's accommodation clusters (hst_auto.go, 19 Nov 2026). Tested in hst_auto_test.go.
+  ['GET /api/hst/waiting', () => ['/api/hst/waiting']],
+  ['GET /api/hst/clusters', () => ['/api/hst/clusters']],
   ['GET /api/hst/split', (c) => ['/api/hst/split', `/api/hst/split?ym=${c.ym}`]],
   // Cost and budget console (cost.go, 17 Nov 2026; no Postgres counterpart: 404 there): the month's cost tree, the
   // people of a node, the six-month trend, the headcount plan and the Excel file. Tested in cost_test.go.

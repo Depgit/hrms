@@ -3,6 +3,7 @@ import { api, inr } from '../api';
 import { Field, useLoad } from '../components/ui';
 import { PAY_IN, PayEntryFields, VarTargetField, WageNote, splitPay, type PayIn, type VarMode } from '../components/PayEntry';
 import { Statement } from './Compensation';
+import { grossWord, useAllIn } from '../components/AllIn';
 
 // Prototype MONTHS: the financial year order.
 const MONTHS: [number, string][] = [[4, 'April'], [5, 'May'], [6, 'June'], [7, 'July'], [8, 'August'], [9, 'September'], [10, 'October'], [11, 'November'], [12, 'December'], [1, 'January'], [2, 'February'], [3, 'March']];
@@ -22,7 +23,8 @@ export default function Salary() {
   const grades = useLoad(() => api<any[]>('/masters/grade?status=Active').catch(() => []), []);
   const structs = useLoad(() => api<any[]>('/salary/structures').catch(() => []), []);
   const comp = useLoad(() => api('/comp').catch(() => null), []);
-  const [p, setP] = useState<Record<string, any>>({ type: 'Permanent', city: '', grade: 'G1', structureId: '', joinMonth: new Date().getMonth() + 1, month: new Date().getMonth() + 1, gross: 19900, inc: 0, uan: 'Yes', varPct: '', varCycle: '', varMode: 'pct', varVal: '', meal: 0, accom: 0 });
+  const allIn = useAllIn(); // the all-inclusive gross (server allin.go): the gross entered is G
+  const [p, setP] = useState<Record<string, any>>({ type: 'Permanent', city: '', grade: 'G1', structureId: '', joinMonth: new Date().getMonth() + 1, month: new Date().getMonth() + 1, gross: 19900, inc: 0, uan: 'Yes', varPct: '', varCycle: '', varMode: 'pct', varVal: '', meal: 0, accom: 0, reimb: 0 });
   const set = (k: string, v: any) => setP({ ...p, [k]: v });
   // Pay entered by CTC (fixed + variable) instead of the gross: the split gives the gross and the variable part.
   const [pe, setPe] = useState<PayIn>({ ...PAY_IN, payBy: 'ctc', amount: '35000', var: '15000' });
@@ -43,7 +45,7 @@ export default function Salary() {
   const varAmt = vMode === 'amount' ? vVal : undefined;
   const body = { type: p.type, locationId: loc?.id ?? '', grade: p.grade, gross, inc: +p.inc || 0, structureId: sid || undefined, joinMonth: +p.joinMonth, month: +p.month,
     varMode: T.variable ? vMode : undefined, varPct: T.variable && varPct !== undefined ? varPct : undefined,
-    varAmt: T.variable ? varAmt : undefined, meal: T.ded === 'all' ? +p.meal || 0 : 0, accom: T.ded === 'all' ? +p.accom || 0 : 0 };
+    varAmt: T.variable ? varAmt : undefined, meal: T.ded === 'all' ? +p.meal || 0 : 0, accom: T.ded === 'all' ? +p.accom || 0 : 0, reimb: p.type !== 'Retainer' ? +p.reimb || 0 : 0 };
   const { data: r, error } = useLoad(() => (city && gross > 0 ? api('/salary/preview', { body }) : Promise.resolve(null)), [JSON.stringify(body)]);
   const c = r?.breakup;
   const lwfRule = comp.data?.lwf?.find((x: any) => x.state === loc?.state)?.rule;
@@ -63,29 +65,30 @@ export default function Salary() {
         <Field label="Salary structure version"><select value={sid} onChange={(e) => set('structureId', e.target.value)}>{active.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select></Field>
         <Field label="Joining month"><select value={p.joinMonth} onChange={(e) => set('joinMonth', +e.target.value)}>{MONTHS.map(([n, m]) => <option key={n} value={n}>{m}</option>)}</select></Field>
         <Field label="Payroll month"><select value={p.month} onChange={(e) => set('month', +e.target.value)}>{MONTHS.map(([n, m]) => <option key={n} value={n}>{m}</option>)}</select></Field>
-        <Field label="Enter pay as"><select value={byCtc ? 'ctc' : 'gross'} onChange={(e) => setByCtc(e.target.value === 'ctc')}><option value="gross">Monthly gross</option><option value="ctc">CTC a month (fixed + variable)</option></select></Field>
-        {byCtc ? <PayEntryFields p={pe} set={(x) => setPe({ ...x, payBy: 'ctc' })} variable={T.variable} /> : inp('gross', 'Monthly gross')}{inp('inc', 'Increase gross by')}
+        <Field label="Enter pay as"><select value={byCtc ? 'ctc' : 'gross'} onChange={(e) => setByCtc(e.target.value === 'ctc')}><option value="gross">{grossWord(allIn)}</option><option value="ctc">CTC a month (fixed + variable)</option></select></Field>
+        {byCtc ? <PayEntryFields p={pe} set={(x) => setPe({ ...x, payBy: 'ctc' })} variable={T.variable} /> : inp('gross', grossWord(allIn))}{inp('inc', 'Increase gross by')}
         <Field label="Existing UAN available?"><select value={p.uan} onChange={(e) => set('uan', e.target.value)}>{['Yes', 'No'].map((x) => <option key={x}>{x}</option>)}</select></Field>
       </div>
         <h3 style={{ marginTop: 18 }}>Options for this employee</h3><div className="form">
           {T.variable && !byCtc && <VarTargetField mode={p.varMode} value={p.varVal} gross={gross} onChange={(m, v) => setP({ ...p, varMode: m, varVal: v })} />}
           {T.ded === 'all' && <>{inp('meal', 'Meal deduction, ₹ a month')}{inp('accom', 'Accommodation deduction, ₹ a month')}</>}
+          {p.type !== 'Retainer' && inp('reimb', 'Reimbursement, ₹ a month (outside the gross)')}
         </div>
       </div>
       <div className="card"><h3>Salary breakup · {cityName}</h3>
         {error && <div className="note bad">{error}</div>}
-        {c && designed && <Statement c={c} type={p.type} std={S_} rules={comp.data?.types} lwf={lwfNote} month={+p.month} />}
-        {c && !designed && <><div className="tw"><table className="stmt"><tbody>
-          {p.type === 'Retainer' || c.fee > 0 ? <>{H('Retainer')}{R('Retainer fee', c.fee ?? c.gross, 'A month; TDS under section 194J')}</>
+        {c && (designed || c.allIn) && <Statement c={c} type={p.type} std={S_} rules={comp.data?.types} lwf={lwfNote} month={+p.month} />}
+        {c && !designed && !c.allIn && <><div className="tw"><table className="stmt"><tbody>
+          {p.type === 'Retainer' || c.fee > 0 ? <>{H('Retainer')}{R('Retainer fee', c.fee ?? c.gross, 'A month')}</>
             : <>{H('Fixed salary')}{R('Basic + DA', c.basic, `${S_.basicPct}% of gross`)}{R('HRA', c.hra, `${S_.hraPct}% of basic`)}{R('Special allowance', c.sa, 'Balancing figure')}
-          {R('Gross salary', c.gross, '', true)}</>}{c.bonus > 0 && R('Bonus', c.bonus, `${S_.bonusPct}% of basic up to ${inr(S_.bonusCalc || 7000)}, for gross up to ${inr(S_.bonusCeil)}`)}
+          {R('Gross salary', c.gross, '', true)}{c.reimb > 0 && R('Reimbursement, outside the gross', c.reimb, 'Set on the employee; earned by the days paid; not in PF, ESI or bonus wages')}</>}{c.bonus > 0 && R('Bonus', c.bonus, `${S_.bonusPct}% of basic up to ${inr(S_.bonusCalc || 7000)}, for gross up to ${inr(S_.bonusCeil)}`)}
           {c.variable > 0 && <>{H('Variable pay, on top of fixed')}{R('Variable pay a month (provision)', c.variable, `${vp}% of gross, paid ${VCT[c.varCycle] || 'every month'}, counted from the joining month`)}
             {mo && R('Variable paid this month', c.varPay, c.varPay ? 'Payout month' : 'Not a payout month')}</>}
           {H('Deductions')}
           {T.statutory && R('Employee PF', c.eePF, `${S_.pfEe}${S_.pfWage === 'basicSa' ? '% of basic + special allowance' : '% of basic'}${S_.pfCap ? ', wage ceiling ' + inr(S_.pfCeil) : ''}`)}
           {T.statutory && R('Employee ESI', c.eeESI, c.esiOn ? `${S_.esiEe}% of gross` : `Not applicable above ${inr(S_.esiCeil)}`)}
           {c.lwfOn && R('Labour welfare fund', c.lwfEe, lwfNote)}{c.meal > 0 && R('Meal', c.meal, 'Set by HR')}{c.accom > 0 && R('Accommodation', c.accom, 'Set by HR')}
-          {c.tds > 0 && R('TDS', c.tds, `${S_.tdsRate}% of gross, set in the structure`)}
+          {c.tds > 0 && R('TDS', c.tds, `${c.tdsRate ?? S_.tdsRate}% of gross (editable: structure or employee)`)}
           {T.ded === 'none' && <tr><td colSpan={3} className="mute">No deductions for this employment type.</td></tr>}
           {R('Net in hand' + (mo ? '' : ' (without variable)'), c.net, 'Before income tax, if any', true)}
           {(T.statutory || T.grat || c.med > 0 || c.lwfOn) && H('Employer contribution')}

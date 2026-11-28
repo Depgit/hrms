@@ -39,7 +39,7 @@ func employeesScopeAt(ctx context.Context, q store.Q, sc access.Scope, prefix, i
 	case "locs":
 		f[prefix+"location_id"] = bson.M{"$in": append([]string{}, sc.Locations...)}
 	case "team":
-		f[prefix+"manager_id"] = sc.EmployeeID
+		f[prefix+"manager_id"] = bson.M{"$in": sc.TeamManagers()}
 	default:
 		f[prefix+idField] = sc.EmployeeID
 	}
@@ -185,24 +185,6 @@ func employeesReason(ctx context.Context, q store.Q, usedFor, name string) (stri
 		return "", false
 	}
 	return str(r["name"]), true
-}
-
-// employeesShiftMapped says whether a shift's location_ids (null: every location) holds loc, as
-// `location_ids IS NULL OR loc = ANY(location_ids)`. known is false when SQL gave NULL (no match but a null entry).
-func employeesShiftMapped(locationIDs any, loc string) (mapped, known bool) {
-	l, ok := locationIDs.([]any)
-	if locationIDs == nil || !ok {
-		return true, true
-	}
-	null := false
-	for _, x := range l {
-		if x == nil {
-			null = true
-		} else if str(x) == loc {
-			return true, true
-		}
-	}
-	return false, !null
 }
 
 // ---------- Employee directory ----------
@@ -395,11 +377,14 @@ func (s *Server) employeeGet(r *http.Request, c *Ctx) (any, error) {
 		gross, ok := grossFor(ctx, s.st.DB, id, today()[:7])
 		name, st := structureFor(ctx, s.st.DB, id, today())
 		p := payFor(ctx, s.st.DB, id, e["type"].(string))
-		sal := map[string]any{"structure": name, "gross": nil, "ctc": nil, "net": nil, "pay": p,
+		pv := p
+		pv.CompAmts = nil // the Reimbursement is shown below, under the salary mask
+		sal := map[string]any{"structure": name, "gross": nil, "ctc": nil, "net": nil, "pay": pv, "reimb": c.Show("salary", reimbOf(p), id),
 			"varPayout": varPayoutInfo(ctx, s.st.DB, id, e["type"].(string), str(e["doj"]), p, st)} // the person's own cycle (varpay.go)
 		if ok {
 			in := calc.Input{Type: calc.EmploymentType(e["type"].(string)), Gross: gross, Structure: withMedical(&st, p.Medical), VarPct: p.VarPct, VarCycle: p.VarCycle,
-				Meal: p.Meal, Accom: p.Accom, Lwf: lwfFor(ctx, s.st.DB, e["location_id"].(string), today()), PfExempt: p.PfExempt, AllBasic: p.allBasicIn(today()[:7])}
+				Meal: p.Meal, Accom: p.Accom, Lwf: lwfFor(ctx, s.st.DB, e["location_id"].(string), today()), PfExempt: p.PfExempt, AllBasic: p.allBasicIn(today()[:7]),
+				EmpAmts: p.CompAmts, AllIn: allInOn(ctx, s.st.DB, today()[:7])}
 			hasTarget := varTargetInput(ctx, s.st.DB, id, today()[:7], st, &in) // variable pay as a target (paycomp.go)
 			res := calc.Calc(in)
 			if st.Designed {
@@ -612,22 +597,9 @@ func ApplyJobChange(ctx context.Context, tx store.Q, c *Ctx, id string, b JobCha
 			if desig == nil {
 				return nil, bad("Designation “%s” does not exist under this department", v)
 			}
-			newID, newName = str(desig["id"]), str(desig["name"])
-			grade := e["grade"].(string)
-			if g := b.Changes["grade"]; g != "" {
-				grade = g
-			}
-			if !containsStr(strs(desig["grades"]), grade) {
-				return nil, bad("Grade %s is not mapped to %s", grade, newName)
-			}
+			newID, newName = str(desig["id"]), str(desig["name"]) // any grade (designation and grade are separate)
 		} else if newID, newName, ok = f.lookup(ctx, tx, v); !ok {
 			return nil, bad("%s “%s” is not an active value", f.label, v)
-		}
-		if k == "grade" && b.Changes["designation"] == "" && newID != str(e["grade"]) {
-			// A grade alone must be one the current designation offers, as when the designation changes (PPL-048).
-			if desig, _ := tx.C("designation").FindOne(ctx, bson.M{"_id": e["designation_id"]}); desig != nil && !containsStr(strs(desig["grades"]), newID) {
-				return nil, bad("Grade %s is not mapped to %s", newName, str(desig["name"]))
-			}
 		}
 		if k == "manager" && newID == id {
 			return nil, bad("An employee cannot report to themselves")
@@ -669,19 +641,24 @@ func ApplyJobChange(ctx context.Context, tx store.Q, c *Ctx, id string, b JobCha
 			return nil, bad("%s", msg)
 		}
 	}
-	// A shift can only be used at locations it is mapped to.
-	shiftCode, locID := e["shift_code"].(string), e["location_id"].(string)
+	// A shift can only be given to a department and location it applies to (its rows, shift_maps.go). Checked when the
+	// shift, the location or the department changes: someone already on a shift their mapping no longer allows keeps it.
+	shiftCode, locID, moved := e["shift_code"].(string), e["location_id"].(string), false
 	for _, x := range ch {
-		if x.f.column == "shift_code" {
-			shiftCode = x.value
-		}
-		if x.f.column == "location_id" {
-			locID = x.value
+		switch x.f.column {
+		case "shift_code":
+			shiftCode, moved = x.value, true
+		case "location_id":
+			locID, moved = x.value, true
+		case "department_id":
+			moved = true
 		}
 	}
-	if sh, err := tx.C("shift").FindOne(ctx, bson.M{"code": shiftCode}); err == nil && sh != nil {
-		if mapped, known := employeesShiftMapped(sh["location_ids"], locID); known && !mapped {
-			return nil, bad("Shift %s is not mapped to this location", shiftCode)
+	if sh, err := tx.C("shift").FindOne(ctx, bson.M{"code": shiftCode}); err == nil && sh != nil && moved {
+		if ok, err := shiftRowFor(ctx, tx, str(sh["id"]), deptID, locID); err != nil {
+			return nil, err
+		} else if !ok {
+			return nil, bad("%s", shiftNotForMsg(shiftCode, mbNameOf(ctx, tx, "department", deptID), mbNameOf(ctx, tx, "location", locID)))
 		}
 	}
 	if err := machineGate(ctx, tx, c, id, e["location_id"].(string), locID); err != nil { // into a full punch-machine cluster (machines.go)
@@ -838,6 +815,36 @@ func employeesCodeKey(ctx context.Context, q store.Q, empType string) string {
 	return "All"
 }
 
+// employeesRetPrefix is the prefix a Retainer's code takes from the series for everyone: the Retainer series' own
+// prefix (RET- unless HR changed it), else RET-.
+func employeesRetPrefix(ctx context.Context, q store.Q, allPrefix string) string {
+	if r, _ := q.C("employee_code_series").FindOne(ctx, bson.M{"key": string(calc.Retainer)}); r != nil {
+		if p := str(r["prefix"]); p != "" && !strings.EqualFold(p, allPrefix) {
+			return p
+		}
+	}
+	if strings.EqualFold(allPrefix, "RET-") {
+		return "RT-"
+	}
+	return "RET-"
+}
+
+// employeesPrefixes are the prefix a person of empType gets from series key, and every prefix that shares the series'
+// numbers (owner, 25 Nov 2026): with one series for everyone ("All"), a Retainer gets RET-<next> and everyone else
+// the series' prefix (EMP-<next>), from the SAME numbers, so EMP-1060 and RET-1061 never share digits (the Realtime
+// portal code is the ID's number, portal_write.go). With a series per type, each type's own prefix as before.
+func employeesPrefixes(ctx context.Context, q store.Q, key, empType, seriesPrefix string) (string, []string) {
+	if key != "All" {
+		return seriesPrefix, []string{seriesPrefix}
+	}
+	ret := employeesRetPrefix(ctx, q, seriesPrefix)
+	all := []string{seriesPrefix, ret}
+	if calc.EmploymentType(empType) == calc.Retainer {
+		return ret, all
+	}
+	return seriesPrefix, all
+}
+
 func NextEmployeeCode(ctx context.Context, tx store.Q, empType string) (string, error) {
 	key := employeesCodeKey(ctx, tx, empType)
 	series, err := tx.C("employee_code_series").Lock(ctx, bson.M{"key": key})
@@ -847,11 +854,16 @@ func NextEmployeeCode(ctx context.Context, tx store.Q, empType string) (string, 
 	if series == nil {
 		return "", bad("No employee code series for %s", key)
 	}
-	prefix, pad, n := str(series["prefix"]), employeesInt(series["pad"]), employeesInt(series["next_no"])
+	pad, n := employeesInt(series["pad"]), employeesInt(series["next_no"])
+	prefix, shared := employeesPrefixes(ctx, tx, key, empType, str(series["prefix"]))
 	for {
 		code := fmt.Sprintf("%s%0*d", prefix, pad, n)
+		ids := bson.A{}
+		for _, p := range shared { // the number is free only when no prefix of the series has it
+			ids = append(ids, bson.M{"_id": employeesFold(fmt.Sprintf("%s%0*d", p, pad, n))})
+		}
 		n++
-		taken, err := tx.C("employee").Exists(ctx, bson.M{"_id": employeesFold(code)})
+		taken, err := tx.C("employee").Exists(ctx, bson.M{"$or": ids})
 		if err != nil {
 			return "", err
 		}
@@ -871,7 +883,8 @@ func (s *Server) nextCode(r *http.Request, c *Ctx) (any, error) {
 	if err != nil || series == nil {
 		return map[string]any{"next": nil}, nil
 	}
-	return map[string]any{"next": fmt.Sprintf("%s%0*d", str(series["prefix"]), employeesInt(series["pad"]), employeesInt(series["next_no"]))}, nil
+	prefix, _ := employeesPrefixes(r.Context(), s.st.DB, key, r.URL.Query().Get("type"), str(series["prefix"]))
+	return map[string]any{"next": fmt.Sprintf("%s%0*d", prefix, employeesInt(series["pad"]), employeesInt(series["next_no"]))}, nil
 }
 
 // ---------- Import existing employees (HR Admin only), checked row by row before anything is created ----------
@@ -935,12 +948,10 @@ func employeesMemo[T any](f func(string) T) func(string) T {
 	}
 }
 
-// employeesFound is a master value an import row names: its id (or the shift's location_ids), the designation's
-// grades, and whether it was found.
+// employeesFound is a master value an import row names: its id, the designation's grades, and whether it was found.
 type employeesFound struct {
 	id     string
 	grades []string
-	locs   any
 	ok     bool
 }
 
@@ -975,7 +986,7 @@ func (s *Server) employeeImport(r *http.Request, c *Ctx) (any, error) {
 			if err != nil || x == nil {
 				return employeesFound{}
 			}
-			return employeesFound{id: str(x["id"]), grades: strs(x["grades"]), locs: x["location_ids"], ok: true}
+			return employeesFound{id: str(x["id"]), grades: strs(x["grades"]), ok: true}
 		}
 		location := employeesMemo(func(name string) employeesFound {
 			return find("location", bson.M{"name": employeesFold(name), "status": "Active"})
@@ -1026,6 +1037,7 @@ func (s *Server) employeeImport(r *http.Request, c *Ctx) (any, error) {
 		type codeSeries struct {
 			prefix    string
 			pad, next int
+			shared    []string // every prefix on the series' numbers (employeesPrefixes)
 		}
 		series := map[string]*codeSeries{}
 		var seriesKeys []string
@@ -1041,13 +1053,19 @@ func (s *Server) employeeImport(r *http.Request, c *Ctx) (any, error) {
 					return "", bad("No employee code series for %s", key)
 				}
 				sr = &codeSeries{prefix: str(row["prefix"]), pad: employeesInt(row["pad"]), next: employeesInt(row["next_no"])}
+				_, sr.shared = employeesPrefixes(ctx, tx, key, "", sr.prefix)
 				series[key] = sr
 				seriesKeys = append(seriesKeys, key)
 			}
+			prefix, _ := employeesPrefixes(ctx, tx, key, typ, sr.prefix) // a Retainer: RET- on the shared numbers
 			for {
-				code := fmt.Sprintf("%s%0*d", sr.prefix, sr.pad, sr.next)
+				code := fmt.Sprintf("%s%0*d", prefix, sr.pad, sr.next)
+				free := true
+				for _, p := range sr.shared {
+					free = free && !takenUpper[strings.ToUpper(fmt.Sprintf("%s%0*d", p, sr.pad, sr.next))]
+				}
 				sr.next++
-				if !takenUpper[strings.ToUpper(code)] {
+				if free {
 					return code, nil
 				}
 			}
@@ -1098,16 +1116,16 @@ func (s *Server) employeeImport(r *http.Request, c *Ctx) (any, error) {
 				desID = g.id
 				if !g.ok {
 					add("Designation “%s” does not exist under %s", x.Designation, x.Department)
-				} else if !containsStr(g.grades, x.Grade) {
-					add("Grade %s is not mapped to %s", x.Grade, x.Designation)
 				}
 			}
 			if sh := shift(x.Shift); !sh.ok {
 				add("Shift “%s” not in master", x.Shift)
-			} else if mapped, known := employeesShiftMapped(sh.locs, locID); locID != "" && !known {
-				add("Shift “%s” not in master", x.Shift) // SQL gave NULL here, which failed the read
-			} else if locID != "" && !mapped {
-				add("Shift %s is not mapped to %s", x.Shift, x.Location)
+			} else if locID != "" && deptID != "" {
+				if ok, err := shiftRowFor(ctx, tx, sh.id, deptID, locID); err != nil {
+					return err
+				} else if !ok {
+					add("%s", shiftNotForMsg(strings.ToUpper(x.Shift), x.Department, x.Location))
+				}
 			}
 			if x.ManagerID != "" && !empIDs[x.ManagerID] {
 				add("Reporting manager %s not found", x.ManagerID)

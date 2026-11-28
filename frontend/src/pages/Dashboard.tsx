@@ -341,7 +341,7 @@ const waited = (at?: string) => { if (!at) return ''; const h = Math.max(0, (Dat
 function about(r: any): string {
   const p = r.payload || {}, f = r.facts || {};
   switch (r.wf) {
-    case 'leave': { const d = f.days ?? (p.half ? 0.5 : 1); return `${p.ltype} · ${fmtD(p.from)}${p.to && p.to !== p.from ? ` to ${fmtD(p.to)}` : ''} · ${d === 0.5 ? 'half a day' : s(d, 'day')}`; }
+    case 'leave': { if (p.short) return `Short leave · ${fmtD(p.from)} · ${p.fromTime} to ${p.toTime}`; const d = f.days ?? (p.half ? 0.5 : 1); return `${p.ltype} · ${fmtD(p.from)}${p.to && p.to !== p.from ? ` to ${fmtD(p.to)}` : ''} · ${d === 0.5 ? `half a day${p.halfOf ? ` (${p.halfOf} half)` : ''}` : s(d, 'day')}`; }
     case 'regularize': return `${fmtD(p.date)} · ${p.rtype === 'No Punch' ? 'missing punch' : 'time correction'} · ${p.in || '—'} to ${p.out || '—'}`;
     case 'resign': {
       const k = p.exitType && p.exitType !== 'Resignation' ? p.exitType : p.rkind === 'withdraw' ? 'Withdraw resignation' : p.rkind === 'change' ? 'Change last working day' : 'Resignation';

@@ -42,10 +42,11 @@ var golden = []struct {
 		{20000, 10000, 5000, 5000, 10000, 0, 0, 0, 0, 0, 0, 0, 583.1, 0, 0, 0, 0, 0, 0, 20583.1, 20583.1},
 		{30000, 15000, 7500, 7500, 15000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 30000, 30000},
 	}},
-	// A retainer shows one Retainer fee (Result.Fee), no Basic, HRA or Special allowance (18 Nov 2026); the rest as before.
+	// A retainer shows one Retainer fee (Result.Fee), no Basic, HRA or Special allowance (18 Nov 2026); TDS 1% of gross
+	// by default (owner, 25 Nov 2026; was 10%).
 	{"Mumbai", Retainer, "", [][]float64{
-		{20000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2000, 0, 0, 2000, 18000, 20000},
-		{30000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3000, 0, 0, 3000, 27000, 30000},
+		{20000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 200, 0, 0, 200, 19800, 20000},
+		{30000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 300, 0, 0, 300, 29700, 30000},
 	}},
 }
 

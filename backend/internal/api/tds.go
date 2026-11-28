@@ -118,8 +118,9 @@ type taxFig struct {
 	First    string             `json:"first"`
 	Last     string             `json:"last"`
 	Months   int                `json:"months"`
-	Gross    float64            `json:"gross"` // monthly gross used for the projection
-	Basis    string             `json:"basis"` // declared | approved
+	Gross    float64            `json:"gross"`           // monthly gross used for the projection
+	Reimb    float64            `json:"reimb,omitempty"` // the Reimbursement a month, outside the gross (counted when taxable)
+	Basis    string             `json:"basis"`           // declared | approved
 	Est      calc.TaxResult     `json:"est"`
 	Declared calc.TaxResult     `json:"declared"`
 	Approved calc.TaxResult     `json:"approved"`
@@ -149,7 +150,12 @@ func taxFigureWith(e *emp, gross float64, st *calc.Structure, city string, d *ta
 // taxFigureExtra is taxFigureWith with extra taxable salary in the year on top of the monthly gross (the year's
 // incentives, bulk_incentive.go). allBasic: the person chose no PF and is paid the whole fixed gross as Basic
 // (pfuan.go): the projection uses that split (HRA 0, so no HRA exemption; no employee PF), as the payroll pays it.
-func taxFigureExtra(e *emp, gross float64, st *calc.Structure, city string, d *taxDecl, appr map[string]float64, fy string, list []calc.TaxItem, extra float64, allBasic bool) *taxFig {
+//
+// mods set the rest of the month's inputs (the per-employee amounts, the variable target, the all-inclusive gross).
+// On the all-inclusive gross (allin.go) the salary is the gross G (with the statutory bonus inside it) plus the variable
+// pay paid every month and the taxable Reimbursement; the employer's PF deducted from the employee counts as the
+// employee's PF does (80C in the old regime), the employer's ESI as the employee's ESI does (not at all).
+func taxFigureExtra(e *emp, gross float64, st *calc.Structure, city string, d *taxDecl, appr map[string]float64, fy string, list []calc.TaxItem, extra float64, allBasic bool, mods ...func(*calc.Input)) *taxFig {
 	ms := calc.FYMonths(fy)
 	a, b := ms[0], ms[11]
 	if e.DOJ[:7] > a {
@@ -164,18 +170,30 @@ func taxFigureExtra(e *emp, gross float64, st *calc.Structure, city string, d *t
 	}
 	// One month's breakup times the months employed: the PF ceiling applies month by month, so a part year is not
 	// worked out on an averaged gross (SET-111). For a full year it is the same as before.
-	r := calc.Calc(calc.Input{Type: calc.EmploymentType(e.Type), Gross: gross, Structure: st, PfExempt: allBasic, AllBasic: allBasic})
+	in := calc.Input{Type: calc.EmploymentType(e.Type), Gross: gross, Structure: st, PfExempt: allBasic, AllBasic: allBasic}
+	for _, m := range mods { // the per-employee amounts (the Reimbursement may be set as not taxable, reimb.go) and the rest
+		m(&in)
+	}
+	r := calc.Calc(in)
 	k := float64(n)
 	est := func(items map[string]float64) (calc.TaxResult, map[string]float64) {
 		groups, rent := calc.GroupDeductionsWith(items, list)
 		salYear := gross*k + extra
-		if r.NonTax != 0 { // components that are not taxable (designed structures)
-			salYear = (gross-r.NonTax)*k + extra
+		if r.NonTax != 0 || r.Reimb != 0 { // the Reimbursement is outside the gross (25 Nov 2026); less what is not taxable
+			salYear = (gross+r.Reimb-r.NonTax)*k + extra
 		}
-		return calc.TaxEstimate(calc.TaxInput{SalaryYear: salYear, BasicYear: r.Basic * k, HraYear: r.Hra * k, EmployeePfYear: r.EePF * k,
+		pfYear := r.EePF * k
+		if r.AllIn { // the gross G (with the statutory bonus), the Reimbursement and the monthly variable pay
+			salYear = (r.Gross+r.Reimb+r.VarPay-r.NonTax)*k + extra
+			pfYear = (r.EePF + r.ErPF) * k // the employer's PF is deducted from the employee: counted as the employee's PF is
+		}
+		return calc.TaxEstimate(calc.TaxInput{SalaryYear: salYear, BasicYear: r.Basic * k, HraYear: r.Hra * k, EmployeePfYear: pfYear,
 			OtherIncome: d.Other, PrevEmployerIncome: d.PrevIncome, RentYear: rent, Metro: calc.MetroCities[city], Deductions: groups}), groups
 	}
-	f := &taxFig{FY: fy, First: a, Last: b, Months: n, Gross: gross, Basis: "declared", PFYear: calc.Round2(r.EePF * k)}
+	f := &taxFig{FY: fy, First: a, Last: b, Months: n, Gross: gross, Reimb: calc.Round2(r.Reimb), Basis: "declared", PFYear: calc.Round2(r.EePF * k)}
+	if r.AllIn { // the employer's PF deducted from the employee too
+		f.PFYear = calc.Round2((r.EePF + r.ErPF) * k)
+	}
 	f.Declared, f.Groups = est(d.Items)
 	f.Approved, _ = est(appr)
 	f.Est = f.Declared
@@ -219,7 +237,7 @@ func (pc *payCtx) loadSalaryTds(ctx context.Context, q store.Q, list []*emp) err
 	if td.extra, err = incentivesInYear(ctx, q, fy, ids(list)); err != nil {
 		return err
 	}
-	if err := varPayoutsInYear(ctx, q, fy, ids(list), td.extra); err != nil { // variable amounts entered (paycomp.go)
+	if err := varPayoutsInYear(ctx, q, fy, ids(list), td.extra, pc.allInFrom); err != nil { // variable amounts entered (paycomp.go)
 		return err
 	}
 	for _, e := range list {
@@ -228,7 +246,7 @@ func (pc *payCtx) loadSalaryTds(ctx context.Context, q store.Q, list []*emp) err
 		}
 		d := td.declOf(e.ID)
 		f := taxFigureExtra(e, pc.grossAt(e.ID, pc.ym), pc.structure(pc.structureOn(e.ID, pc.ym+"-01")), pc.cities[e.CityID], d, td.appr[e.ID], fy, td.items,
-			td.extra[e.ID], pc.pay[e.ID].allBasicIn(pc.ym))
+			td.extra[e.ID], pc.pay[e.ID].allBasicIn(pc.ym), pc.taxInputs(e))
 		pc.salaryTds[e.ID] = monthTds(f, d, td.hist[e.ID], pc.ym)
 	}
 	return nil
@@ -240,7 +258,25 @@ func (pc *payCtx) figureFor(e *emp, fy string) *taxFig {
 		return nil
 	}
 	return taxFigureExtra(e, pc.grossAt(e.ID, pc.ym), pc.structure(pc.structureOn(e.ID, pc.ym+"-01")), pc.cities[e.CityID], pc.tax.declOf(e.ID), pc.tax.appr[e.ID], fy, pc.tax.items,
-		pc.tax.extra[e.ID], pc.pay[e.ID].allBasicIn(pc.ym))
+		pc.tax.extra[e.ID], pc.pay[e.ID].allBasicIn(pc.ym), pc.taxInputs(e))
+}
+
+// taxInputs are the month's inputs the tax projection adds: the per-employee amounts and, on the all-inclusive gross
+// (allin.go), the rule, the LWF and the variable target (paid every month).
+func (pc *payCtx) taxInputs(e *emp) func(*calc.Input) {
+	return func(in *calc.Input) {
+		in.EmpAmts = pc.pay[e.ID].CompAmts
+		if !pc.allIn(pc.ym) {
+			return
+		}
+		in.AllIn, in.PfExempt, in.Lwf = true, in.PfExempt || pc.pay[e.ID].PfExempt, pc.lwf[e.StateID]
+		in.Structure = withMedical(in.Structure, pc.pay[e.ID].Medical)
+		if in.Structure.Designed {
+			pc.varInputs(e.ID, pc.ym, in)
+		} else {
+			in.VarPct = pc.varPctOpt(e.ID, pc.ym)
+		}
+	}
 }
 
 // taxReadiness is the employee file's tax line.
@@ -359,9 +395,15 @@ func incentivesInYear(ctx context.Context, q store.Q, fy string, ids []string) (
 
 // varPayoutsInYear adds to extra the variable amounts entered for the financial year's months (designed structures):
 // taxable salary, like incentives.
-func varPayoutsInYear(ctx context.Context, q store.Q, fy string, ids []string, extra map[string]float64) error {
+//
+// From allInFrom on (the all-inclusive gross) amounts entered are not paid (variable pay is automatic), so not counted.
+func varPayoutsInYear(ctx context.Context, q store.Q, fy string, ids []string, extra map[string]float64, allInFrom string) error {
 	ms := calc.FYMonths(fy)
-	rows, err := q.C(store.VarPayoutColl).Find(ctx, bson.M{"employee_id": bson.M{"$in": ids}, "ym": bson.M{"$gte": ms[0], "$lte": ms[11]}},
+	ym := bson.M{"$gte": ms[0], "$lte": ms[11]}
+	if allInFrom != "" {
+		ym["$lt"] = allInFrom
+	}
+	rows, err := q.C(store.VarPayoutColl).Find(ctx, bson.M{"employee_id": bson.M{"$in": ids}, "ym": ym},
 		options.Find().SetProjection(bson.M{"employee_id": 1, "amount": 1}))
 	if err != nil {
 		return err

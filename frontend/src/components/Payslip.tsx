@@ -14,6 +14,8 @@ export type SlipView = {
   setup: { accent: string; footer: string; showEmployer: boolean; website?: string; email?: string; phone?: string; showIds?: boolean };
   snap: {
     days: number; paid: number; lop: number; outside?: number; earn: Line[]; ded: Line[]; er: Line[]; totE: number; totD: number; roundOff?: number; net: number; words: string;
+    /** The all-inclusive gross (server allin.go): G offered a month, G earned this month, the employee's earnings and the employer's statutory costs inside it. */
+    allIn?: { offered: number; gross: number; erDed: number };
     emp: Record<string, string>; company: Record<string, string>;
   };
 };
@@ -73,6 +75,7 @@ export default function Payslip({ v }: { v: SlipView }) {
       </table></div>
       <div className="sl-net"><div>Net pay for the month</div><b>{inr(s.net)}</b></div>
       <div className="sl-w">{s.words}</div>
+      {s.allIn && <div className="sl-er">Gross salary {inr(s.allIn.gross)} (offered {inr(s.allIn.offered)} a month, by the days paid), with the statutory bonus inside it. The employer PF, ESI, EDLI and LWF ({inr(s.allIn.erDed)}) are deducted from it as shown. Variable pay and reimbursement are paid on top, by the days paid.</div>}
       {v.setup.showEmployer && s.er.length > 0 && <div className="sl-er">Employer contributions, not part of your net pay: {s.er.map((x) => `${x.label} ${inr(x.amount)}`).join(' · ')}</div>}
       <div className="sl-ft"><span>{v.setup.footer}</span>{v.setup.website && <span>{v.setup.website}</span>}</div>
     </div>

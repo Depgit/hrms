@@ -130,6 +130,13 @@ func Run(ctx context.Context, st *store.Store, o Options) ([]Count, error) {
 		log(fmt.Sprintf("converted %d approval grid(s) into rule lists", n))
 	}
 
+	// Where each shift applies (Department + Location rows, migration 029): from the copied shift locations.
+	if n, err := store.ShiftMapsFromLocations(ctx, st.DB); err != nil {
+		return nil, fmt.Errorf("shift mapping: %w", err)
+	} else if n > 0 {
+		log(fmt.Sprintf("gave the shifts %d Department + Location row(s) from their locations", n))
+	}
+
 	// Who fills each Form setup item (the joiner's link): the defaults where the source had none.
 	if n, err := store.FillJoinerDefaults(ctx, st.DB); err != nil {
 		return nil, fmt.Errorf("form setup: %w", err)

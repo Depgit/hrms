@@ -19,7 +19,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -95,7 +94,7 @@ func BackfillHireNos(ctx context.Context, q Q) (int, error) {
 			continue
 		}
 		doj, _ := e["doj"].(string)
-		if err := HireIDsEvent(ctx, q, id, no, doj, "Given by migration 018: the employee was imported or joined before stages", "System", ""); err != nil {
+		if err := HireIDsEvent(ctx, q, id, no, "", doj, "Given by migration 018: the employee was imported or joined before stages", "System", ""); err != nil {
 			return n, err
 		}
 		n++
@@ -105,12 +104,10 @@ func BackfillHireNos(ctx context.Context, q Q) (int, error) {
 
 // HireIDsEvent records on the employee's status timeline the SI-/OI-/JI- IDs given to an employee who did not come
 // through a candidate (dated the joining date).
-func HireIDsEvent(ctx context.Context, q Q, emp string, no int, doj, reason, by, byID string) error {
-	si, oi, ji := HireIDs(no)
-	at := time.Now()
-	if t, err := time.Parse("2006-01-02", doj); err == nil && t.Before(at) {
-		at = t
-	}
+// digits are the Employee code's digits the IDs keep (schema_hirecode.go), "" for a number of the candidate series.
+func HireIDsEvent(ctx context.Context, q Q, emp string, no int, digits, doj, reason, by, byID string) error {
+	si, oi, ji := HireIDsOf(no, digits)
+	at := hireAt(doj)
 	var onDate, byIDv any
 	if doj != "" {
 		onDate = doj

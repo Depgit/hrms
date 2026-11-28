@@ -370,8 +370,6 @@ func earnKind(l calc.Line) string {
 		return "unirefund"
 	case strings.HasPrefix(l.Label, "Held salary released"):
 		return "held"
-	case strings.HasPrefix(l.Label, "Night shift allowance"):
-		return "night"
 	case l.Label == "Salary advance":
 		return "advance"
 	case l.Label == incentiveLabel:
@@ -446,10 +444,10 @@ var regCols = func() []regCol {
 		m("Basic", func(x *regRow) float64 { return x.f.Basic }),
 		m("HRA", func(x *regRow) float64 { return x.f.Hra }),
 		m("Special allowance", func(x *regRow) float64 { return x.f.Sa }),
+		m("Reimbursement (outside the gross)", func(x *regRow) float64 { return x.f.Reimb }),
 		m("Bonus", func(x *regRow) float64 { return x.f.Bonus }),
 		m("Variable pay", func(x *regRow) float64 { return x.f.VarPay }),
 		m("Incentive", func(x *regRow) float64 { return x.earn["incentive"] }),
-		m("Night shift allowance", func(x *regRow) float64 { return x.earn["night"] }),
 		m("Arrears", func(x *regRow) float64 { return x.earn["arrear"] }),
 		m("Reimbursements", func(x *regRow) float64 { return x.earn["reimb"] }),
 		m("Salary advance", func(x *regRow) float64 { return x.earn["advance"] }),
@@ -552,7 +550,8 @@ func (s *Server) regCTC(r *http.Request, ym string, rows []*PayRowOut) (map[stri
 			varPct = payengineFloatPtr(p["var_prev_pct"])
 		}
 		in := calc.Input{Type: calc.EmploymentType(o.Type), Gross: o.Gross, Structure: &st, VarPct: varPct, VarCycle: payengineIntPtr(p["var_cycle"]),
-			Meal: payengineFloat(p["meal"]), Accom: payengineFloat(p["accommodation"]), Lwf: lwf[state[o.EmployeeID]]}
+			Meal: payengineFloat(p["meal"]), Accom: payengineFloat(p["accommodation"]), Lwf: lwf[state[o.EmployeeID]], EmpAmts: byCompOf(p["comp_amts"]),
+			AllIn: o.R.AllIn, PfExempt: o.R.PfExempt} // as the month was paid
 		varTargetInput(ctx, q, o.EmployeeID, ym, st, &in) // a structure made from components (paycomp.go)
 		res := calc.Calc(in)
 		out[o.EmployeeID] = calc.Round2(res.CTC)
@@ -751,6 +750,43 @@ func regColsFor(data []*regRow) []regCol {
 				base = append(base, regCol{"Retainer fee", "salary", 'm', func(x *regRow) any { return x.f.Fee }})
 			}
 		}
+	}
+	hasAllIn := false
+	for _, x := range data {
+		hasAllIn = hasAllIn || x.o.R.AllIn
+	}
+	if hasAllIn { // the all-inclusive gross (allin.go): Statutory bonus and Gross salary (G) after Special allowance, the
+		// employer's shares deducted from the employee before Total deductions (still listed as remitted under Employer)
+		r2 := calc.Round2
+		var bonus regCol
+		for _, c := range base {
+			if c.H == "Bonus" {
+				bonus = c
+				bonus.H = "Statutory bonus"
+			}
+		}
+		next := make([]regCol, 0, len(base)+5)
+		for _, c := range base {
+			switch c.H {
+			case "Bonus":
+				continue
+			case "Monthly gross (structure)":
+				c.H = "Monthly gross (G)"
+			case "Total deductions":
+				next = append(next,
+					regCol{"Employer PF deducted", "salary", 'm', func(x *regRow) any { return r2(x.o.R.ErPF) }},
+					regCol{"Employer ESI deducted", "salary", 'm', func(x *regRow) any { return r2(x.o.R.ErESI) }},
+					regCol{"EDLI deducted", "salary", 'm', func(x *regRow) any { return r2(x.o.R.Edli) }},
+					regCol{"Employer LWF deducted", "salary", 'm', func(x *regRow) any {
+						return r2(x.f.ErDed - r2(x.o.R.ErPF) - r2(x.o.R.ErESI) - r2(x.o.R.Edli))
+					}})
+			}
+			next = append(next, c)
+			if c.H == "Special allowance" && bonus.V != nil {
+				next = append(next, bonus, regCol{"Gross salary (G)", "salary", 'm', func(x *regRow) any { return r2(x.o.R.Gross) }})
+			}
+		}
+		base = next
 	}
 	type key struct{ kind, side, code string }
 	var earn, vars, ded []key

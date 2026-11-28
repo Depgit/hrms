@@ -562,7 +562,7 @@ func TestFtSearchPunctuation(t *testing.T) {
 	}
 }
 
-// PPL-048: a grade alone must be one the current designation offers. PPL-049: no reporting loop.
+// Grade is not tied to the designation (was PPL-048). PPL-049: no reporting loop.
 func TestFtJobChangeChecks(t *testing.T) {
 	c, _, st := setupFull(t)
 	c.signIn("EMP-1002")
@@ -577,9 +577,11 @@ func TestFtJobChangeChecks(t *testing.T) {
 		}
 	}
 	day := time.Now().Format("2006-01-02")
+	hireFixRoleSkill(t, st, "EMP-1016") // a job change needs Role and Skill on the record
 	if bad != "" {
-		if s, r := c.do("PATCH", "/api/employees/EMP-1016/job", "EMP-1002", "HR Admin", map[string]any{"changes": map[string]string{"grade": bad}, "reason": "Promotion", "effectiveFrom": day}); s != 400 || !strings.Contains(ftJSON(r), "is not mapped to") {
-			t.Errorf("grade %s not on %v accepted: %d %v", bad, grades, s, r)
+		// Designation and grade are separate (owner, 27 Nov 2026): any grade goes with any designation.
+		if s, r := c.do("PATCH", "/api/employees/EMP-1016/job", "EMP-1002", "HR Admin", map[string]any{"changes": map[string]string{"grade": bad}, "reason": "Promotion", "effectiveFrom": day}); s != 200 {
+			t.Errorf("grade %s outside the designation's old list refused: %d %v", bad, s, r)
 		}
 	}
 	// EMP-1009 reports to EMP-1008; making EMP-1008 report to EMP-1009 would be a loop.
@@ -957,7 +959,7 @@ func TestFtShiftReservedCodes(t *testing.T) {
 	c := setup(t)
 	c.signIn("EMP-1002")
 	for _, code := range []string{"WO", "PH", "L", "wo"} {
-		body := map[string]any{"code": code, "name": "Odd " + code, "effectiveFrom": "", "startTime": "09:00", "endTime": "18:00", "breakMinutes": 30, "locationIds": nil, "rules": map[string]any{}}
+		body := map[string]any{"code": code, "name": "Odd " + code, "effectiveFrom": "", "startTime": "09:00", "endTime": "18:00", "breakMinutes": 30, "maps": []map[string]any{{"departmentId": "", "locationId": ""}}, "rules": map[string]any{}}
 		if s, r := c.do("POST", "/api/shifts", "EMP-1002", "HR Admin", body); s != 400 {
 			t.Errorf("shift %s created: %d %v", code, s, r)
 		}
@@ -1007,7 +1009,9 @@ func TestFtPolicyChecks(t *testing.T) {
 	}
 	cals := c.mustList(t, "/api/calendars")
 	calID := cals[0].(map[string]any)["id"].(string)
-	h := map[string]any{"holiday": map[string]any{"date": time.Now().Format("2006") + "-11-12", "name": "QA Holiday", "kind": "Regional"}}
+	// A date in the calendar's own year (a holiday in another year is refused since 24 Nov 2026).
+	yr := ftJSON(cals[0].(map[string]any)["year"]) // 2026
+	h := map[string]any{"holiday": map[string]any{"date": yr + "-11-12", "name": "QA Holiday", "kind": "Regional"}}
 	c.do("PUT", "/api/calendars/"+calID, "EMP-1002", "HR Admin", h)
 	h["holiday"].(map[string]any)["name"] = "QA Holiday again"
 	if s, _ := c.do("PUT", "/api/calendars/"+calID, "EMP-1002", "HR Admin", h); s != 400 {

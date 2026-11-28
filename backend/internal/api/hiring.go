@@ -130,7 +130,13 @@ func hireView(ctx context.Context, q store.Q, c *Ctx, x store.Row) {
 	w := waitOf(x["waiting_window"], now)
 	x["waitingWindow"] = w
 	delete(x, "waiting_window")
-	x["offerVersions"] = offerVersions(ctx, q, x)
+	vs := offerVersions(ctx, q, x)
+	if c.Level("onb.raise") < 1 && c.Level("onb.pipeline") < 1 { // the breakup only for onboarding (an approver of the shortlist does not)
+		for _, v := range vs {
+			delete(v, "pay")
+		}
+	}
+	x["offerVersions"] = vs
 	x["timeline"] = timelineRows(ctx, q, bson.D{{Key: "candidate_id", Value: x["id"]}})
 	hs := loadHireSettings(ctx, q)
 	x["hiring"] = hs
@@ -146,8 +152,15 @@ func hireView(ctx context.Context, q store.Q, c *Ctx, x store.Row) {
 	}
 	can["answer"] = edit && sent && x["query_at"] == nil
 	can["accept"] = edit && sent
-	can["outcome"] = edit && accepted && w == nil
-	can["noShow"] = can["outcome"] && now >= str(x["doj"])
+	oaj := oajOpen(x) // offer at joining (offer_at_joining.go): the joining outcomes apply before the offer too
+	can["outcome"] = edit && (accepted || oaj) && w == nil
+	doj := str(x["doj"])
+	if oaj {
+		doj = oajDOJ(x)
+		x["offerAtJoining"] = map[string]any{"doj": doj, "note": x["oaj_note"], "by": x["oaj_by"], "at": x["oaj_at"], "waitingFor": oajReady(x),
+			"raise": edit && c.Level("onb.raise") >= 2 && !oajOfferLive(x), "due": now >= doj}
+	}
+	can["noShow"] = can["outcome"] && now >= doj
 	can["wait"] = edit && w != nil
 	can["closeWait"] = edit && w != nil && w.Over
 	can["earlyExit"] = edit && joinedNew && w == nil
@@ -554,6 +567,11 @@ func (s *Server) candidateEvent(r *http.Request, c *Ctx) (any, error) {
 		accepted := x["stage"] == "Offer" && x["accepted_at"] != nil && x["declined_at"] == nil
 		joinedNew := x["stage"] == "Joined" && x["ji_at"] != nil && x["approved_at"] == nil
 		w := waitOf(x["waiting_window"], now)
+		oaj := oajOpen(x) // offer at joining (offer_at_joining.go): the outcomes before joining apply to it too
+		doj := str(x["doj"])
+		if oaj {
+			doj = oajDOJ(x)
+		}
 		needReason := func() error {
 			if b.Reason == "" {
 				return bad("Give the reason")
@@ -563,7 +581,7 @@ func (s *Server) candidateEvent(r *http.Request, c *Ctx) (any, error) {
 		msg := ""
 		switch b.Action {
 		case "doj":
-			if !accepted {
+			if !accepted && !oaj {
 				return bad("The joining date can be moved after the offer is accepted and before joining")
 			}
 			if err := needReason(); err != nil {
@@ -572,15 +590,25 @@ func (s *Server) candidateEvent(r *http.Request, c *Ctx) (any, error) {
 			if !isDate(b.Date) {
 				return bad("Enter the new joining date")
 			}
-			old := str(x["doj"])
+			old := doj
 			if b.Date == old {
 				return bad("The joining date is already %s", longDate(old))
 			}
 			if released, ok := x["released_at"].(time.Time); ok && b.Date < store.DateOf(released) {
 				return bad("The joining date cannot be before the offer was released, %s", longDate(store.DateOf(released)))
 			}
-			if _, err := tx.C("offer").Update(ctx, bson.D{{Key: "_id", Value: x["offer_id"]}}, bson.D{{Key: "$set", Value: bson.D{{Key: "doj", Value: b.Date}}}}); err != nil {
-				return err
+			if oaj {
+				if b.Date < now {
+					return bad("The expected joining date is today or later")
+				}
+				if _, err := tx.C("candidate").Update(ctx, bson.D{{Key: "_id", Value: id}}, bson.D{{Key: "$set", Value: bson.D{{Key: "oaj_doj", Value: b.Date}}}}); err != nil {
+					return err
+				}
+			}
+			if x["offer_id"] != nil {
+				if _, err := tx.C("offer").Update(ctx, bson.D{{Key: "_id", Value: x["offer_id"]}}, bson.D{{Key: "$set", Value: bson.D{{Key: "doj", Value: b.Date}}}}); err != nil {
+					return err
+				}
 			}
 			if w != nil { // a new date: no longer a no-show
 				if _, err := tx.C("candidate").Update(ctx, bson.D{{Key: "_id", Value: id}}, bson.D{{Key: "$set", Value: bson.D{{Key: "waiting", Value: nil}}}}); err != nil {
@@ -590,23 +618,27 @@ func (s *Server) candidateEvent(r *http.Request, c *Ctx) (any, error) {
 			msg = fmt.Sprintf("Joining date moved to %s", longDate(b.Date))
 			err = lifeEvent(ctx, tx, c, lifeEv{Cand: id, Action: "Joining date moved", From: longDate(old), To: longDate(b.Date), Date: b.Date, Reason: b.Reason})
 		case "withdrew", "declined-day":
-			if !accepted {
+			if !accepted && !oaj {
 				return bad("This is for a candidate who accepted the offer and has not joined")
 			}
 			if err := needReason(); err != nil {
 				return err
 			}
 			kind := map[string]string{"withdrew": "Withdrew before joining", "declined-day": "Declined on joining day"}[b.Action]
-			if b.Action == "declined-day" && now < str(x["doj"]) {
-				return bad("The joining day is %s. Before it, use Withdrew before joining", longDate(str(x["doj"])))
+			if b.Action == "declined-day" && now < doj {
+				return bad("The joining day is %s. Before it, use Withdrew before joining", longDate(doj))
+			}
+			if oaj { // an offer at joining still waiting for approval is withdrawn with the candidate
+				if err := oajCancelPending(ctx, tx, c, x); err != nil {
+					return err
+				}
 			}
 			msg = name + ": " + strings.ToLower(kind[:1]) + kind[1:]
 			err = hireClose(ctx, tx, c, x, kind, b.Reason, hireState(x, w))
 		case "no-show":
-			if !accepted || w != nil {
+			if (!accepted && !oaj) || w != nil {
 				return bad("No-show is for a candidate who accepted the offer, on or after the joining date")
 			}
-			doj := str(x["doj"])
 			if now < doj {
 				return bad("The joining date is %s. Mark the no-show on or after it", longDate(doj))
 			}
@@ -616,7 +648,7 @@ func (s *Server) candidateEvent(r *http.Request, c *Ctx) (any, error) {
 			}
 			w = waitOf(w.doc(), now)
 			msg = fmt.Sprintf("%s is waiting: day %d of %d", name, w.Day, w.Total)
-			err = lifeEvent(ctx, tx, c, lifeEv{Cand: id, Action: "No-show on the joining day", From: "Offer accepted", To: "Waiting", Date: doj, Reason: b.Reason})
+			err = lifeEvent(ctx, tx, c, lifeEv{Cand: id, Action: "No-show on the joining day", From: hireState(x, nil), To: "Waiting", Date: doj, Reason: b.Reason})
 		case "stopped":
 			if !joinedNew || w != nil {
 				return bad("Stopped coming is for someone on a Joining ID who is not waiting already")
@@ -691,6 +723,14 @@ func (s *Server) candidateEvent(r *http.Request, c *Ctx) (any, error) {
 				return bad("Enter the day they came: from %s to today", longDate(w.Since))
 			}
 			if w.Kind == "no-show" { // joined on the actual date: the same offer, documents and link
+				if oaj { // offer at joining: only once its offer is approved; joining is the acceptance
+					if why := oajReady(x); why != "" {
+						return bad("%s", why)
+					}
+					if err := oajAccept(ctx, tx, c, x, b.Date); err != nil {
+						return err
+					}
+				}
 				code, err := s.hireJoin(ctx, tx, c, x, b.Date)
 				if err != nil {
 					return err
@@ -751,6 +791,9 @@ func hireState(x store.Row, w *waitView) string {
 	}
 	if x["stage"] == "Offer" && x["accepted_at"] != nil {
 		return "Offer accepted"
+	}
+	if oajOpen(x) {
+		return "Offer at joining"
 	}
 	return str(x["stage"])
 }
@@ -840,14 +883,20 @@ func offerVersions(ctx context.Context, q store.Q, x store.Row) []map[string]any
 	rows, _ := q.C(store.OfferVersionColl).Find(ctx, bson.D{{Key: "candidate_id", Value: x["id"]}}, options.Find().SetSort(bson.D{{Key: "version", Value: 1}}))
 	cur := toInt(x["offer_version"])
 	out := []map[string]any{}
+	locs := map[string]string{} // offer id → its location, for versions worked out again
 	for _, v := range rows {
+		oid := str(v["offer_id"])
+		if _, ok := locs[oid]; !ok {
+			o, _ := q.C("offer").FindOne(ctx, bson.D{{Key: "_id", Value: oid}})
+			locs[oid] = str(o["location_id"])
+		}
 		st := str(v["status"])
 		if toInt(v["version"]) == cur && !(v["frozen"] == true) && st != "Question" && st != "Declined" && st != "Lapsed" {
 			st = liveOfferState(x)
 		}
 		out = append(out, map[string]any{"version": v["version"], "status": st, "gross": v["gross"], "type": v["type"], "doj": v["doj"], "grade": v["grade"],
 			"answer": v["answer"], "answeredAt": v["answered_at"], "answeredBy": v["answered_by"], "releasedAt": v["released_at"], "expiresOn": v["expires_on"],
-			"frozen": v["frozen"], "createdAt": v["created_at"], "createdBy": v["created_by"]})
+			"frozen": v["frozen"], "createdAt": v["created_at"], "createdBy": v["created_by"], "pay": offerVersionPay(ctx, q, v, locs[oid])})
 	}
 	return out
 }
@@ -917,7 +966,8 @@ func offerAnswer(ctx context.Context, tx store.Q, c *Ctx, o store.Row, step, rea
 	now := tx.Now()
 	switch step {
 	case "release":
-		if err := offerVersionSet(ctx, tx, cand, ver, bson.D{{Key: "status", Value: "Sent"}, {Key: "released_at", Value: now}, {Key: "expires_on", Value: expires}}); err != nil {
+		if err := offerVersionSet(ctx, tx, cand, ver, bson.D{{Key: "status", Value: "Sent"}, {Key: "released_at", Value: now}, {Key: "expires_on", Value: expires},
+			{Key: "pay", Value: offerPaySnap(ctx, tx, o)}}); err != nil { // the breakup the candidate got (offer_paysnap.go)
 			return err
 		}
 		return lifeEvent(ctx, tx, c, lifeEv{Cand: cand, Action: "Offer " + vs + " sent", From: "Approved", To: "Sent", Reason: "Answer due by " + longDate(expires)})
@@ -1120,7 +1170,8 @@ func (s *Server) HireSweep(ctx context.Context, now time.Time) (HireSweepResult,
 	hs := loadHireSettings(ctx, s.st.DB)
 	// Offers sent and not answered.
 	offers, err := s.st.DB.C("offer").Find(ctx, bson.D{{Key: "candidate_id", Value: bson.D{{Key: "$ne", Value: nil}}}, {Key: "released_at", Value: bson.D{{Key: "$ne", Value: nil}}},
-		{Key: "accepted_at", Value: nil}, {Key: "declined_at", Value: nil}, {Key: "lapsed_at", Value: nil}, {Key: "query_at", Value: nil}, {Key: "expires_on", Value: bson.D{{Key: "$ne", Value: nil}}}})
+		{Key: "accepted_at", Value: nil}, {Key: "declined_at", Value: nil}, {Key: "lapsed_at", Value: nil}, {Key: "query_at", Value: nil}, {Key: "expires_on", Value: bson.D{{Key: "$ne", Value: nil}}},
+		{Key: "at_joining", Value: bson.D{{Key: "$ne", Value: true}}}}) // an offer at joining is never sent, so it never lapses (offer_at_joining.go)
 	if err != nil {
 		return res, err
 	}
@@ -1329,6 +1380,7 @@ func (s *Server) hireRoutes(m *http.ServeMux) {
 	}
 	m.HandleFunc("POST /api/candidates/{id}/event", s.a(s.candidateEvent))
 	m.HandleFunc("POST /api/candidates/{id}/bgv", s.a(s.candidateBGV))
+	m.HandleFunc("POST /api/candidates/{id}/offer-at-joining", s.a(s.candidateOfferAtJoining)) // offer_at_joining.go
 	m.HandleFunc("POST /api/employees/{id}/stage", s.a(s.employeeStage))
 	m.HandleFunc("GET /api/employees/{id}/timeline", s.a(s.employeeTimeline))
 }

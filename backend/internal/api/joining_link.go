@@ -1086,7 +1086,8 @@ func (s *Server) joinForm(ctx context.Context, jc *joinCtx) (map[string]any, err
 			v.OnlyIf = map[string]string{"marital": "Married"}
 		case "pfChoice":
 			// Asked only for a gross above the threshold (the joiner does not see the gross), once they say they have no UAN.
-			if !f.applies(typ, map[string]string{"uanAvail": "No", "gross": d["gross"]}) {
+			// Also whenever the offer said No to PF, prefilled with the offer's answer (owner, 26 Nov 2026; pf_offer.go).
+			if !f.applies(typ, map[string]string{"uanAvail": "No", "gross": d["gross"], "pfWant": d["pfWant"]}) {
 				continue
 			}
 			v.OnlyIf = map[string]string{"uanAvail": "No"}
@@ -1285,6 +1286,11 @@ func (s *Server) joinFormSave(r *http.Request) (any, error) {
 			set = append(set, bson.E{Key: "data." + k, Value: v})
 			if v != "" {
 				filled = append(filled, k)
+			}
+		}
+		if v, ok := in["pfChoice"]; ok { // the joiner's PF answer, when it differs from the offer's (pf_offer.go)
+			if err := joinPfEvent(ctx, tx, jc.actor, o, v, "the joining form"); err != nil {
+				return err
 			}
 		}
 		sort.Slice(set, func(i, j int) bool { return set[i].Key < set[j].Key })

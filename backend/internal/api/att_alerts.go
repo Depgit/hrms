@@ -433,10 +433,16 @@ func (s *Server) attSweep(ctx context.Context, q store.Q, set attAlertSet, now t
 			}
 		}
 		grace := int(p.S.Grace)
+		if t.hasStart && len(t.plan.Short) > 0 { // an approved short leave at the start: late and not-in count from its end
+			t.start = t.plan.ExcusedStart(t.start, grace)
+		}
 		if t.rec != nil && t.rec.In != "" {
 			if in, ok := attend.Min(t.rec.In); ok && t.hasStart {
 				if late := attLateBy(in, t.start); late > grace {
 					t.late, t.lateOK = late, true
+					if al := m.devOn(e, p, d).Allowed(); al != nil && al.LateIn { // an allowed late check-in is no late mark (dev_allow.go)
+						t.late, t.lateOK = 0, false
+					}
 				}
 			}
 			continue
@@ -450,8 +456,8 @@ func (s *Server) attSweep(ctx context.Context, q store.Q, set attAlertSet, now t
 		if m.regs[e.ID][d] != "" {
 			continue
 		}
-		t.due = t.plan.Shift.Start + grace + set.NotInAfter
-		end := t.plan.Shift.End
+		t.due = t.plan.ExcusedStart(t.plan.Shift.Start, grace) + grace + set.NotInAfter
+		end := t.plan.Shift.LastEnd() // a split shift: the end of its second part
 		if end <= t.plan.Shift.Start {
 			end += 1440 // ends next day
 		}
@@ -492,8 +498,8 @@ func (s *Server) attSweep(ctx context.Context, q store.Q, set attAlertSet, now t
 				skip("no punches at " + or(e.Location, "a location") + " yet (machine may be offline)")
 				continue
 			}
-			text := fmt.Sprintf("No punch-in yet today (shift %s–%s). If you are working, punch in now; if you are away, apply for leave in the HRMS.",
-				attend.HHMM(t.plan.Shift.Start), attend.HHMM(t.plan.Shift.End))
+			text := fmt.Sprintf("No punch-in yet today (shift %s). If you are working, punch in now; if you are away, apply for leave in the HRMS.",
+				t.plan.Shift.Timing())
 			sent, err := x.send(ctx, "notin", attKey("notin", d, e.ID), e.ID, "No punch-in today", text, myAtt, "Employee")
 			if err != nil {
 				return err
@@ -599,7 +605,7 @@ func (s *Server) attSweep(ctx context.Context, q store.Q, set attAlertSet, now t
 					continue
 				}
 				st, _ := m.status(e, p, dd)
-				if strings.Contains(st, "Missing") || st == "No punch" || strings.HasPrefix(st, "Absent") {
+				if strings.Contains(st, "Missing") || st == "No punch" || strings.HasPrefix(st, "Absent") || st == attend.StHalfReg {
 					bad = append(bad, fmt.Sprintf("%s (%s)", attShort(dd), strings.ToLower(st)))
 				}
 			}

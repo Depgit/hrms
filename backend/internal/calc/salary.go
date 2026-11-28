@@ -75,7 +75,7 @@ var DefaultStructure = Structure{
 	MedOn: true, MedPct: 3, MedMax: 500,
 	Grat: 4.81, PlDays: 15, Denom: "calendar",
 	BonusOn: true, BonusCeil: 21000, BonusPct: 8.33, BonusCalc: 7000,
-	TdsRate: 10,
+	TdsRate: 1, // the retainer TDS, % of gross: 1% (owner, 25 Nov 2026; was 10), editable per structure and per employee
 }
 
 // TypeRules is what an employment type switches on or off.
@@ -210,13 +210,32 @@ type Input struct {
 	// VarTarget is nil): the target "in %" mode (17 Nov 2026).
 	VarTargetPct *float64
 	VarPaid      map[string]float64
+	// EmpAmts are the person's own ₹ a month for the per-employee components (calc.MPerEmp), by component code:
+	// employee_pay.comp_amts, e.g. {"reimb": 3000} for the Reimbursement (owner, 20 Nov 2026).
+	EmpAmts map[string]float64
+	// AllIn: the all-inclusive gross (owner, 26 Nov 2026; allin.go). Gross (and EligGross, the full month) are the
+	// offered amount G, split into the structure's earnings and, when G is at most the bonus ceiling, the statutory
+	// bonus; the employer's PF, ESI, EDLI and LWF are deducted from the employee. Variable pay is paid every month,
+	// target × days paid ÷ days. Classic ignores it.
+	AllIn bool
+
+	// Set by the all-inclusive calculation only (allin.go).
+	bonusElig *bool    // the bonus eligibility decided on G (nil: on the full fixed gross, as before)
+	bonusAmt  *float64 // the bonus inside G (nil: worked out by the rule)
+	allInG    float64  // G a month: the base of "% of gross" variable targets and of the default CTC
+	autoVar   bool     // variable pay paid automatically every month: target × days paid ÷ days
+	ratio     *float64 // days paid ÷ days for the per-month amounts (nil: earned gross ÷ full gross)
 }
 
 type Result struct {
-	Gross        float64 `json:"gross"`
-	Basic        float64 `json:"basic"`
-	Hra          float64 `json:"hra"`
-	Sa           float64 `json:"sa"`
+	Gross float64 `json:"gross"`
+	Basic float64 `json:"basic"`
+	Hra   float64 `json:"hra"`
+	Sa    float64 `json:"sa"`
+	// Reimb is the per-employee fixed amounts (the Reimbursement component), earned by the days paid like the gross but
+	// OUTSIDE it (owner, 25 Nov 2026): not in Gross, the Basic/HRA/SA split or the PF, ESI and bonus wages; in TotalEarn,
+	// Net and CTC.
+	Reimb        float64 `json:"reimb,omitempty"`
 	Fee          float64 `json:"fee,omitempty"` // Retainer: the retainer fee, the whole fixed pay (no Basic, HRA or Special allowance)
 	PfBase       float64 `json:"pfBase"`
 	Variable     float64 `json:"variable"`
@@ -241,6 +260,7 @@ type Result struct {
 	Meal         float64 `json:"meal"`
 	Accom        float64 `json:"accom"`
 	Tds          float64 `json:"tds"`
+	TdsRate      float64 `json:"tdsRate,omitempty"` // the TDS % used (a retainer: the employee's own or the structure's)
 	Ded          float64 `json:"ded"`
 	TotalEarn    float64 `json:"totalEarn"`
 	Net          float64 `json:"net"`
@@ -252,6 +272,14 @@ type Result struct {
 	Comps   []CompLine `json:"comps,omitempty"`
 	CompDed float64    `json:"compDed,omitempty"`
 	NonTax  float64    `json:"nonTax,omitempty"`
+	// The all-inclusive gross (Input.AllIn; allin.go; owner's rule of 26 Nov 2026, evening). Gross is then G earned,
+	// split into Basic, HRA, Special allowance (…) and the statutory bonus (BonusIn); the employer's PF, ESI, EDLI and
+	// LWF are deducted from it (ErDed, in Ded); EmployerCost is the admin charges, gratuity and medical insurance.
+	AllIn       bool    `json:"allIn,omitempty"`
+	Offered     float64 `json:"offered,omitempty"`     // G earned this month (G × days paid ÷ days) = Gross
+	OfferedFull float64 `json:"offeredFull,omitempty"` // G a month, as offered
+	ErDed       float64 `json:"erDed,omitempty"`       // the employer's PF (with EPS), ESI, EDLI and LWF, deducted from the employee
+	BonusIn     bool    `json:"bonusIn,omitempty"`     // the statutory bonus is a line inside G
 }
 
 // LwfAmountFor returns the employee ("ee") or employer ("er") LWF for a month.
@@ -298,8 +326,17 @@ func b2f(b bool) float64 {
 	return 0
 }
 
-// Calc is the salary engine for one month (prototype `calc`).
+// Calc is the salary engine for one month (prototype `calc`). With Input.AllIn the gross given is the all-inclusive
+// amount G (allin.go).
 func Calc(p Input) Result {
+	if p.AllIn && !p.Classic {
+		return calcAllIn(p)
+	}
+	return calcOne(p)
+}
+
+// rulesOf is the structure and the employment type's rules a calculation uses.
+func rulesOf(p Input) (Structure, TypeRules) {
 	S := DefaultStructure
 	if p.Structure != nil {
 		S = *p.Structure
@@ -308,6 +345,12 @@ func Calc(p Input) Result {
 	if p.Rules != nil {
 		T = *p.Rules
 	}
+	return S, T
+}
+
+// calcOne is the month's calculation on a fixed gross (the gross the structure splits).
+func calcOne(p Input) Result {
+	S, T := rulesOf(p)
 	stat := b2f(T.Statutory)
 	gross := math.Max(0, p.Gross+p.Inc)
 	elig := gross
@@ -361,12 +404,19 @@ func Calc(p Input) Result {
 		med = math.Min(gross*S.MedPct/100, S.MedMax)
 	}
 	bonus := 0.0
-	if T.Bonus && S.BonusOn && elig <= S.BonusCeil {
+	bonusElig := elig <= S.BonusCeil
+	if p.bonusElig != nil { // all-inclusive gross: decided on G
+		bonusElig = *p.bonusElig
+	}
+	if T.Bonus && S.BonusOn && bonusElig {
 		calcBase := S.BonusCalc
 		if calcBase <= 0 {
 			calcBase = 7000
 		}
 		bonus = math.Min(h.bonusBase, calcBase) * S.BonusPct / 100
+	}
+	if p.bonusAmt != nil {
+		bonus = *p.bonusAmt
 	}
 
 	lwfOn := T.LWF && p.Lwf != nil && p.Lwf.On
@@ -376,7 +426,7 @@ func Calc(p Input) Result {
 		lwfEr = LwfAmountFor(p.Lwf, "er", gross, p.Month)
 	}
 
-	var meal, accom, tds float64
+	var meal, accom, tds, tdsRate float64
 	if T.Ded == "all" {
 		meal, accom = p.Meal, p.Accom
 	}
@@ -386,24 +436,29 @@ func Calc(p Input) Result {
 			rate = *p.TdsPct
 		}
 		tds = gross * rate / 100
+		tdsRate = rate
 	}
 	ded := eePF + eeESI + lwfEe + meal + accom + tds
 	if h.ded != 0 { // component deductions (designed structures)
 		ded += h.ded
 	}
-	totalEarn := gross + bonus + varPay
+	reimb := h.reimb // outside the gross, paid on top like variable pay (owner, 25 Nov 2026); none for a retainer
+	if p.Type == Retainer {
+		reimb = 0
+	}
+	totalEarn := gross + bonus + varPay + reimb
 	grat := b2f(T.Grat) * basic * S.Grat / 100
 	plEnc := b2f(T.PlEnc) * basic / 30 * S.PlDays / 12
 	employerCost := erPF + admin + edli + erESI + lwfEr + med + grat
 
 	res := Result{
-		Gross: gross, Basic: basic, Hra: hra, Sa: sa, PfBase: pfBase,
+		Gross: gross, Basic: basic, Hra: hra, Sa: sa, Reimb: reimb, PfBase: pfBase,
 		Variable: variable, VarPay: varPay, VarCycle: cyc,
 		EePF: eePF, ErPF: erPF, Eps: eps, ErEpf: erPF - eps, Admin: admin, Edli: edli, PfExempt: p.PfExempt && T.Statutory,
 		EsiOn: esiOn, EeESI: eeESI, ErESI: erESI, MedOn: medOn, Med: med, Bonus: bonus,
-		LwfOn: lwfOn, LwfEe: lwfEe, LwfEr: lwfEr, Meal: meal, Accom: accom, Tds: tds,
+		LwfOn: lwfOn, LwfEe: lwfEe, LwfEr: lwfEr, Meal: meal, Accom: accom, Tds: tds, TdsRate: tdsRate,
 		Ded: ded, TotalEarn: totalEarn, Net: totalEarn - ded, Grat: grat, PlEnc: plEnc,
-		EmployerCost: employerCost, CTC: gross + variable + bonus + employerCost + plEnc,
+		EmployerCost: employerCost, CTC: gross + variable + bonus + employerCost + plEnc + reimb,
 		Comps: h.lines, CompDed: h.ded, NonTax: h.nonTax,
 	}
 	if p.Type == Retainer {
@@ -414,11 +469,11 @@ func Calc(p Input) Result {
 
 // retainerOnly shows a retainer's pay as the retainer value only (owner, 18 Nov 2026): one "Retainer fee" (the fixed
 // gross earned), no Basic, HRA or Special allowance split and no fixed component lines; the deduction lines and any
-// variable amount paid stay. Only the display figures change: every amount, the TDS (section 194J), net pay and the
+// variable amount paid stay. Only the display figures change: every amount, the TDS (% of gross), net pay and the
 // CTC are worked out exactly as before.
 func retainerOnly(r *Result) {
 	r.Fee = r.Gross
-	r.Basic, r.Hra, r.Sa, r.PfBase = 0, 0, 0, 0
+	r.Basic, r.Hra, r.Sa, r.PfBase = 0, 0, 0, 0 // Reimb is already 0 for a retainer (Calc)
 	if len(r.Comps) == 0 {
 		return
 	}

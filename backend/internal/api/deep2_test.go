@@ -98,7 +98,7 @@ func TestDeepTimeAndLeave(t *testing.T) {
 	setPolicy(t, st, "Operations – 6 day", map[string]any{"ot": map[string]any{"on": true, "pre": false, "rate": "2x", "after": 30, "elig": "all", "cap": 75},
 		"shift": map[string]any{"nightFrom": "22:00", "nightTo": "06:00", "nightAllow": 100}, "compoff": true, "hol": map[string]any{"work": "choose"}})
 	// Overtime and comp-off were removed (8 Nov 2026): the old settings above stay in the stored policy and are ignored.
-	t.Run("no overtime, night allowance still paid", func(t *testing.T) {
+	t.Run("no overtime, no night allowance (removed 24 Nov 2026)", func(t *testing.T) {
 		// EMP-1020 works the M shift (06:00-14:00): 3.5 hours over on one day, a night start on another.
 		d1, d2 := dayIn(open, time.Tuesday, 2), dayIn(open, time.Wednesday, 2)
 		punchDay(t, st, "EMP-1020", d1, "06:00", "17:30")
@@ -117,8 +117,8 @@ func TestDeepTimeAndLeave(t *testing.T) {
 		if _, ok := row["otHours"]; ok {
 			t.Fatalf("no overtime hours: %v", row["otHours"])
 		}
-		if night == nil || num(night["amount"]) < 100 {
-			t.Fatalf("night allowance %v", night)
+		if night != nil {
+			t.Fatalf("no night allowance: %v", night)
 		}
 		// 3.5 hours over the shift is not a deviation any more, so there is nothing to approve.
 		if s, r := c.do("POST", "/api/deviations/decide", "EMP-1008", "Property Manager", map[string]any{"items": []any{map[string]any{"employeeId": "EMP-1020", "date": d1}}, "status": "OK"}); s != 200 || r["done"] != 0.0 {

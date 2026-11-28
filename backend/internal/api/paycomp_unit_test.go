@@ -60,3 +60,27 @@ func TestCompSlipLinesFoot(t *testing.T) {
 		t.Fatal("a converted structure's register changed")
 	}
 }
+
+// The Reimbursement is outside the gross (owner, 25 Nov 2026): any amount of zero or more is taken (no more "what
+// Basic and HRA leave" limit); negative and a retainer are refused.
+func TestReimbCheck(t *testing.T) {
+	st := calc.DefaultStructure
+	if err := checkReimb(st, "Version 1", "Permanent", 12000); err != nil {
+		t.Fatalf("12,000 refused: %v", err)
+	}
+	if err := checkReimb(st, "Version 1", "Permanent", -1); err == nil {
+		t.Fatal("a negative amount allowed")
+	}
+	if err := checkReimb(st, "Version 1", "Retainer", 1000); err == nil {
+		t.Fatal("a retainer got a Reimbursement")
+	}
+}
+
+// The portal's employee code is the ID's number, 6 digits (owner, 25 Nov 2026).
+func TestPortalIDCode(t *testing.T) {
+	for id, want := range map[string]string{"JI-000006": "000006", "EMP-000123": "000123", "RET-000008": "000008", "EMP-1050": "001050", "EMP-1234567": "1234567", "ADMIN": ""} {
+		if got := ptIDCode(id); got != want {
+			t.Errorf("%s → %q, want %q", id, got, want)
+		}
+	}
+}

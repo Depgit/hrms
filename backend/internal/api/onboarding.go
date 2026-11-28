@@ -28,17 +28,21 @@ import (
 // ---------- Form setup ----------
 
 type onbField struct {
-	Key     string   `json:"key"`
-	Label   string   `json:"label"`
-	Section string   `json:"section"`
-	Kind    string   `json:"kind"`
-	Options *string  `json:"options"`
-	On      bool     `json:"on"`
-	Sys     bool     `json:"sys"`
-	Custom  bool     `json:"custom"`
-	Offer   int      `json:"offer"`
-	Join    int      `json:"join"`
-	Types   []string `json:"types"`
+	Key     string  `json:"key"`
+	Label   string  `json:"label"`
+	Section string  `json:"section"`
+	Kind    string  `json:"kind"`
+	Options *string `json:"options"`
+	On      bool    `json:"on"`
+	Sys     bool    `json:"sys"`
+	Custom  bool    `json:"custom"`
+	// Shortlist, Offer, Join: 0 Not needed, 1 Optional, 2 Mandatory at Shortlisting, Offer release and Joining.
+	Shortlist int      `json:"shortlist"`
+	Offer     int      `json:"offer"`
+	Join      int      `json:"join"`
+	Types     []string `json:"types"`
+	// ShortlistFixed: Shortlisting is locked (store.ShortlistFixed): always asked, or never (flow, policy).
+	ShortlistFixed bool `json:"shortlistFixed,omitempty"`
 	// FilledBy: "joiner" (the new joiner fills it from their link, joining_link.go) or "hr".
 	FilledBy string `json:"filledBy"`
 	// Threshold: the PF choice (pfChoice) is asked only above this monthly gross (company_setting.pf_exempt_gross).
@@ -46,15 +50,16 @@ type onbField struct {
 }
 
 type onbDoc struct {
-	Key      string   `json:"key"`
-	Label    string   `json:"label"`
-	On       bool     `json:"on"`
-	Sys      bool     `json:"sys"`
-	Offer    int      `json:"offer"`
-	Join     int      `json:"join"`
-	Types    []string `json:"types"`
-	Depts    []string `json:"depts"`
-	FilledBy string   `json:"filledBy"`
+	Key       string   `json:"key"`
+	Label     string   `json:"label"`
+	On        bool     `json:"on"`
+	Sys       bool     `json:"sys"`
+	Shortlist int      `json:"shortlist"`
+	Offer     int      `json:"offer"`
+	Join      int      `json:"join"`
+	Types     []string `json:"types"`
+	Depts     []string `json:"depts"`
+	FilledBy  string   `json:"filledBy"`
 }
 
 // joinerAllowed: the field may be given to the joiner (store.JoinerAllowed).
@@ -98,6 +103,12 @@ func loadSetup(ctx context.Context, q store.Q) ([]onbField, []onbDoc, error) {
 		if f.FilledBy == "" || !f.joinerAllowed() { // not set yet (an import), or a field HR always fills
 			f.FilledBy = store.DefaultFilledBy(f.Key, f.Section, f.Kind, f.Sys, str(r["options"]))
 		}
+		// Shortlisting (store/schema_shortlist.go): not set yet reads as the shortlist form asked before; locked rows
+		// always read their fixed value.
+		f.Shortlist, f.ShortlistFixed = store.ShortlistDefault(f.Key, f.Kind), store.ShortlistFixed(f.Key, f.Kind)
+		if r["shortlist_state"] != nil && !f.ShortlistFixed {
+			f.Shortlist = toInt(r["shortlist_state"])
+		}
 		fs = append(fs, f)
 	}
 	rows, err = q.C("onb_document").Find(ctx, bson.D{}, inOrder)
@@ -107,7 +118,7 @@ func loadSetup(ctx context.Context, q store.Q) ([]onbField, []onbDoc, error) {
 	ds := make([]onbDoc, 0, len(rows))
 	for _, r := range rows {
 		ds = append(ds, onbDoc{Key: str(r["key"]), Label: str(r["label"]), On: r["on_form"] == true, Sys: r["sys"] == true,
-			Offer: toInt(r["offer_state"]), Join: toInt(r["join_state"]), Types: onboardingStrings(r["types"]), Depts: onboardingStrings(r["depts"]),
+			Shortlist: toInt(r["shortlist_state"]), Offer: toInt(r["offer_state"]), Join: toInt(r["join_state"]), Types: onboardingStrings(r["types"]), Depts: onboardingStrings(r["depts"]),
 			FilledBy: str(r["filled_by"])})
 		if ds[len(ds)-1].FilledBy == "" {
 			ds[len(ds)-1].FilledBy = store.FilledByJoiner
@@ -198,7 +209,7 @@ func onboardingScope(ctx context.Context, q store.Q, sc access.Scope) (bson.D, e
 		}
 		f = append(f, bson.E{Key: "location_id", Value: bson.D{{Key: "$in", Value: locs}}})
 	case "team":
-		f = append(f, bson.E{Key: "manager_id", Value: sc.EmployeeID})
+		f = append(f, bson.E{Key: "manager_id", Value: bson.D{{Key: "$in", Value: sc.TeamManagers()}}})
 	default:
 		f = append(f, bson.E{Key: "_id", Value: sc.EmployeeID})
 	}
@@ -244,7 +255,8 @@ func (f onbField) applies(typ string, data map[string]string) bool {
 }
 
 // asked: the fields asked only on an answer (owner, 19 Nov 2026): the UAN number when an existing UAN was declared,
-// the spouse's name when married, and the PF choice when there is no UAN and the gross is above the threshold.
+// the spouse's name when married, and the PF choice when there is no UAN and the gross is above the threshold, or
+// when the offer said No to PF (owner, 26 Nov 2026; pf_offer.go).
 func (f onbField) asked(d map[string]string) bool {
 	switch f.Key {
 	case "uan":
@@ -252,7 +264,7 @@ func (f onbField) asked(d map[string]string) bool {
 	case "spouse":
 		return d["marital"] == "Married"
 	case "pfChoice":
-		return pfChoiceAsked(d, f.Threshold)
+		return pfChoiceAsked(d, f.Threshold) || pfOfferNo(d)
 	}
 	return true
 }
@@ -296,19 +308,20 @@ func (s *Server) onbSetupGet(r *http.Request, c *Ctx) (any, error) {
 }
 
 type setupPatch struct {
-	Label    *string   `json:"label"`
-	On       *bool     `json:"on"`
-	Offer    *int      `json:"offer"`
-	Join     *int      `json:"join"`
-	Types    *[]string `json:"types"`
-	Depts    *[]string `json:"depts"`
-	FilledBy *string   `json:"filledBy"` // joiner | hr
+	Label     *string   `json:"label"`
+	On        *bool     `json:"on"`
+	Shortlist *int      `json:"shortlist"`
+	Offer     *int      `json:"offer"`
+	Join      *int      `json:"join"`
+	Types     *[]string `json:"types"`
+	Depts     *[]string `json:"depts"`
+	FilledBy  *string   `json:"filledBy"` // joiner | hr
 }
 
 var empTypes = []string{"Permanent", "Retainer", "Contractual"}
 
 func (p setupPatch) check(sys bool) error {
-	for _, v := range []*int{p.Offer, p.Join} {
+	for _, v := range []*int{p.Shortlist, p.Offer, p.Join} {
 		if v != nil && (*v < 0 || *v > 2) {
 			return bad("Choose Not needed, Optional or Mandatory")
 		}
@@ -352,6 +365,12 @@ func (s *Server) onbSetupPatch(r *http.Request, c *Ctx) (any, error) {
 	if b.Depts != nil && table != "onb_document" {
 		return nil, bad("Only documents can be limited to departments")
 	}
+	if b.Shortlist != nil && table == "onb_field" && store.ShortlistFixed(key, str(item["kind"])) && *b.Shortlist != store.ShortlistDefault(key, str(item["kind"])) {
+		if store.ShortlistAlways(key) {
+			return nil, bad("%s is always asked at shortlisting", item["label"])
+		}
+		return nil, bad("%s is worked out at the offer, so it is not asked at shortlisting", item["label"])
+	}
 	if b.Depts != nil { // each a department in the master (HIRE-236)
 		for _, d := range *b.Depts {
 			if ok, _ := s.st.DB.C("department").Exists(ctx, bson.M{"name": d}); !ok {
@@ -378,6 +397,9 @@ func (s *Server) onbSetupPatch(r *http.Request, c *Ctx) (any, error) {
 	}
 	if b.On != nil {
 		set = append(set, bson.E{Key: "on_form", Value: *b.On})
+	}
+	if b.Shortlist != nil {
+		set = append(set, bson.E{Key: "shortlist_state", Value: *b.Shortlist})
 	}
 	if b.Offer != nil {
 		set = append(set, bson.E{Key: "offer_state", Value: *b.Offer})
@@ -411,12 +433,13 @@ func (s *Server) onbSetupAdd(r *http.Request, c *Ctx) (any, error) {
 		return nil, err
 	}
 	var b struct {
-		Label   string `json:"label"`
-		Section string `json:"section"`
-		Kind    string `json:"kind"`
-		Options string `json:"options"`
-		Offer   int    `json:"offer"`
-		Join    int    `json:"join"`
+		Label     string `json:"label"`
+		Section   string `json:"section"`
+		Kind      string `json:"kind"`
+		Options   string `json:"options"`
+		Shortlist int    `json:"shortlist"`
+		Offer     int    `json:"offer"`
+		Join      int    `json:"join"`
 		// FilledBy: joiner or hr; empty for the default (a field by its section, a document the joiner).
 		FilledBy string `json:"filledBy"`
 	}
@@ -430,7 +453,7 @@ func (s *Server) onbSetupAdd(r *http.Request, c *Ctx) (any, error) {
 	if b.Label == "" || len(b.Label) > 80 {
 		return nil, bad("Enter a label")
 	}
-	if b.Offer < 0 || b.Offer > 2 || b.Join < 0 || b.Join > 2 {
+	if b.Shortlist < 0 || b.Shortlist > 2 || b.Offer < 0 || b.Offer > 2 || b.Join < 0 || b.Join > 2 {
 		return nil, bad("Choose Not needed, Optional or Mandatory")
 	}
 	ctx, kind := r.Context(), r.PathValue("kind")
@@ -459,7 +482,7 @@ func (s *Server) onbSetupAdd(r *http.Request, c *Ctx) (any, error) {
 				return bad("Fields in %s are filled by HR", b.Section)
 			}
 			if _, err := tx.C("onb_field").Insert(ctx, bson.M{"key": key, "label": b.Label, "section": b.Section, "kind": b.Kind,
-				"options": strPtr(opts), "custom": true, "offer_state": b.Offer, "join_state": b.Join, "sort": sort, "filled_by": by}); err != nil {
+				"options": strPtr(opts), "custom": true, "shortlist_state": b.Shortlist, "offer_state": b.Offer, "join_state": b.Join, "sort": sort, "filled_by": by}); err != nil {
 				return err
 			}
 		case "docs":
@@ -471,7 +494,7 @@ func (s *Server) onbSetupAdd(r *http.Request, c *Ctx) (any, error) {
 			if by == "" {
 				by = store.FilledByJoiner
 			}
-			if _, err := tx.C("onb_document").Insert(ctx, bson.M{"key": key, "label": b.Label, "offer_state": b.Offer, "join_state": b.Join, "sort": sort, "filled_by": by}); err != nil {
+			if _, err := tx.C("onb_document").Insert(ctx, bson.M{"key": key, "label": b.Label, "shortlist_state": b.Shortlist, "offer_state": b.Offer, "join_state": b.Join, "sort": sort, "filled_by": by}); err != nil {
 				return err
 			}
 		default:
@@ -499,6 +522,7 @@ type offerJob struct {
 	Grade, CityID, City, LocID, Loc string
 	Gross                           float64
 	TopUp                           float64 // meal and accommodation deductions: a minimum-wage top-up, not company cost
+	Reimb                           float64 // the Reimbursement ₹ a month, outside the gross (reimb.go): company cost
 	Manager, FManager               *string
 	RejoinOf                        string
 	Rehire                          string
@@ -622,8 +646,6 @@ func resolveJob(ctx context.Context, q store.Q, d map[string]string, errs *[]str
 			add("Designation “%s” does not exist under %s", d["desig"], j.Dept)
 		} else if j.DesigID, j.Desig = str(x["id"]), str(x["name"]); x["status"] != "Active" {
 			add("Designation “%s” is inactive now. Choose an active one", j.Desig)
-		} else if j.Grade != "" && !containsStr(onboardingStrings(x["grades"]), j.Grade) {
-			add("Grade %s is not mapped to %s", j.Grade, j.Desig)
 		}
 	}
 	if j.Grade != "" {
@@ -656,6 +678,9 @@ func resolveJob(ctx context.Context, q store.Q, d map[string]string, errs *[]str
 		}
 		j.Gross = g
 	}
+	if calc.EmploymentType(j.Type) != calc.Retainer {
+		j.Reimb = math.Max(0, offerReimb(d))
+	}
 	if calc.RulesFor(calc.EmploymentType(j.Type)).Ded == "all" {
 		for _, k := range []string{"dMeal", "dAccom"} {
 			if v, err := strconv.ParseFloat(d[k], 64); err == nil && v > 0 {
@@ -675,11 +700,11 @@ func resolveJob(ctx context.Context, q store.Q, d map[string]string, errs *[]str
 		}
 	}
 	if v := d["shift"]; v != "" && j.LocID != "" {
-		// A shift with no locations listed is used everywhere.
+		// The shift must apply to the department and location (its rows, shift_maps.go).
 		if x, _ := q.C("shift").FindOne(ctx, bson.D{{Key: "code", Value: v}, {Key: "status", Value: "Active"}}); x == nil {
 			add("Shift %s is not an active shift", v)
-		} else if x["location_ids"] != nil && !containsStr(onboardingStrings(x["location_ids"]), j.LocID) {
-			add("Shift %s is not mapped to %s", v, j.Loc)
+		} else if ok, _ := shiftRowFor(ctx, q, str(x["id"]), j.DeptID, j.LocID); !ok {
+			add("%s", shiftNotForMsg(v, j.Dept, j.Loc))
 		}
 	}
 	if v := d["attMode"]; v != "" {
@@ -732,7 +757,9 @@ func offerProblems(ctx context.Context, q store.Q, d map[string]string, docs map
 	}
 	checkFormat(d, &errs)
 	j := resolveJob(ctx, q, d, &errs)
-	jobMasterRequired(d, &errs) // Role and Skill, always, like the department (hirefix.go)
+	offerPfProblems(ctx, q, j.Type, j.Gross, d, &errs)      // "Does the employee want PF?" (pf_offer.go)
+	jobMasterRequired(d, &errs)                             // Role and Skill, always, like the department (hirefix.go)
+	offerReimbProblems(ctx, q, j, d, &errs)                 // the Reimbursement: zero or more, on a structure that has it (reimb.go)
 	if err := accomProblems(ctx, q, d, &errs); err != nil { // Company accommodation: Yes needs a cluster with units (hst_auto.go)
 		return offerJob{}, nil, err
 	}
@@ -785,7 +812,7 @@ func offerPay(ctx context.Context, q store.Q, j offerJob, d map[string]string) c
 		st = calc.Structure{}
 		_ = onboardingDecodeJSON(x["rates"], &st)
 	}
-	in := calc.Input{Type: calc.EmploymentType(j.Type), Gross: j.Gross, Structure: &st}
+	in := calc.Input{Type: calc.EmploymentType(j.Type), Gross: j.Gross, Structure: &st, EmpAmts: reimbAmts(offerReimb(d)), AllIn: offerAllIn(ctx, q, j)}
 	t := calc.RulesFor(calc.EmploymentType(j.Type))
 	if t.Variable && !st.Designed {
 		in.VarPct, in.VarCycle = numOr(d["varPct"]), intOr(d["varCycle"])
@@ -812,8 +839,9 @@ func offerPay(ctx context.Context, q store.Q, j offerJob, d map[string]string) c
 	if j.LocID != "" {
 		in.Lwf = lwfFor(ctx, q, j.LocID, today())
 	}
-	// The candidate chose no PF (no UAN, gross above the threshold; pfuan.go): PF exempt, the fixed gross all Basic.
-	if t.Statutory && pfChoiceWord(d["pfChoice"]) == store.PfChoiceOptOut && pfChoiceAsked(d, loadPfRules(ctx, q).ExemptGross) {
+	// The candidate chose no PF (on the offer or the joining form, no existing UAN, gross above the threshold;
+	// pfuan.go, pf_offer.go): PF exempt, the fixed gross all Basic.
+	if t.Statutory && offerPfOptOut(d, j.Gross, loadPfRules(ctx, q).ExemptGross) {
 		in.PfExempt, in.AllBasic = true, true
 	}
 	if isDate(j.DOJ) {
@@ -986,6 +1014,7 @@ type offerBody struct {
 	Data      map[string]any `json:"data"`
 	Draft     string         `json:"draft"`     // documents uploaded before the offer was saved (offers before stages)
 	Candidate string         `json:"candidate"` // the selected candidate (SI-0001) the offer is for
+	AtJoining bool           `json:"atJoining"` // "Raise offer at joining" (offer_at_joining.go)
 }
 
 // offerInputDocs are the documents an offer form sees: a candidate's (owner SI-0001), else a draft's.
@@ -1032,7 +1061,7 @@ func (s *Server) offerCheck(r *http.Request, c *Ctx) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]any{"errors": errs, "docs": docs}
+	out := map[string]any{"errors": errs, "docs": docs, "pfLimit": loadPfRules(ctx, s.st.DB).ExemptGross}
 	if j.Type != "" && j.Gross > 0 {
 		res := offerPay(ctx, s.st.DB, j, d)
 		out["breakup"], out["ctcYear"] = res, calc.Round2(res.CTC*12)
@@ -1107,6 +1136,14 @@ func (s *Server) offerCreate(r *http.Request, c *Ctx) (any, error) {
 		return nil, err
 	}
 	b.Candidate = str(cand["id"])
+	if b.AtJoining { // offer at joining: chosen before, raised on the joining day (offer_at_joining.go)
+		if !oajOpen(cand) {
+			return nil, bad("Choose Offer at joining for %s first", b.Candidate)
+		}
+		if doj := oajDOJ(cand); today() < doj {
+			return nil, bad("The joining day is %s. Raise the offer at joining on that day, or use Reschedule joining", longDate(doj))
+		}
+	}
 	d := cleanData(b.Data)
 	candidateOfferData(cand, d)
 	docs := offerInputDocs(ctx, s.st.DB, b)
@@ -1117,6 +1154,7 @@ func (s *Server) offerCreate(r *http.Request, c *Ctx) (any, error) {
 	if len(errs) > 0 {
 		return nil, badD(fmt.Sprintf("%d thing%s to fix before sending", len(errs), map[bool]string{true: "", false: "s"}[len(errs) == 1]), errs)
 	}
+	offerPfData(j.Type, d) // the PF answer as saved, and the joining form's question prefilled (pf_offer.go)
 	band := bandOf(ctx, s.st.DB, j.CityID, j.Grade, j.Gross)
 	over := budgetOver(ctx, s.st.DB, j, "")
 	pos := "none"
@@ -1156,6 +1194,16 @@ func (s *Server) offerCreate(r *http.Request, c *Ctx) (any, error) {
 			{Key: "designation_id", Value: j.DesigID}, {Key: "grade", Value: j.Grade}, {Key: "location_id", Value: j.LocID}, {Key: "manager_id", Value: j.Manager},
 			{Key: "functional_manager_id", Value: j.FManager}, {Key: "gross", Value: j.Gross}, {Key: "band_pos", Value: pos}, {Key: "budget_over", Value: over},
 			{Key: "data", Value: d}, {Key: "rejoin_of", Value: strPtr(j.RejoinOf)}, {Key: "raised_by", Value: c.EmployeeID}, {Key: "version", Value: int32(version)}}
+		if b.AtJoining || (prev != nil && prev["at_joining"] == true) {
+			offer = append(offer, bson.E{Key: "at_joining", Value: b.AtJoining})
+		}
+		if b.AtJoining {
+			if _, err := tx.C("candidate").Update(ctx, bson.D{{Key: "_id", Value: b.Candidate}}, bson.D{{Key: "$set", Value: bson.D{{Key: "oaj_doj", Value: j.DOJ}}}}); err != nil {
+				return err
+			}
+		} else if err := oajSwitchBack(ctx, tx, c, cand); err != nil { // the usual offer raised instead of the offer at joining
+			return err
+		}
 		if prev != nil { // the revised offer: a new version, sent for approval again, from the start
 			offer = append(offer, bson.E{Key: "released_at", Value: nil}, bson.E{Key: "accepted_at", Value: nil}, bson.E{Key: "declined_at", Value: nil},
 				bson.E{Key: "query_at", Value: nil}, bson.E{Key: "query_text", Value: nil}, bson.E{Key: "expires_on", Value: nil}, bson.E{Key: "lapsed_at", Value: nil})
@@ -1170,7 +1218,8 @@ func (s *Server) offerCreate(r *http.Request, c *Ctx) (any, error) {
 		}
 		if _, err := tx.C(store.OfferVersionColl).Insert(ctx, bson.D{{Key: "candidate_id", Value: b.Candidate}, {Key: "offer_id", Value: id}, {Key: "version", Value: int32(version)},
 			{Key: "type", Value: j.Type}, {Key: "doj", Value: j.DOJ}, {Key: "grade", Value: j.Grade}, {Key: "gross", Value: j.Gross}, {Key: "data", Value: d},
-			{Key: "status", Value: "Pending approval"}, {Key: "created_by", Value: c.Name}}); err != nil {
+			{Key: "status", Value: "Pending approval"}, {Key: "created_by", Value: c.Name},
+			{Key: "pay", Value: offerPaySnap(ctx, tx, store.Row{"type": j.Type, "gross": j.Gross, "location_id": j.LocID, "doj": j.DOJ, "data": d})}}); err != nil {
 			return err
 		}
 		if _, err := tx.C("candidate").Update(ctx, bson.D{{Key: "_id", Value: b.Candidate}}, bson.D{{Key: "$set", Value: bson.D{{Key: "name", Value: j.Name},
@@ -1181,8 +1230,18 @@ func (s *Server) offerCreate(r *http.Request, c *Ctx) (any, error) {
 		if prev != nil {
 			from = map[bool]string{true: "Question", false: "Not approved"}[prev["query_at"] != nil]
 		}
-		if err := lifeEvent(ctx, tx, c, lifeEv{Cand: b.Candidate, Action: fmt.Sprintf("Offer v%d raised", version), From: from, To: "Pending approval",
+		action := fmt.Sprintf("Offer v%d raised", version)
+		if b.AtJoining {
+			action += " at joining"
+			if prev == nil {
+				from = "Offer at joining"
+			}
+		}
+		if err := lifeEvent(ctx, tx, c, lifeEv{Cand: b.Candidate, Action: action, From: from, To: "Pending approval",
 			Reason: fmt.Sprintf("%s, gross %s a month, joining %s", j.Type, rupees(j.Gross), longDate(j.DOJ))}); err != nil {
+			return err
+		}
+		if err := offerPfEvent(ctx, tx, c, b.Candidate, prev, d); err != nil { // the PF answer, or its change (pf_offer.go)
 			return err
 		}
 		req, err := s.createRequestTx(ctx, tx, c, "joining", id, offerFacts(j, band, over), map[string]string{"offerId": id, "candidateId": b.Candidate})
@@ -1193,7 +1252,12 @@ func (s *Server) offerCreate(r *http.Request, c *Ctx) (any, error) {
 			return err
 		}
 		out = map[string]any{"id": id, "request": req, "version": version}
-		return audit(ctx, tx, c, fmt.Sprintf("Raised offer v%d for %s (%s)", version, j.Name, b.Candidate), "offer", id, nil, map[string]any{"type": j.Type, "gross": j.Gross, "budget": over, "band": pos, "candidate": b.Candidate})
+		what := fmt.Sprintf("Raised offer v%d for %s (%s)", version, j.Name, b.Candidate)
+		if b.AtJoining {
+			what = fmt.Sprintf("Raised offer v%d at joining for %s (%s)", version, j.Name, b.Candidate)
+		}
+		return audit(ctx, tx, c, what, "offer", id, nil, map[string]any{"type": j.Type, "gross": j.Gross, "budget": over, "band": pos, "candidate": b.Candidate, "atJoining": b.AtJoining,
+			"pf": d["pfWant"]})
 	})
 	return out, err
 }
@@ -1211,18 +1275,29 @@ func (s *Server) offerCandidate(ctx context.Context, q store.Q, c *Ctx, id strin
 }
 
 // candidateOfferData fills what the offer takes from the shortlist and cannot be changed on the offer form: the
-// rejoin and its code choice, and the hiring manager as the reporting manager unless one is chosen.
+// rejoin and its code choice, and the hiring manager as the reporting manager unless one is chosen. Every other value
+// given at shortlisting that the form did not send carries forward too (owner, 26 Nov 2026: nobody types it twice),
+// so the joining form and the joiner's link start from it; a value the offer form sends, even blank, wins.
 func candidateOfferData(cand store.Row, d map[string]string) {
 	delete(d, "rejoinOf")
 	delete(d, "codeMode")
+	m, _ := cand["data"].(map[string]any)
 	if rj := str(cand["rejoin_of"]); rj != "" {
 		d["rejoinOf"] = rj
-		if m, ok := cand["data"].(map[string]any); ok && str(m["codeMode"]) != "" {
+		if m != nil && str(m["codeMode"]) != "" {
 			d["codeMode"] = str(m["codeMode"])
 		}
 	}
 	if d["l1"] == "" {
 		d["l1"] = str(cand["manager_id"])
+	}
+	for k, v := range m {
+		if _, sent := d[k]; sent || k == "experience" || k == "codeMode" || len(k) > 40 {
+			continue
+		}
+		if s := strings.TrimSpace(fmt.Sprint(v)); s != "" && v != nil {
+			d[k] = s
+		}
 	}
 }
 
@@ -1279,6 +1354,7 @@ func onboardingOffers(ctx context.Context, q store.Q, filter bson.D, limit int64
 			"data": o["data"], "location_id": o["location_id"], "department_id": o["department_id"], "pan_check": o["pan_check"],
 			"offer_no": o["offer_no"], "version": o["version"], "expires_on": o["expires_on"], "query_at": o["query_at"], "query_text": o["query_text"], "lapsed_at": o["lapsed_at"],
 			"letter_at": o["letter_at"], "letter_released_at": o["letter_released_at"], // hirefix.go
+			"at_joining": o["at_joining"], // offer_at_joining.go
 			"department": d["name"], "designation": g["name"], "location": p.loc["name"], "city": p.city["name"], "city_id": p.city["id"], "raised_by": rb["name"],
 			"request_id": onboardingCol(r, "id"), "request_status": onboardingCol(r, "status"), "chain": onboardingCol(r, "chain"), "step": onboardingCol(r, "step"),
 			"verify_id": onboardingCol(v, "id"), "verify_status": onboardingCol(v, "status"), "verify_chain": onboardingCol(v, "chain"), "verify_step": onboardingCol(v, "step")})
@@ -1571,7 +1647,7 @@ func (s *Server) offerLetter(ctx context.Context, o store.Row, res calc.Result) 
 func offerBreakup(res calc.Result) string {
 	var l []string
 	if res.Fee > 0 { // a retainer: the retainer value only (calc retainerOnly)
-		l = append(l, "Retainer fee: "+rupees(res.Fee)+" a month (TDS under section 194J)")
+		l = append(l, "Retainer fee: "+rupees(res.Fee)+" a month (TDS "+tdsNote(res.TdsRate)+")")
 		for _, c := range res.Comps {
 			if c.Side == calc.SideDed {
 				l = append(l, fmt.Sprintf("%s (deduction): %s a month", c.Name, rupees(calc.Round2(c.Amount))))
@@ -1584,6 +1660,8 @@ func offerBreakup(res calc.Result) string {
 			switch {
 			case c.Kind == calc.CompVariable:
 				l = append(l, fmt.Sprintf("%s (variable, %s): %s a month", c.Name, cycleWord(c.Cycle), rupees(calc.Round2(c.Target))))
+			case c.Extra:
+				l = append(l, fmt.Sprintf("%s (outside the gross): %s a month", c.Name, rupees(calc.Round2(c.Amount))))
 			case c.Side == calc.SideDed:
 				l = append(l, fmt.Sprintf("%s (deduction): %s a month", c.Name, rupees(calc.Round2(c.Amount))))
 			default:
@@ -1591,10 +1669,19 @@ func offerBreakup(res calc.Result) string {
 			}
 		}
 	} else {
-		l = append(l, "Basic + DA: "+rupees(res.Basic)+" a month", "HRA: "+rupees(res.Hra)+" a month", "Special allowance: "+rupees(res.Sa)+" a month")
+		l = append(l, "Basic + DA: "+rupees(res.Basic)+" a month")
+		if !res.PfExempt || res.Hra != 0 || res.Sa != 0 { // no PF by choice: the whole gross is Basic (pf_offer.go)
+			l = append(l, "HRA: "+rupees(res.Hra)+" a month", "Special allowance: "+rupees(res.Sa)+" a month")
+		}
+		if res.Reimb > 0 {
+			l = append(l, "Reimbursement (outside the gross): "+rupees(res.Reimb)+" a month")
+		}
 		if res.Variable > 0 {
 			l = append(l, "Variable pay: "+rupees(res.Variable)+" a month")
 		}
+	}
+	if res.PfExempt {
+		l = append(l, "Provident Fund: not deducted (the employee chose no PF)")
 	}
 	return strings.Join(l, "\n")
 }
@@ -1632,6 +1719,12 @@ func (s *Server) offerStep(r *http.Request, c *Ctx) (any, error) {
 		case "release":
 			if st != "Approved" {
 				return bad("The offer can be released once it is approved, and only once")
+			}
+			if o["at_joining"] == true { // offer_at_joining.go
+				return bad("An offer at joining is not released: Mark joined records the acceptance and gives the letter")
+			}
+			if err := offerPfRelease(ctx, tx, o); err != nil { // no PF on a gross up to the threshold (pf_offer.go)
+				return err
 			}
 			set := bson.D{{Key: "released_at", Value: now}}
 			if cand != "" {
@@ -1825,6 +1918,11 @@ func (s *Server) offerJoining(r *http.Request, c *Ctx) (any, error) {
 		mErrs = append(mErrs, rsErrs...)
 		if len(mErrs) > 0 {
 			return badD(mErrs[0], mErrs)
+		}
+		if v, ok := keep["pfChoice"]; ok { // the PF answer given in the joining details (pf_offer.go)
+			if err := joinPfEvent(ctx, tx, c, o, fmt.Sprint(v), "the joining details"); err != nil {
+				return err
+			}
 		}
 		// The details sent are merged into the offer's form data; the other keys stay.
 		merge := bson.D{}
@@ -2022,6 +2120,9 @@ func finalizeOffer(ctx context.Context, tx store.Q, r *Request) (string, error) 
 		if err := lifeEvent(ctx, tx, nil, lifeEv{Cand: cand, Action: fmt.Sprintf("Offer v%d approved", v), From: "Pending approval", To: "Approved", Reason: "Approval " + r.ID}); err != nil {
 			return "", err
 		}
+		if o["at_joining"] == true { // offer_at_joining.go
+			return fmt.Sprintf("Offer at joining v%d for %s (%s) approved. Mark them joined from Onboarding: joining is the acceptance and the Offer ID is issued then.", v, o["candidate_name"], cand), nil
+		}
 		return fmt.Sprintf("Offer v%d for %s (%s) approved. Release it from Onboarding. The Offer ID is issued when the candidate accepts.", v, o["candidate_name"], cand), nil
 	}
 	code, same, err := employeeFromOffer(ctx, tx, o, o["doj"].(string), "Offer "+o["id"].(string))
@@ -2169,8 +2270,11 @@ func employeeFromOfferWith(ctx context.Context, tx store.Q, o store.Row, doj, by
 	if t.Ded == "tds" {
 		pay[4] = numOr(d["tdsPct"])
 	}
-	if _, err := tx.C("employee_pay").Upsert(ctx, bson.D{{Key: "employee_id", Value: code}},
-		bson.M{"var_pct": pay[0], "var_cycle": pay[1], "meal": pay[2], "accommodation": pay[3], "tds_pct": pay[4]}, nil); err != nil {
+	paySet := bson.M{"var_pct": pay[0], "var_cycle": pay[1], "meal": pay[2], "accommodation": pay[3], "tds_pct": pay[4], "comp_amts": nil}
+	if r := offerReimb(d); r > 0 && calc.EmploymentType(typ) != calc.Retainer { // the offer's Reimbursement (reimb.go)
+		paySet["comp_amts"] = bson.M{calc.ReimbCode: calc.Round2(r)}
+	}
+	if _, err := tx.C("employee_pay").Upsert(ctx, bson.D{{Key: "employee_id", Value: code}}, paySet, nil); err != nil {
 		return "", false, err
 	}
 	if err := applyPersonal(ctx, tx, code, doj, d, by); err != nil {

@@ -42,6 +42,7 @@ export function PfExemptBlock({ id }: { id: string }) {
         {!ch.open && !ch.value && ch.why && <div className="mute" style={{ fontSize: 12.5 }}>{ch.why}</div>}</dd>
       <dt>The rule</dt><dd className="ink2" style={{ fontSize: 13 }}>{x.rule?.reason} <span className="mute">(exempt above {inr(x.threshold)} with no existing UAN)</span></dd>
     </dl>
+    {x.retainer && <div className="note bad" style={{ fontSize: 13, marginTop: 6 }}>{x.retainer}</div>}
     {x.warning && <div className="note warn" style={{ fontSize: 13, marginTop: 6 }}>{x.warning}</div>}
     {!x.exempt && !x.hasUan && x.uanHold && <div className="note" style={{ fontSize: 13, marginTop: 6 }}>No UAN on record: the salary is held at the payroll run until the UAN is entered.</div>}
     {x.canEdit && <div className="row" style={{ marginTop: 8, gap: 8 }}><button className="btn sm" onClick={() => { setMode(x.exempt ? 'member' : 'exempt'); setEdit(true); }}>Change PF exemption</button>

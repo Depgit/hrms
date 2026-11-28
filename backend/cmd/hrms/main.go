@@ -2,9 +2,15 @@
 //
 //	hrms migrate                                  create the MongoDB collections and indexes (and reference data)
 //	hrms seed [-sample]                           load reference data (and the sample organisation)
+//	hrms create-admin -name … -mobile …           make the first HR Admin of a new installation (once; see below)
+//	hrms set-password -id EMP-0001                set a sign-in password (from HRMS_ADMIN_PASSWORD) when there is no other way in
 //	hrms serve                                    run the API and background jobs
 //	hrms import-pg [-from postgres://…] [-replace [-reset-mdm]] copy an existing PostgreSQL installation into MongoDB
 //	                                              (-replace keeps the CMS link; -reset-mdm clears it too)
+//
+// create-admin [-email …] [-id EMP-0001] [-state Haryana] [-city Gurugram]: run after `hrms seed` (without -sample).
+// The password is optional and is read from HRMS_ADMIN_PASSWORD, never from a flag (shell history); without it the
+// person activates the account with an OTP sent to the mobile number.
 //
 // MONGO_URL (default mongodb://localhost:27017/?replicaSet=rs0&directConnection=true) and MONGO_DB (default hrms)
 // say which database. MongoDB must run as a replica set (one node is enough): the app uses transactions.
@@ -31,6 +37,7 @@ import (
 	"github.com/saltstayz/hrms/internal/pgimport"
 	"github.com/saltstayz/hrms/internal/realtime"
 	"github.com/saltstayz/hrms/internal/seed"
+	"github.com/saltstayz/hrms/internal/sms"
 	"github.com/saltstayz/hrms/internal/storage"
 	"github.com/saltstayz/hrms/internal/store"
 )
@@ -78,7 +85,7 @@ func main() {
 		log.Printf("APP_TZ %q not loaded (%v); using the host's time zone", store.Zone(), err)
 	}
 	if len(os.Args) < 2 {
-		fmt.Println("usage: hrms migrate | seed [-sample] | serve | import-pg [-from postgres://…] [-replace [-reset-mdm]] | realtime-pull [-from yyyy-mm-dd] [-to yyyy-mm-dd] | realtime-match | realtime-forms | pay-compare -month yyyy-mm[,yyyy-mm]")
+		fmt.Println("usage: hrms migrate | seed [-sample] | create-admin -name … -mobile … | set-password -id … | serve | import-pg [-from postgres://…] [-replace [-reset-mdm]] | realtime-pull [-from yyyy-mm-dd] [-to yyyy-mm-dd] | realtime-match | realtime-forms | pay-compare -month yyyy-mm[,yyyy-mm]")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -159,6 +166,14 @@ func main() {
 			log.Printf("%d salary structure(s) moved to the variable pay target", n)
 		}
 		files := env("STORAGE_DIR", "data/uploads")
+		fileStore, err := storage.FromEnv(os.Getenv)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if os.Getenv("STORAGE_DRIVER") == "gcs" && os.Getenv("APP_SECRET") == "" {
+			// Without APP_SECRET the key lives in a file next to STORAGE_DIR, which a container loses on restart.
+			log.Fatal("STORAGE_DRIVER=gcs needs APP_SECRET (the key that encrypts the stored Google Drive sign-in)")
+		}
 		// The key that encrypts the Google Drive sign-in: APP_SECRET, else a key file next to STORAGE_DIR (0600).
 		key, keyFrom, err := api.SecretKey(filepath.Join(filepath.Dir(filepath.Clean(files)), "hrms-secret.key"))
 		if err != nil {
@@ -166,6 +181,19 @@ func main() {
 		}
 		log.Printf("stored secrets are encrypted with the key from %s", keyFrom)
 		devOTP := env("OTP_DEV_ECHO", "false") == "true"
+		if devOTP && env("APP_ENV", "") == "production" {
+			log.Fatal("OTP_DEV_ECHO must be false when APP_ENV=production: it would show every OTP on screen")
+		}
+		// The one-time code goes out by SMS through MSG91 (MSG91_AUTH_KEY + MSG91_SMS_FLOW_ID).
+		var otpSend api.OTPSender
+		if m := sms.FromEnv(os.Getenv); m != nil {
+			otpSend = m.SendOTP
+			log.Println("OTP codes are sent by SMS through MSG91")
+		} else if devOTP {
+			log.Println("SMS is not set up (MSG91_AUTH_KEY, MSG91_SMS_FLOW_ID): OTP_DEV_ECHO is on, so codes are shown on screen")
+		} else {
+			log.Println("WARNING: SMS is not set up (MSG91_AUTH_KEY, MSG91_SMS_FLOW_ID) and OTP_DEV_ECHO is off: nobody can get an OTP")
+		}
 		// The company mailbox for the joiner's link and code: SMTP_* settings; without them, the development echo
 		// (written to this log, never sent) when OTP_DEV_ECHO is on, else none (the app says email is not set up).
 		var sender mail.Sender
@@ -186,7 +214,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		srv := api.New(st, api.Options{DevOTP: devOTP, Files: storage.Local{Root: files}, SecretKey: key, Mail: sender,
+		srv := api.New(st, api.Options{DevOTP: devOTP, Files: fileStore, OTP: otpSend, SecretKey: key, Mail: sender,
 			AppURL: env("APP_URL", "http://localhost:5173"), TrustedProxies: proxies})
 		// Not cancelled by the signal: StopJobs below shuts the queue down gracefully.
 		if err := srv.StartJobs(context.WithoutCancel(ctx)); err != nil {
@@ -208,6 +236,35 @@ func main() {
 			log.Fatal(err)
 		}
 		<-stopped
+	case "create-admin":
+		// The first HR Admin of a new installation. Needs `hrms seed` (without -sample) first; refuses once any HR Admin
+		// exists. The optional password comes from HRMS_ADMIN_PASSWORD, never a flag.
+		fs := flag.NewFlagSet("create-admin", flag.ExitOnError)
+		in := seed.FirstAdminInput{Password: os.Getenv("HRMS_ADMIN_PASSWORD")}
+		fs.StringVar(&in.Name, "name", "", "the person's full name (required)")
+		fs.StringVar(&in.Mobile, "mobile", "", "10-digit mobile number; the OTP is sent here (required)")
+		fs.StringVar(&in.Email, "email", "", "email address (optional)")
+		fs.StringVar(&in.ID, "id", "", "Employee ID (default: the next in the series, EMP-0001)")
+		fs.StringVar(&in.State, "state", "", "the head office's state (default Haryana)")
+		fs.StringVar(&in.City, "city", "", "the head office's city (default Gurugram)")
+		_ = fs.Parse(os.Args[2:])
+		id, err := seed.FirstAdmin(ctx, st, in)
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("HR Admin %s created for %s. Head office, department and shift were made with placeholder names: rename them in Masters.", id, in.Name)
+		if in.Password == "" {
+			log.Printf("No password was set: %s signs in with Activate with OTP (needs SMS) .", id)
+		}
+	case "set-password":
+		// Sets the sign-in password of an existing employee (password from HRMS_ADMIN_PASSWORD, never a flag).
+		fs := flag.NewFlagSet("set-password", flag.ExitOnError)
+		id := fs.String("id", "", "the Employee ID, for example EMP-0001 (required)")
+		_ = fs.Parse(os.Args[2:])
+		if err := seed.SetPassword(ctx, st, *id, os.Getenv("HRMS_ADMIN_PASSWORD")); err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("Password set for %s. Wrong tries and any lock were cleared, and they were signed out everywhere.", strings.ToUpper(strings.TrimSpace(*id)))
 	case "realtime-pull":
 		// Punches from the Realtime India portal for a date range (default today), as the setup page's "Pull now";
 		// the account comes from REALTIME_URL, REALTIME_USER and REALTIME_PASS. The database must be migrated.

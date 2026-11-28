@@ -171,3 +171,42 @@ func TestNextEmployeeCodeStoreError(t *testing.T) {
 		t.Fatalf("want the aborting error (23505), got %q: %v", code, codeErr)
 	}
 }
+
+// Employee codes by type from one series (owner, 25 Nov 2026): with one series for everyone, a Permanent gets
+// EMP-<next> and a Retainer RET-<next> from the SAME numbers and width, so their digits never repeat (the portal code
+// is the ID's number); a number one prefix already has is skipped for the other; Contractual keeps the EMP- prefix.
+func TestEmployeeCodesRetEmpOneSeries(t *testing.T) {
+	_, _, st := setupFull(t)
+	ctx := context.Background()
+	if _, err := st.DB.C("employee_code_settings").Update(ctx, bson.M{"_id": 1}, bson.M{"$set": bson.M{"by_type": false}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.C("employee_code_series").Update(ctx, bson.M{"key": "All"}, bson.M{"$set": bson.M{"prefix": "EMP-", "pad": 6, "next_no": 7}}); err != nil {
+		t.Fatal(err)
+	}
+	dup := apiDoc(st, "employee", bson.M{"_id": "EMP-1020"}) // RET-000009 already exists: 9 is used for EMP- too
+	delete(dup, "id")
+	dup["_id"] = "RET-000009"
+	if _, err := st.DB.C("employee").Insert(ctx, dup); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	if err := st.Tx(ctx, func(tx store.Q) error {
+		for _, typ := range []string{"Permanent", "Retainer", "Permanent", "Contractual"} {
+			c, err := api.NextEmployeeCode(ctx, tx, typ)
+			if err != nil {
+				return err
+			}
+			got = append(got, c)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if want := "EMP-000007 RET-000008 EMP-000010 EMP-000011"; strings.Join(got, " ") != want {
+		t.Fatalf("codes %v, want %s", got, want)
+	}
+	if s, ok := apiDoc(st, "employee_code_series", bson.M{"key": "All"})["next_no"]; !ok || fmt.Sprint(s) != "12" {
+		t.Fatalf("next_no %v", s)
+	}
+}

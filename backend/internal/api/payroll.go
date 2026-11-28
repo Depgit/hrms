@@ -912,6 +912,117 @@ func sheetWithFee(rows []*PayRowOut, cols []string, out [][]any) ([]string, [][]
 	return nc, out
 }
 
+// sheetWithReimb adds a "Reimbursement (outside the gross)" column after Special allowance when a row has one (reimb.go),
+// so a month without any gives exactly the sheet it gave before.
+func sheetWithReimb(rows []*PayRowOut, cols []string, out [][]any) ([]string, [][]any) {
+	at := -1
+	for i, c := range cols {
+		if c == "Special allowance" {
+			at = i + 1
+		}
+	}
+	has := false
+	for _, o := range rows {
+		has = has || o.R.Reimb != 0
+	}
+	if !has || at < 0 {
+		return cols, out
+	}
+	ins := func(l []any, v any) []any { return append(append(append([]any{}, l[:at]...), v), l[at:]...) }
+	for i, o := range rows {
+		out[i] = ins(out[i], figuresOf(o).Reimb)
+	}
+	return append(append(append([]string{}, cols[:at]...), "Reimbursement (outside the gross)"), cols[at:]...), out
+}
+
+// sheetWithAllIn shapes the sheet for a month paid on the all-inclusive gross (allin.go): Basic, HRA, Special allowance,
+// "Statutory bonus", "Gross salary (G)", then the rest; and before "Total deductions" the employer's shares deducted
+// from the employee (PF with EPS, ESI, EDLI, LWF). A month without the rule gives exactly the sheet it gave before.
+func sheetWithAllIn(rows []*PayRowOut, cols []string, out [][]any) ([]string, [][]any) {
+	has := false
+	for _, o := range rows {
+		has = has || o.R.AllIn
+	}
+	idx := func(name string) int {
+		for i, c := range cols {
+			if c == name {
+				return i
+			}
+		}
+		return -1
+	}
+	sa, bonus, totD := idx("Special allowance"), idx("Bonus"), idx("Total deductions")
+	if !has || sa < 0 || bonus < 0 || totD < 0 {
+		return cols, out
+	}
+	r2 := calc.Round2
+	// The new order of the old columns, with the inserted ones as -1 (gross) and -2..-5 (the employer's shares).
+	order := []int{}
+	for i := range cols {
+		switch {
+		case i == bonus:
+			continue
+		case i == totD:
+			order = append(order, -2, -3, -4, -5)
+		}
+		order = append(order, i)
+		if i == sa {
+			order = append(order, bonus, -1)
+		}
+	}
+	nc := make([]string, 0, len(order))
+	for _, k := range order {
+		switch k {
+		case -1:
+			nc = append(nc, "Gross salary (G)")
+		case -2:
+			nc = append(nc, "Employer PF (deducted)")
+		case -3:
+			nc = append(nc, "Employer ESI (deducted)")
+		case -4:
+			nc = append(nc, "EDLI (deducted)")
+		case -5:
+			nc = append(nc, "Employer LWF (deducted)")
+		default:
+			if k == bonus {
+				nc = append(nc, "Statutory bonus")
+			} else {
+				nc = append(nc, cols[k])
+			}
+		}
+	}
+	for n, o := range rows {
+		r := o.R
+		lwf := r2(figuresOf(o).ErDed - r2(r.ErPF) - r2(r.ErESI) - r2(r.Edli))
+		row := make([]any, 0, len(order))
+		for _, k := range order {
+			switch k {
+			case -1:
+				row = append(row, r2(r.Gross))
+			case -2:
+				row = append(row, r2(r.ErPF))
+			case -3:
+				row = append(row, r2(r.ErESI))
+			case -4:
+				row = append(row, r2(r.Edli))
+			case -5:
+				row = append(row, lwf)
+			default:
+				row = append(row, out[n][k])
+			}
+		}
+		if !r.AllIn { // a row of the month without the rule (none in practice): no gross line, no employer shares
+			for i, k := range order {
+				if k < 0 {
+					row[i] = 0.0
+				}
+			}
+		}
+		out[n] = row
+	}
+	return nc, out
+}
+
 func lineText(l []calc.Line) string {
 	out := []string{}
 	for _, x := range l {
@@ -969,6 +1080,8 @@ func (s *Server) payrollSheet(r *http.Request, c *Ctx) (string, []string, [][]an
 	}
 	cols, out := sheetWithComps(rows, out)
 	cols, out = sheetWithFee(rows, cols, out)
+	cols, out = sheetWithReimb(rows, cols, out)
+	cols, out = sheetWithAllIn(rows, cols, out)
 	return "payroll-sheet-" + ym + ".xlsx", cols, out, nil
 }
 
@@ -1179,6 +1292,8 @@ func (s *Server) payrollRegisterSheet(r *http.Request, c *Ctx) (string, []string
 	}
 	cols, out := sheetWithComps(rows, out)
 	cols, out = sheetWithFee(rows, cols, out)
+	cols, out = sheetWithReimb(rows, cols, out)
+	cols, out = sheetWithAllIn(rows, cols, out)
 	return "payroll-register-" + ym + ".xlsx", cols, out, nil
 }
 

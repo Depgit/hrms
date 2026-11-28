@@ -163,14 +163,7 @@ func checkTransfer(ctx context.Context, q store.Q, employeeID string, p *request
 		if ok, _ := q.C("designation").Exists(ctx, bson.M{"department_id": bson.M{"$in": depts}, "name": p.ToDesignation, "status": "Active"}); !ok {
 			return bad("Pick the new designation in %s", p.ToDepartment)
 		}
-		// The designation must be open to the employee's grade (a NULL grade matches no list).
-		open := false
-		if grade, ok := e["grade"].(string); ok {
-			open, _ = q.C("designation").Exists(ctx, bson.M{"department_id": bson.M{"$in": depts}, "name": p.ToDesignation, "grades": grade})
-		}
-		if !open {
-			return bad("%s is not open to the employee's grade", p.ToDesignation)
-		}
+		// Designation and grade are separate (owner, 27 Nov 2026): any designation fits any grade.
 	}
 	if p.ToLocation == locID && p.ToDepartment == "" {
 		return bad("That is the employee's current location and department")
@@ -190,17 +183,10 @@ func checkTransfer(ctx context.Context, q store.Q, employeeID string, p *request
 	return nil
 }
 
-// approvalsMoreShiftRuns: a shift runs at a location when it names no locations or names this one.
-func approvalsMoreShiftRuns(sh store.Row, loc string) bool {
-	if sh["location_ids"] == nil {
-		return true
-	}
-	for _, l := range strs(sh["location_ids"]) {
-		if l == loc {
-			return true
-		}
-	}
-	return false
+// approvalsMoreShiftRuns: the shift applies to the department (id) at the location (its rows, shift_maps.go).
+func approvalsMoreShiftRuns(ctx context.Context, q store.Q, sh store.Row, dept, loc string) bool {
+	ok, _ := shiftRowFor(ctx, q, str(sh["id"]), dept, loc)
+	return ok
 }
 
 // finalizeTransfer schedules (or applies) the move through the same path as any job change,
@@ -215,14 +201,21 @@ func finalizeTransfer(ctx context.Context, tx store.Q, r *Request) (string, erro
 	if p.ToManager != "" {
 		ch["manager"] = p.ToManager
 	}
-	// A shift that does not run at the new location moves to the first one that does (G first, then by code).
+	// A shift that does not apply to the new department and location moves to the first one that does (G first, then by
+	// code).
 	if e, _ := tx.C("employee").FindOne(ctx, bson.M{"_id": r.EmployeeID}); e != nil && e["shift_code"] != nil {
-		if sh, _ := tx.C("shift").FindOne(ctx, bson.M{"code": e["shift_code"]}); sh != nil && !approvalsMoreShiftRuns(sh, p.ToLocation) {
+		dept := str(e["department_id"])
+		if p.ToDepartment != "" {
+			if d, _ := tx.C("department").FindOne(ctx, bson.M{"name": p.ToDepartment}); d != nil {
+				dept = str(d["id"])
+			}
+		}
+		if sh, _ := tx.C("shift").FindOne(ctx, bson.M{"code": e["shift_code"]}); sh != nil && !approvalsMoreShiftRuns(ctx, tx, sh, dept, p.ToLocation) {
 			alts, err := tx.C("shift").Find(ctx, bson.M{"status": "Active"})
 			if err == nil {
 				codes := []string{}
 				for _, a := range alts {
-					if approvalsMoreShiftRuns(a, p.ToLocation) {
+					if approvalsMoreShiftRuns(ctx, tx, a, dept, p.ToLocation) {
 						codes = append(codes, str(a["code"]))
 					}
 				}

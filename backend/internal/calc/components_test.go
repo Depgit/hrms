@@ -308,3 +308,84 @@ func TestAllBasicOptOut(t *testing.T) {
 		t.Fatalf("fixed lines %d non-taxable %v: %+v", fixed, r.NonTax, r.Comps)
 	}
 }
+
+// Reimbursement outside the gross (owner, 25 Nov 2026; inside it from 20 Nov): a per-employee ₹ amount paid on top of
+// the fixed gross like variable pay. ₹3,000 on a gross of ₹30,000 on Version 1: Basic 15,000, HRA 7,500 and Special
+// allowance 7,500 exactly as with no reimbursement; PF stays on Basic, ESI on the gross; total earnings, net and CTC
+// grow by the 3,000; earned by the days paid like the gross; none for a retainer; no amount = bit for bit as before.
+func TestReimbursementOutsideGross(t *testing.T) {
+	S := DefaultStructure
+	S.Comps, S.Designed, S.Converted = TargetComponents(S), true, true
+	old := DefaultStructure
+	old.Comps, old.Designed, old.Converted = TargetComponents(old), true, true
+	old.Comps = append(old.Comps[:2:2], old.Comps[3:]...) // the template before the Reimbursement was added
+	for _, st := range []*Structure{nil, &S} {
+		none := Calc(Input{Type: Permanent, Gross: 30000, Structure: st})
+		r := Calc(Input{Type: Permanent, Gross: 30000, Structure: st, EmpAmts: map[string]float64{ReimbCode: 3000}})
+		if r.Gross != 30000 || r.Basic != 15000 || r.Hra != 7500 || r.Sa != 7500 || r.Reimb != 3000 {
+			t.Fatalf("breakup gross %v basic %v hra %v sa %v reimb %v", r.Gross, r.Basic, r.Hra, r.Sa, r.Reimb)
+		}
+		if r.PfBase != none.PfBase || r.EePF != 1800 || r.ErPF != 1800 || r.Bonus != none.Bonus || r.EeESI != none.EeESI {
+			t.Fatalf("PF wage %v, PF %v / %v, bonus %v, ESI %v: want as without", r.PfBase, r.EePF, r.ErPF, r.Bonus, r.EeESI)
+		}
+		if r.TotalEarn != none.TotalEarn+3000 || r.Net != r.Gross+r.Bonus+r.VarPay+3000-r.Ded || r.Net != none.Net+3000 || r.CTC != none.CTC+3000 {
+			t.Fatalf("earn %v net %v ctc %v; without: %v %v %v", r.TotalEarn, r.Net, r.CTC, none.TotalEarn, none.Net, none.CTC)
+		}
+		if st != nil {
+			found := false
+			for _, l := range r.Comps {
+				found = found || (l.Code == ReimbCode && l.Amount == 3000 && l.Taxable && l.Payslip && l.Extra)
+			}
+			if !found {
+				t.Fatalf("no Reimbursement line: %+v", r.Comps)
+			}
+		}
+		// Half the month paid: half the gross and half the reimbursement.
+		eg := 30000.0
+		h := Calc(Input{Type: Permanent, Gross: 15000, EligGross: &eg, Structure: st, EmpAmts: map[string]float64{ReimbCode: 3000}})
+		if st != nil && (h.Reimb != 1500 || h.Sa != 3750) {
+			t.Fatalf("half month: reimb %v sa %v", h.Reimb, h.Sa)
+		}
+		if ret := Calc(Input{Type: Retainer, Gross: 30000, Structure: st, EmpAmts: map[string]float64{ReimbCode: 3000}}); ret.Reimb != 0 || ret.TotalEarn != 30000 {
+			t.Fatalf("retainer reimb %v earn %v", ret.Reimb, ret.TotalEarn)
+		}
+	}
+	// ESI on the gross only (a gross within the ESI ceiling): 0.75% of 20,000.
+	r := Calc(Input{Type: Permanent, Gross: 20000, Structure: &S, EmpAmts: map[string]float64{ReimbCode: 2000}})
+	if r.EeESI != 150 {
+		t.Fatalf("ESI %v, want 150 on 20,000", r.EeESI)
+	}
+	// The whole gross as Basic (PF opt-out): the reimbursement is still paid on top.
+	if a := Calc(Input{Type: Permanent, Gross: 30000, Structure: &S, AllBasic: true, EmpAmts: map[string]float64{ReimbCode: 3000}}); a.Basic != 30000 || a.Reimb != 3000 {
+		t.Fatalf("all basic: basic %v reimb %v", a.Basic, a.Reimb)
+	}
+	for _, g := range []float64{12000, 30000, 87654.32} {
+		a := Calc(Input{Type: Permanent, Gross: g, Structure: &S})
+		b := Calc(Input{Type: Permanent, Gross: g, Structure: &old})
+		if !reflect.DeepEqual(a, b) {
+			t.Fatalf("gross %v: no amount changed the result\n%+v\n%+v", g, a, b)
+		}
+	}
+}
+
+// Retainer TDS (owner, 25 Nov 2026): 1% of gross by default, the structure's rate when set, the employee's own when set.
+func TestRetainerTds(t *testing.T) {
+	if DefaultStructure.TdsRate != 1 {
+		t.Fatalf("default TDS %v%%", DefaultStructure.TdsRate)
+	}
+	if r := Calc(Input{Type: Retainer, Gross: 50000}); r.Tds != 500 || r.TdsRate != 1 || r.Net != 49500 {
+		t.Fatalf("default: tds %v rate %v net %v", r.Tds, r.TdsRate, r.Net)
+	}
+	S := DefaultStructure
+	S.TdsRate = 2
+	if r := Calc(Input{Type: Retainer, Gross: 50000, Structure: &S}); r.Tds != 1000 {
+		t.Fatalf("structure 2%%: tds %v", r.Tds)
+	}
+	own := 5.0
+	if r := Calc(Input{Type: Retainer, Gross: 50000, Structure: &S, TdsPct: &own}); r.Tds != 2500 || r.TdsRate != 5 {
+		t.Fatalf("own 5%%: tds %v rate %v", r.Tds, r.TdsRate)
+	}
+	if r := Calc(Input{Type: Permanent, Gross: 50000, TdsPct: &own}); r.Tds != 0 {
+		t.Fatalf("permanent TDS %v", r.Tds)
+	}
+}

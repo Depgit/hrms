@@ -6,6 +6,8 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
+	"html"
+	"log"
 	"math/big"
 	"net/http"
 	"regexp"
@@ -16,6 +18,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/saltstayz/hrms/internal/access"
+	"github.com/saltstayz/hrms/internal/mail"
 	"github.com/saltstayz/hrms/internal/store"
 )
 
@@ -26,7 +29,7 @@ const (
 	otpResend       = 30 * time.Second
 	passwordGrace   = 10 * time.Minute
 	loginMaxFails   = 5
-	loginLock       = 15 * time.Minute
+	loginLock       = 5 * time.Minute // owner, 27 Nov 2026: was 15
 	sessionLifetime = 12 * time.Hour
 )
 
@@ -35,8 +38,12 @@ var (
 	randomHex    = access.RandomHex
 )
 
-// SMSSender delivers OTPs. Wire the SMS / WhatsApp provider here.
+// SMSSender delivers a free-text message by SMS or WhatsApp (nothing uses it yet).
 type SMSSender func(mobile, message string) error
+
+// OTPSender texts a one-time code. The wording is the provider's approved template; only the code goes in
+// (MSG91 flow, internal/sms). Nil means the OTP cannot be sent.
+type OTPSender func(ctx context.Context, mobile, code string) error
 
 func (s *Server) newSession(ctx context.Context, q store.Q, employeeID string) (string, error) {
 	b := make([]byte, 32)
@@ -58,6 +65,31 @@ func authMobile(ctx context.Context, q store.Q, id string) (string, error) {
 		return "", err
 	}
 	return str(p["mobile"]), nil
+}
+
+// authEmail is the personal email on record ("" when there is none).
+func authEmail(ctx context.Context, q store.Q, id string) string {
+	p, err := q.C("employee_personal").FindOne(ctx, bson.M{"employee_id": id})
+	if err != nil || p == nil {
+		return ""
+	}
+	return strings.TrimSpace(str(p["email"]))
+}
+
+// otpMail is the sign-in code by email: the same words as the SMS, and a note for someone who did not ask.
+func otpMail(company, name, to, code string) mail.Message {
+	hi := "Hello"
+	if name != "" {
+		hi = "Dear " + name
+	}
+	text := fmt.Sprintf("%s,\n\nYour %s HRMS OTP is %s. It is valid for 5 minutes. Do not share it with anyone.\n\nIf you did not ask for it, ignore this email and tell HR.\n\n%s HR\n", hi, company, code, company)
+	e := html.EscapeString
+	h := fmt.Sprintf(`<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.5;color:#111;max-width:520px">
+<p>%s,</p><p>Your %s HRMS OTP is</p>
+<p style="font-size:28px;font-weight:bold;letter-spacing:6px;font-family:monospace;margin:8px 0">%s</p>
+<p>It is valid for 5 minutes. Do not share it with anyone.</p>
+<p style="color:#666;font-size:13px">If you did not ask for it, ignore this email and tell HR.</p><p>%s HR</p></div>`, e(hi), e(company), code, e(company))
+	return mail.Message{To: to, Subject: company + " HRMS sign-in OTP", Text: text, HTML: h}
 }
 
 type idBody struct {
@@ -93,10 +125,10 @@ func (s *Server) otpSend(r *http.Request) (any, error) {
 		return nil, bad("purpose must be first or forgot")
 	}
 	ctx, id, ip := r.Context(), s.authID(r.Context(), b.EmployeeID), s.clientIP(r)
-	if err := s.authGuard.blocked(ip); err != nil {
+	if err := s.authGuard.blocked(ip, id); err != nil {
 		return nil, err
 	}
-	if err := s.authGuard.otpSend(ip); err != nil {
+	if err := s.authGuard.otpSend(ip, id); err != nil {
 		return nil, err
 	}
 	e, err := s.st.DB.C("employee").FindOne(ctx, bson.M{"_id": id})
@@ -104,7 +136,7 @@ func (s *Server) otpSend(r *http.Request) (any, error) {
 		return nil, err
 	}
 	if e == nil {
-		s.authGuard.failed(ip)
+		s.authGuard.failed(ip, id)
 		return nil, bad("We could not find that Employee ID. Check it, or ask HR.")
 	}
 	if e["status"] == "Pre-boarding" {
@@ -115,8 +147,16 @@ func (s *Server) otpSend(r *http.Request) (any, error) {
 		return nil, err
 	}
 	mask := access.MaskMobile(mobile)
-	if mask == "" {
+	// The OTP also goes to the personal email on record when the company mailbox is set up (owner, 27 Nov 2026).
+	// The development echo would write the code to the server log: never used for OTPs.
+	email := authEmail(ctx, s.st.DB, id)
+	byMail := s.mail != nil && s.mail.Kind() != "echo" && email != ""
+	bySMS := mask != "" && (s.otp != nil || s.sms != nil)
+	if mask == "" && !byMail {
 		return nil, bad("There is no mobile number on record for this Employee ID. Ask HR to add it.")
+	}
+	if !bySMS && !byMail && !s.devOTP { // never say "sent" when nothing can be sent
+		return nil, bad("OTP by SMS is not set up yet. Ask HR or IT.")
 	}
 	if last, err := s.st.DB.C("auth_otp").FindOne(ctx, bson.M{"employee_id": id}, authNewest()); err == nil && last != nil {
 		if at, ok := last["sent_at"].(time.Time); ok && time.Since(at) < otpResend {
@@ -144,12 +184,36 @@ func (s *Server) otpSend(r *http.Request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.sms != nil {
-		if err := s.sms(mobile, "Your Saltstayz HRMS OTP is "+code+". Valid for 5 minutes. Do not share it."); err != nil {
-			return nil, err
+	smsOK, mailOK := false, false
+	if bySMS {
+		var err error
+		if s.otp != nil {
+			err = s.otp(ctx, mobile, code)
+		} else {
+			err = s.sms(mobile, "Your Saltstayz HRMS OTP is "+code+". Valid for 5 minutes. Do not share it.")
 		}
+		if err != nil {
+			log.Printf("OTP SMS to %s failed: %v", mask, err) // the code is never logged
+		}
+		smsOK = err == nil
 	}
-	out := map[string]any{"employeeId": id, "mask": mask, "purpose": purpose}
+	if byMail {
+		err := s.mail.Send(ctx, otpMail(companyName(ctx, s.st.DB), str(e["name"]), email, code))
+		if err != nil {
+			log.Printf("OTP email to %s failed: %v", maskEmail(email), err)
+		}
+		mailOK = err == nil
+	}
+	if (bySMS || byMail) && !smsOK && !mailOK {
+		return nil, bad("We could not send the OTP right now. Try again in a minute.")
+	}
+	out := map[string]any{"employeeId": id, "purpose": purpose}
+	if smsOK || (!bySMS && !mailOK && mask != "") { // dev echo shows the SMS preview to the mobile
+		out["mask"] = mask
+	}
+	if mailOK {
+		out["emailMask"] = maskEmail(email)
+	}
 	if s.devOTP {
 		out["devOtp"] = code
 	}
@@ -162,7 +226,7 @@ func (s *Server) otpVerify(r *http.Request) (any, error) {
 		return nil, err
 	}
 	ctx, id, ip := r.Context(), s.authID(r.Context(), b.EmployeeID), s.clientIP(r)
-	if err := s.authGuard.blocked(ip); err != nil {
+	if err := s.authGuard.blocked(ip, id); err != nil {
 		return nil, err
 	}
 	otps := s.st.DB.C("auth_otp")
@@ -178,7 +242,7 @@ func (s *Server) otpVerify(r *http.Request) (any, error) {
 		return nil, bad("The OTP expired. Request a new one.")
 	}
 	if subtle.ConstantTimeCompare([]byte(o["code_hash"].(string)), []byte(sha(id+":"+strings.TrimSpace(b.Code)))) != 1 {
-		s.authGuard.failed(ip)
+		s.authGuard.failed(ip, id)
 		tries := int(o["tries"].(int32)) + 1
 		_, _ = otps.Update(ctx, bson.M{"_id": o["id"]}, bson.M{"$set": bson.M{"tries": tries, "used": tries >= otpMaxTries}})
 		if tries >= otpMaxTries {
@@ -259,13 +323,13 @@ func (s *Server) login(r *http.Request) (any, error) {
 		return nil, err
 	}
 	ctx, id, ip := r.Context(), s.authID(r.Context(), b.EmployeeID), s.clientIP(r)
-	if err := s.authGuard.blocked(ip); err != nil {
+	if err := s.authGuard.blocked(ip, id); err != nil {
 		return nil, err
 	}
 	generic := "Employee ID or password is incorrect. First time here? Activate with OTP."
 	e, err := s.st.DB.C("employee").FindOne(ctx, bson.M{"_id": id})
 	if err != nil || e == nil {
-		s.authGuard.failed(ip)
+		s.authGuard.failed(ip, id)
 		return nil, unauthorized(generic)
 	}
 	if e["status"] == "Pre-boarding" {
@@ -277,20 +341,20 @@ func (s *Server) login(r *http.Request) (any, error) {
 		return nil, err
 	}
 	if a == nil {
-		s.authGuard.failed(ip)
+		s.authGuard.failed(ip, id)
 		return nil, unauthorized(generic)
 	}
 	if lu, ok := a["locked_until"].(time.Time); ok && lu.After(time.Now()) {
 		return nil, &apiError{Status: 423, Message: fmt.Sprintf("Too many wrong attempts. Try again in %d minutes, or reset your password with OTP.", int(time.Until(lu).Minutes())+1)}
 	}
 	if subtle.ConstantTimeCompare([]byte(hashPassword(b.Password, a["salt"].(string))), []byte(a["hash"].(string))) != 1 {
-		s.authGuard.failed(ip)
+		s.authGuard.failed(ip, id)
 		fails := int(a["fails"].(int32)) + 1
 		who := &Ctx{Name: str(e["name"]), EmployeeID: id}
 		if fails >= loginMaxFails {
 			_, _ = creds.Update(ctx, bson.M{"employee_id": id}, bson.M{"$set": bson.M{"fails": 0, "locked_until": time.Now().Add(loginLock)}})
 			_ = audit(ctx, s.st.DB, who, "Account locked after wrong passwords", "employee", id, nil, map[string]any{"ip": ip, "minutes": int(loginLock.Minutes())})
-			return nil, unauthorized("Too many wrong attempts. The account is locked for 15 minutes. You can reset your password with OTP.")
+			return nil, unauthorized("Too many wrong attempts. The account is locked for 5 minutes. You can reset your password with OTP.")
 		}
 		_, _ = creds.Update(ctx, bson.M{"employee_id": id}, bson.M{"$set": bson.M{"fails": fails}})
 		_ = audit(ctx, s.st.DB, who, "Wrong password", "employee", id, nil, map[string]any{"ip": ip, "attemptsLeft": loginMaxFails - fails})

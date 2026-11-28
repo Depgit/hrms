@@ -176,6 +176,13 @@ type directoryView struct {
 	Gaps        []string          `json:"gaps"`
 	Left        []string          `json:"left"`
 	Overlaps    []string          `json:"overlaps"` // two people mapped to the same role and place
+	// slots are the gaps as role, level and place, in the same order (bulk_apprnames.go).
+	slots []dirSlot
+}
+
+// dirSlot is one missing approver name: a role at a property, a department, a corporate department or the company.
+type dirSlot struct {
+	Role, Level, PlaceID, Place, Path string
 }
 
 // usedRoles are the roles that approve in at least one rule in use.
@@ -234,6 +241,7 @@ func buildDirectory(ctx context.Context, q store.Q) (*directoryView, error) {
 			np.People[role] = p
 			if p.ID == "" && used[role] {
 				d.Gaps = append(d.Gaps, role+" for "+np.Name)
+				d.slots = append(d.slots, dirSlot{role, slotProperty, np.ID, np.Name, np.Path})
 			}
 			note(p, role)
 		}
@@ -250,6 +258,7 @@ func buildDirectory(ctx context.Context, q store.Q) (*directoryView, error) {
 		np.People["Function Head"] = fh
 		if fh.ID == "" && used["Function Head"] {
 			d.Gaps = append(d.Gaps, "Function Head for "+np.Name)
+			d.slots = append(d.slots, dirSlot{"Function Head", slotDept, np.ID, np.Name, ""})
 		}
 		note(fh, "Function Head")
 		if np.Corp {
@@ -269,6 +278,7 @@ func buildDirectory(ctx context.Context, q store.Q) (*directoryView, error) {
 			np.People["HRBP"] = h
 			if h.ID == "" && used["HRBP"] {
 				d.Gaps = append(d.Gaps, "HRBP for "+np.Name)
+				d.slots = append(d.slots, dirSlot{"HRBP", slotCorpDept, np.ID, np.Name, ""})
 			}
 		}
 		d.Departments = append(d.Departments, np)
@@ -279,6 +289,7 @@ func buildDirectory(ctx context.Context, q store.Q) (*directoryView, error) {
 		d.Company[role] = p
 		if p.ID == "" && used[role] {
 			d.Gaps = append(d.Gaps, role)
+			d.slots = append(d.slots, dirSlot{role, slotCompany, slotCompanyCode, "Whole company", ""})
 		}
 		note(p, role)
 	}

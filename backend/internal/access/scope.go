@@ -28,6 +28,17 @@ type Scope struct {
 	Locations   []string // location ids for "locs"
 	Departments []string // optional department-name limit
 	EmployeeID  string   // the caller (team = their reports, self = themselves)
+	// Managers (team): whose reports are in the scope. The caller and their direct reports, so a manager sees two
+	// levels (owner, 27 Nov 2026); only the caller under the "Direct employees" filter. Empty = the caller.
+	Managers []string
+}
+
+// TeamManagers are the managers whose reports a "team" scope covers.
+func (s Scope) TeamManagers() []string {
+	if len(s.Managers) == 0 {
+		return []string{s.EmployeeID}
+	}
+	return s.Managers
 }
 
 type ScopedEmployee struct{ ID, LocationID, Department, ManagerID string }
@@ -49,7 +60,7 @@ func (s Scope) Allows(e ScopedEmployee) bool {
 	case "locs":
 		ok = contains(s.Locations, e.LocationID)
 	case "team":
-		ok = e.ManagerID != "" && e.ManagerID == s.EmployeeID
+		ok = e.ManagerID != "" && contains(s.TeamManagers(), e.ManagerID)
 	default:
 		ok = e.ID == s.EmployeeID
 	}
@@ -66,7 +77,7 @@ func (s Scope) SQL(args *[]any, e, d string) string {
 	case "locs":
 		base = fmt.Sprintf("%s.location_id = ANY(%s::uuid[])", e, p(s.Locations))
 	case "team":
-		base = fmt.Sprintf("%s.manager_id = %s", e, p(s.EmployeeID))
+		base = fmt.Sprintf("%s.manager_id = ANY(%s::text[])", e, p(s.TeamManagers()))
 	default:
 		base = fmt.Sprintf("%s.id = %s", e, p(s.EmployeeID))
 	}

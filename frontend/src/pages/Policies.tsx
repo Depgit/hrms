@@ -1,17 +1,26 @@
 import { useEffect, useState } from 'react';
-import { addDays, addMonths, api, fmtD, inr, today, ymOf } from '../api';
+import { addDays, addMonths, api, fmtD, today, ymOf } from '../api';
 import { useAuth } from '../auth';
 import { download, Loading, Modal, Pill, Switch, toast, useLoad } from '../components/ui';
 import PersonPicker, { type Person } from '../components/PersonPicker';
 import { NominationsAdmin } from './Nominations';
 import CompanyPolicies from './CompanyPolicies';
+import { BulkModal } from './Bulk';
+import { DevAllowCard, devActText, devLabel } from './DevAllow';
+import { PAID_DAYS } from './Approvals';
 
 // Work policies (prototype vPol and everything under it). Policy settings, leave plans, holiday
 // calendars, coverage, nominations and exceptions. Changes apply from the next request or roster.
 
 /** One setting: [path, label, kind, options, hint, soft]. A soft (◦) setting is saved but not applied everywhere yet. */
-type PF = [string, string, 'num' | 'yn' | 'sel' | 'time' | 'text', [string, string][] | null, string?, 1?];
+type PF = [string, string, 'num' | 'yn' | 'sel' | 'time' | 'text' | 'hm', [string, string][] | null, string?, 1?];
 const YN: [string, string][] = [['true', 'Yes'], ['false', 'No']];
+/** Decimal hours as whole minutes (9.75 → 585), rounded so 8 h 20 min (8.333…) never drifts to 8 h 19 min. */
+const hmMin = (v: any) => Math.max(0, Math.round((+v || 0) * 60));
+/** Decimal hours in words: 8.5 → "8 h 30 min", 8 → "8 h". */
+const hmText = (v: any) => { const t = hmMin(v); return t % 60 ? `${Math.floor(t / 60)} h ${t % 60} min` : `${t / 60} h`; };
+/** Settings entered as hours and minutes and kept as decimal hours (owner, 24 Nov 2026). */
+const HM_KEYS = ['fullH', 'halfH', 'hrs.spread', 'att.earlyInMax', 'att.lateOutMax'];
 
 // The prototype's PS sections, as they stand after every later addition (roster discipline, deviations, rest).
 const PS: Record<string, [string, PF[]][]> = {
@@ -19,16 +28,15 @@ const PS: Record<string, [string, PF[]][]> = {
     ['Weekly off', [['sun', 'Sundays', 'sel', [['all', 'All Sundays off'], ['none', 'No fixed Sunday off']]], ['sat', 'Saturdays', 'sel', [['none', 'All Saturdays working'], ['2,4', '2nd and 4th off'], ['1,3', '1st and 3rd off'], ['all', 'All Saturdays off']]],
       ['offMode', 'Weekly off decided by', 'sel', [['fixed', 'Fixed days in this policy'], ['rotational', 'Roster manager, in Shift and roster']], 'For 24x7 properties. The roster itself is built under Shift and roster.'],
       ['wo.min', 'Minimum weekly offs in 7 days', 'num', null, '', 1], ['wo.consec', 'Maximum days worked in a row', 'num', null, 'The roster flags anyone scheduled beyond this.']]],
-    ['Working hours', [['fullH', 'Full-day hours', 'num', null], ['halfH', 'Half-day hours', 'num', null], ['hrs.week', 'Maximum hours in a week', 'num', null, '48 under most state Shops and Establishments rules.', 1],
-      ['hrs.spread', 'Maximum spread over in a day (hours)', 'num', null, 'Time from first in to last out, including breaks.', 1]]],
+    ['Working hours', [['fullH', 'Full-day hours', 'hm', null], ['halfH', 'Half-day hours', 'hm', null], ['hrs.week', 'Maximum hours in a week', 'num', null, '48 under most state Shops and Establishments rules.', 1],
+      ['hrs.spread', 'Maximum spread over in a day (hours)', 'hm', null, 'Time from first in to last out, including breaks.', 1]]],
     // The one place for rest and shift-change notice (8 Nov 2026): rest is att.minRest / att.restAct, the notice is rs.lead.
     ['Shifts and rest', [['att.minRest', 'Minimum rest between shifts (hours)', 'num', null, 'The roster blocks (or warns about) a shift that leaves less rest than this after the previous one. 0 switches it off.'],
       ['att.restAct', 'When a roster breaks the rest gap', 'sel', [['block', 'Do not allow the change'], ['warn', 'Allow it with a warning']], 'Do not allow: the roster refuses the shift. Allow it with a warning: the shift is saved and the warning is shown.'],
       ['rs.lead', 'Notice before a shift change (days)', 'num', null, 'A change made with less notice than this is a late change: it needs a reason and counts in the manager’s planning score.']]],
-    ['Night shift', [['shift.nightFrom', 'Night hours start', 'time', null], ['shift.nightTo', 'Night hours end', 'time', null], ['shift.nightAllow', 'Night shift allowance a night (₹)', 'num', null, 'Paid in payroll for every day whose punches touch the night hours.'],
-      ['shift.women', 'Night work by women allowed with transport', 'yn', null, 'Safe transport and security are required in most states.', 1]]],
     ['Roster discipline', [['rs.reason', 'Reason required for a late change', 'yn', null], ['rs.alert', 'Flag a property when late changes pass this share of its changes (%)', 'num', null, 'Shown as an alert on the roster page and in the discipline report. Needs at least 5 changes in the month.'],
       ['rs.past', 'Dates that have already passed', 'sel', [['lock', 'Locked. Attendance follows the roster as it stood'], ['free', 'Open to edit']], 'A locked date cannot be changed. If the day was worked differently, the employee regularizes with the reason Roster changed.'],
+      ['rs.bulkPast', 'Past dates in the roster bulk upload', 'sel', [['lock', 'Blocked. The upload never changes a past date'], ['same', 'Same as the roster screen (the rule above)']], 'Blocked: a file with a changed cell for a date before today is refused for that employee, whatever the rule above says. Same as the roster screen: past dates follow “Dates that have already passed”.'],
       ['rs.devTol', 'Late arrival: more than this many minutes after the planned start is a deviation', 'num', null, 'Inside this window the day follows the roster and only the usual late mark applies. Outside it, the system shows Planned against Actual and asks the manager to decide.'],
       ['rs.pts', 'Discipline points lost for each deviation marked Not OK', 'num', null, 'Every employee starts a month at 100, or pro-rata for part of the month: someone who joined on the 21st of a 30-day month starts at 33.'],
       ['rs.leaveBelow', 'Leave not allowed when the discipline score is below', 'num', null, '0 is off. While this month’s score is below it, every leave request is refused, whoever raises it. HR Admin, or the HRBP, can allow one request with a reason. Scaled pro-rata like the score.'],
@@ -45,10 +53,13 @@ const PS: Record<string, [string, PF[]][]> = {
   att: [
     ['Punching', [['att.mode', 'Allowed ways to punch', 'sel', [['any', 'Any method'], ['bio', 'Biometric only'], ['app', 'Geo-fenced app only'], ['both', 'Biometric or app']], '', 1], ['att.geo', 'Geo-fence radius (metres)', 'num', null, '', 1],
       ['att.selfie', 'Selfie required at punch', 'yn', null, '', 1], ['att.autoOut', 'If out punch is missing', 'sel', [['none', 'Leave as missing punch'], ['end', 'Auto-close at shift end']], '', 1],
-      ['att.night', 'Night shift counts on', 'sel', [['start', 'Day the shift starts'], ['end', 'Day the shift ends']], 'Decides which date a shift that crosses midnight belongs to.', 1]]],
+      ['att.night', 'Night shift counts on', 'sel', [['start', 'Day the shift starts'], ['end', 'Day the shift ends']], 'Decides which date a shift that crosses midnight belongs to.', 1],
+      // The punch window, moved here from each shift (owner, 24 Nov 2026). 0 h 0 min is no limit.
+      ['att.earlyInMax', 'Maximum early in punch allowed', 'hm', null, 'A punch earlier than the shift start minus this is not taken as that day’s in punch. 0 h 0 min is no limit. Up to 12 h.'],
+      ['att.lateOutMax', 'Maximum late out punch allowed', 'hm', null, 'A punch later than the shift end (the end of its second part for a split shift) plus this is not taken as that day’s out punch. 0 h 0 min is no limit. Up to 12 h.']]],
     ['Lateness and early exit', [['grace', 'Late-mark grace (minutes)', 'num', null], ['att.lateN', 'Late marks allowed in a month', 'num', null, '', 1], ['att.lateAct', 'After that limit', 'sel', [['half', 'Half day of leave or loss of pay'], ['warn', 'Warning only'], ['none', 'No action']], '', 1],
       ['att.early', 'Early-out grace (minutes)', 'num', null, '', 1]]],
-    ['Absence and missing punches', [['att.missing', 'A day with a missing punch counts as', 'sel', [['half', 'Half day'], ['absent', 'Absent'], ['present', 'Present until regularized']], '', 1],
+    ['Absence and missing punches', [['att.missing', 'A day with a missing punch counts as', 'sel', [['half', 'Half day until regularized'], ['absent', 'Absent'], ['present', 'Present until regularized']], '', 1],
       ['att.absent', 'No punch at all counts as', 'sel', [['lop', 'Loss of pay after the regularization window'], ['lopnow', 'Loss of pay straight away'], ['present', 'Present']], '', 1],
       ['att.maxSpan', 'Longest gap between check-in and check-out (hours)', 'num', null, 'Above this the check-out is treated as a missing punch and that punch becomes the next check-in. Use 0 to switch it off. Keep it at 8 or more.']]],
     ['Field work and remote work', [['att.od', 'On-duty and field visits allowed', 'yn', null, 'For sales, purchase and city teams.', 1], ['att.wfh', 'Work from home allowed', 'yn', null, '', 1], ['att.wfhDays', 'Work-from-home days a month', 'num', null, '', 1]]],
@@ -64,11 +75,21 @@ const PS: Record<string, [string, PF[]][]> = {
 };
 const PTAB: [string, string][] = [['sum', 'Summary'], ['time', 'Working time'], ['hol', 'Holidays'], ['att', 'Attendance'], ['reg', 'Regularization'], ['leave', 'Leave plan'], ['lrule', 'Blackout periods'], ['exit', 'Probation and notice'], ['map', 'Applies to'], ['hist', 'History']];
 /** Mapping levels in the order they win when a person matches more than one policy (the server's policyLevels). */
-const LVL: Record<string, string> = { employee: 'Employee', location: 'Location', cluster: 'Cluster', city: 'City', state: 'State', department: 'Department', designation: 'Designation', grade: 'Grade', type: 'Employment type' };
-const ORDER_TEXT = 'Individual (employee) > Location > Cluster > City > State > Department > Designation > Grade > Employment type';
+const LVL: Record<string, string> = { employee: 'Employee', dept_location: 'Department + Location', dept_cluster: 'Department + Cluster', dept_city: 'Department + City', dept_state: 'Department + State',
+  location: 'Location', cluster: 'Cluster', city: 'City', state: 'State', department: 'Department', designation: 'Designation', grade: 'Grade', type: 'Employment type' };
+const ORDER_TEXT = 'Individual (employee) > Department + Location > Department + Cluster > Department + City > Department + State > Location > Cluster > City > State > Department > Designation > Grade > Employment type';
+/** A department together with one place (owner, 24 Nov 2026): the place level of each combined level. Its ref is "<department>|<place id>". */
+const COMBO: Record<string, string> = { dept_location: 'location', dept_cluster: 'cluster', dept_city: 'city', dept_state: 'state' };
+/** A mapping's value in words: a place by its name, a combined mapping as "People Ops at Gurgaon office". */
+const refLabel = (level: string, ref: string, names?: Record<string, string> | null) => {
+  if (!COMBO[level]) return names?.[ref] ?? ref;
+  const i = ref.lastIndexOf('|');
+  return i < 0 ? ref : `${ref.slice(0, i)} at ${names?.[ref.slice(i + 1)] ?? ref.slice(i + 1)}`;
+};
 /** Settings removed on 8 Nov 2026 (overtime, comp-off, holiday work, break, late half day, extra-hours, rest and off-day
- * deviations, split shifts, and the old rest and notice fields). Older history entries about them are not shown. */
-const REMOVED = /^(ot\.|compoff$|hol\.work$|att\.(brkMin|brkAfter|lateHalf)$|rs\.(otTol|devExtra|devRest|devOff)$|shift\.(split|rest|change)$)/;
+ * deviations, split shifts, and the old rest and notice fields) and on 24 Nov 2026 (the Night shift card: night hours,
+ * the night shift allowance and night work by women). Older history entries about them are not shown. */
+const REMOVED = /^(ot\.|compoff$|hol\.work$|att\.(brkMin|brkAfter|lateHalf)$|rs\.(otTol|devExtra|devRest|devOff)$|shift\.(split|rest|change|nightFrom|nightTo|nightAllow|women)$)/;
 const SATL: Record<string, string> = { all: 'all Saturdays', '2,4': '2nd and 4th Saturdays', '1,3': '1st and 3rd Saturdays' };
 const LT_EMP = ['Permanent', 'Retainer', 'Contractual'];
 
@@ -111,16 +132,32 @@ const ruleLines = (s: any, plan: any) => {
 };
 const lines = (l: string[]) => l.map((x, i) => <span key={i}>{i > 0 && <br />}{x}</span>);
 const ltOf = (plan: any, n: string) => plan?.types?.[n] ?? { on: false };
-const clText = (plan: any) => { const c = ltOf(plan, 'Casual leave'); return c.on ? `CL ${c.days} a year, ${c.credit === 'monthly' ? 'credited monthly from joining' : 'credited upfront'}` : 'CL not applicable'; };
-const plText = (plan: any) => { const c = ltOf(plan, 'Privilege leave'); return c.on ? `PL ${c.days} a year, accrues ${c.from === 'prob' ? 'after probation is completed' : 'from joining'}${c.catchup ? ' with back-dated credit' : ''}` : 'PL not applicable'; };
-const ltBrief = (kind: string, paid: boolean, c: any) => !c.on ? 'Off' : kind === 'event' ? `${c.days} days an occasion` : kind === 'balance' ? `${c.days} days a year` : !paid ? 'Unpaid' : 'No balance';
-const lpBrief = (pl: any, types: any[]) => { const t = types.filter((i) => i.kind === 'balance' && pl.types[i.name]?.on).map((i) => `${i.name.replace(' leave', '')} ${pl.types[i.name].days}`); return t.length ? t.join(' · ') + ' days a year' : 'No leave credited'; };
+/** Earn by working days (owner, 24 Nov 2026): the plan's rule a leave type is in (`lv.earn`), as { every, per }, or null. */
+type Earn = { every: number; per: number };
+const earnOf = (plan: any, n: string): Earn | null => {
+  for (const r of plan?.lv?.earn ?? []) for (const t of r.types ?? []) if (t.type === n) return { every: +r.days || 0, per: +t.days || 0 };
+  return null;
+};
+const dw = (v: number, w: string) => `${v} ${w}${v === 1 ? '' : 's'}`;
+/** "1 day for every 7 paid days", with ", up to 8 days a year" when Days a year (cap) is set. */
+const earnText = (b: Earn, cap?: number) => `${dw(b.per, 'day')} for every ${dw(b.every, 'paid day')}${+(cap ?? 0) > 0 ? `, up to ${dw(+cap!, 'day')} a year` : ''}`;
+const clText = (plan: any) => { const c = ltOf(plan, 'Casual leave'), b = earnOf(plan, 'Casual leave'); return c.on ? (b ? `CL earned by working days, ${earnText(b, c.days)}` : `CL ${c.days} a year, ${c.credit === 'monthly' ? 'credited monthly from joining' : 'credited upfront'}`) : 'CL not applicable'; };
+const plText = (plan: any) => { const c = ltOf(plan, 'Privilege leave'), b = earnOf(plan, 'Privilege leave'); return c.on ? `PL ${b ? `earned by working days, ${earnText(b, c.days)}` : `${c.days} a year`}, accrues ${c.from === 'prob' ? 'after probation is completed' : 'from joining'}${c.catchup ? ' with back-dated credit' : ''}` : 'PL not applicable'; };
+const ltBrief = (kind: string, paid: boolean, c: any, b?: Earn | null) => !c.on ? 'Off' : kind === 'event' ? `${c.days} days an occasion` : kind === 'balance' ? (b ? `Earned by working days: ${earnText(b, c.days)}` : `${c.days} days a year`) : !paid ? 'Unpaid' : 'No balance';
+const lpBrief = (pl: any, types: any[]) => {
+  const on = types.filter((i) => i.kind === 'balance' && pl.types[i.name]?.on), short = (n: string) => n.replace(' leave', '');
+  const fixed = on.filter((i) => !earnOf(pl, i.name)).map((i) => `${short(i.name)} ${pl.types[i.name].days}`), earned = on.filter((i) => earnOf(pl, i.name)).map((i) => short(i.name));
+  const t = [...(fixed.length ? [fixed.join(' · ') + ' days a year'] : []), ...(earned.length ? [earned.join(', ') + ' by working days'] : [])];
+  return t.length ? t.join(' · ') : 'No leave credited';
+};
 
 const legend = <p className="mute" style={{ fontSize: 12, margin: '0 0 12px' }}>A ◦ marks a setting that is saved with the policy. Attendance, roster and payroll processing will apply it in the full build. Settings without it are already applied.</p>;
 
 /** A prototype fld(): label (◦ for soft settings), the control and its hint. */
 function Fld({ f, v, set }: { f: PF; v: any; set: (v: any) => void }) {
   const [, l, kind, o, h, soft] = f;
+  if (kind === 'hm') return <div className="field"><span>{l}{soft ? ' ◦' : ''}</span><HM v={v} set={set} label={l} />
+    {h && <small className="mute" style={{ fontSize: 11.5, marginTop: 3, display: 'block' }}>{h}</small>}</div>;
   return <label className="field"><span>{l}{soft ? ' ◦' : ''}</span>
     {kind === 'sel' ? <select value={v ?? ''} onChange={(e) => set(e.target.value)}>{o!.map(([k, x]) => <option key={k} value={k}>{x}</option>)}</select>
       : kind === 'yn' ? <select value={String(!!v)} onChange={(e) => set(e.target.value === 'true')}>{YN.map(([k, x]) => <option key={k} value={k}>{x}</option>)}</select>
@@ -128,7 +165,18 @@ function Fld({ f, v, set }: { f: PF; v: any; set: (v: any) => void }) {
     {h && <small className="mute" style={{ fontSize: 11.5, marginTop: 3, display: 'block' }}>{h}</small>}</label>;
 }
 
-type Shared = { pols: any[]; plans: { plans: any[]; types: any[] }; cals: any[]; reload: () => void };
+/** Hours and minutes (0–59) in two boxes, kept as decimal hours: 8 h 30 min = 8.5. */
+function HM({ v, set, label }: { v: any; set: (v: number) => void; label: string }) {
+  const t = hmMin(v), h = Math.floor(t / 60), m = t % 60;
+  const put = (hh: number, mm: number) => set((hh * 60 + mm) / 60);
+  const int = (x: string, max: number) => Math.min(max, Math.max(0, Math.floor(+x || 0)));
+  return <div className="row" style={{ gap: 6, flexWrap: 'nowrap', alignItems: 'center' }}>
+    <input type="number" min={0} max={24} step={1} aria-label={label + ', hours'} value={h} onChange={(e) => put(int(e.target.value, 24), m)} style={{ maxWidth: 90 }} /><span className="mute">h</span>
+    <input type="number" min={0} max={59} step={1} aria-label={label + ', minutes'} value={m} onChange={(e) => put(h, int(e.target.value, 59))} style={{ maxWidth: 90 }} /><span className="mute">min</span>
+  </div>;
+}
+
+type Shared ={ pols: any[]; plans: { plans: any[]; types: any[] }; cals: any[]; reload: () => void };
 
 export default function Policies() {
   const pols = useLoad(() => api<any[]>('/policies'), []);
@@ -192,14 +240,14 @@ function PolicyList({ sh, onOpen }: { sh: Shared; onOpen: (id: string, t?: strin
       <div className="seg">{['Active', 'Inactive', 'All'].map((x) => <button key={x} className={f === x ? 'on' : ''} onClick={() => setF(x)}>{x}<b>{sh.pols.filter((p) => x === 'All' || p.status === x).length}</b></button>)}</div>
       {canC && <button className="btn primary" onClick={() => setNw({ name: '', from: '' })}>New work policy</button>}
     </div>
-    <div className="note" style={{ marginBottom: 14 }}>A policy holds everything about how a group of people works: weekly offs, holidays, hours, attendance, regularization, leave, probation and notice. Map it to a location, cluster, department, designation, grade, employment type, city, state or one employee, and it applies to everyone matching, including future joiners.</div>
+    <div className="note" style={{ marginBottom: 14 }}>A policy holds everything about how a group of people works: weekly offs, holidays, hours, attendance, regularization, leave, probation and notice. Map it to a location, cluster, department, designation, grade, employment type, city, state, a department at one place (for example People Ops at the Gurgaon office) or one employee, and it applies to everyone matching, including future joiners.</div>
     <div className="card"><div className="tw"><table><thead><tr><th>Policy</th><th className="num">Employees</th><th>Applies to</th><th>Rules in brief</th><th>Status</th><th></th></tr></thead><tbody>
       {list.map((p) => {
         const ms = p.maps.filter((m: any) => m.on), plan = sh.plans.plans.find((x) => x.plan.id === p.leavePlanId)?.plan;
         return <tr key={p.id}>
           <td><b>{p.name}</b><div className="mute" style={{ fontSize: 12 }}>{p.settings.desc || weekOffText(p.settings)}</div></td>
           <td className="num">{p.employees}</td>
-          <td>{ms.slice(0, 3).map((m: any, i: number) => <span key={i}>{i > 0 && ' '}<Pill k="info">{LVL[m.level]}: {names.data?.[m.ref] ?? m.ref}</Pill></span>)}{ms.length > 3 && <span className="mute"> +{ms.length - 3} more</span>}{!ms.length && <span className="mute">Nobody yet</span>}</td>
+          <td>{ms.slice(0, 3).map((m: any, i: number) => <span key={i}>{i > 0 && ' '}<Pill k="info">{LVL[m.level]}: {refLabel(m.level, m.ref, names.data)}</Pill></span>)}{ms.length > 3 && <span className="mute"> +{ms.length - 3} more</span>}{!ms.length && <span className="mute">Nobody yet</span>}</td>
           <td className="ink2" style={{ fontSize: 12.5 }}>{lines(ruleLines(p.settings, plan))}</td>
           <td><Pill k={p.status === 'Active' ? 'ok' : 'n'}>{p.status}</Pill></td>
           <td style={{ whiteSpace: 'nowrap' }}><button className="btn sm primary" onClick={() => onOpen(p.id)}>Open</button> {canC && <button className="btn sm" onClick={() => duplicate(p, onOpen, sh.reload)}>Duplicate</button>}</td>
@@ -281,9 +329,8 @@ function PolicyOne({ id, sh, tab, setTab, onBack, onOpen, goPlan }: { id: string
       <div className="card"><dl className="kv">
         <dt>Weekly off</dt><dd>{weekOffText(s)}{s.wo.consec ? `, at most ${s.wo.consec} days in a row` : ''}</dd>
         <dt>Off cap</dt><dd>{s.offCap.on ? s.offCap.max + ' a month' : 'None'}</dd>
-        <dt>Hours</dt><dd>Full day {s.fullH}h, half day {s.halfH}h, up to {s.hrs.week}h a week</dd>
+        <dt>Hours</dt><dd>Full day {hmText(s.fullH)}, half day {hmText(s.halfH)}, up to {s.hrs.week} h a week, spread over at most {hmText(s.hrs.spread)} a day</dd>
         <dt>Shifts and rest</dt><dd>{+s.att.minRest ? `At least ${s.att.minRest}h between shifts (${s.att.restAct === 'warn' ? 'warned' : 'blocked'} on the roster)` : 'No rest check'}; {s.rs.lead} days notice before a shift change</dd>
-        <dt>Night shift</dt><dd>{s.shift.nightFrom} to {s.shift.nightTo}{s.shift.nightAllow ? ', allowance ' + inr(s.shift.nightAllow) + ' a night' : ''}</dd>
         <dt>Leave plan</dt><dd>{plan?.name ?? 'None'}</dd>
         <dt>Holidays</dt><dd>{calName(p.calendarId) ?? 'None'}, {s.optHol} optional a year</dd>
         <dt>Leave</dt><dd>{clText(plan)}<br />{plText(plan)}{sl.on && <><br />SL {sl.days} a year</>}</dd>
@@ -314,18 +361,20 @@ function PolicyOne({ id, sh, tab, setTab, onBack, onOpen, goPlan }: { id: string
     </>;
   }
   if (tab === 'hol') {
-    const calOpts = sh.cals.filter((c) => c.status === 'Active');
+    // Only active calendars can be picked; one already on this policy stays listed, marked inactive.
+    const calOpts = sh.cals.filter((c) => c.status === 'Active' || c.id === data.policy.calendarId || Object.values(data.policy.calMap || {}).includes(c.id));
+    const calLbl = (c: any) => c.name + (c.status !== 'Active' ? ' (inactive)' : '');
     content = <>{legend}
       <div className="card" style={{ marginBottom: 14 }}><h3>Holiday calendar</h3>
-        <div className="form"><label className="field"><span>Default calendar</span><select value={p.calendarId || ''} onChange={(e) => setP({ ...p, calendarId: e.target.value })}>{!p.calendarId && <option value="" />}{calOpts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label></div>
+        <div className="form"><label className="field"><span>Default calendar</span><select value={p.calendarId || ''} onChange={(e) => setP({ ...p, calendarId: e.target.value })}>{!p.calendarId && <option value="" />}{calOpts.map((c) => <option key={c.id} value={c.id}>{calLbl(c)}</option>)}</select></label></div>
         <h3 style={{ margin: '14px 0 8px', fontSize: 14 }}>By city (overrides the default)</h3>
         <div className="form">{(cities.data ?? []).map((c) => <label key={c.id} className="field"><span>{c.name}</span>
-          <select value={p.calMap?.[c.id] || ''} onChange={(e) => { const m = { ...(p.calMap || {}) }; if (e.target.value) m[c.id] = e.target.value; else delete m[c.id]; setP({ ...p, calMap: m }); }}><option value="">Use default</option>{calOpts.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>)}</div>
+          <select value={p.calMap?.[c.id] || ''} onChange={(e) => { const m = { ...(p.calMap || {}) }; if (e.target.value) m[c.id] = e.target.value; else delete m[c.id]; setP({ ...p, calMap: m }); }}><option value="">Use default</option>{calOpts.map((x) => <option key={x.id} value={x.id}>{calLbl(x)}</option>)}</select></label>)}</div>
         {s.optHol > optAvail && <div className="note bad" style={{ marginTop: 12 }}>The calendar has {optAvail} optional holidays but {s.optHol} are allowed for each employee.</div>}
       </div>
       {sections('hol')}</>;
   }
-  if (tab === 'att') content = <>{legend}{sections('att')}</>;
+  if (tab === 'att') content = <>{legend}{sections('att')}<DevAllowCard s={s} set={set} /></>;
   if (tab === 'reg') {
     const eg = [addMonths(ym, -1), ym].map((m) => { const d = m + '-14', a = addDays(d, s.rr.back), b = s.rr.cutoff ? addDays(lastDayOf(m), s.rr.extra) : '9999-12-31'; return { d, a, b: s.rr.cutoff ? b : '', last: a < b ? a : b }; });
     content = <>{sections('reg')}
@@ -342,7 +391,7 @@ function PolicyOne({ id, sh, tab, setTab, onBack, onOpen, goPlan }: { id: string
       <div className="form"><label className="field"><span>Leave plan for this policy</span>
         <select value={p.leavePlanId || ''} disabled={!canE} onChange={(e) => saveNow((x) => { x.leavePlanId = e.target.value || null; }, {}, 'Leave plan changed')}>{!p.leavePlanId && <option value="" />}{opts.map((x) => <option key={x.id} value={x.id}>{x.name}{x.status !== 'Active' ? ' (inactive)' : ''}</option>)}</select></label></div>
       {plan && <dl className="kv" style={{ marginTop: 12 }}>
-        {on.length ? on.map((i) => { const c = plan.types[i.name]; return <span key={i.name} style={{ display: 'contents' }}><dt>{i.name}</dt><dd>{ltBrief(i.kind, i.paid, c)}, {c.types.join(', ')}{c.applyBy === 'hr' ? ', applied by HR on behalf' : ''}{c.onNotice === 'restrict' ? ', not during resignation' : ''}</dd></span>; })
+        {on.length ? on.map((i) => { const c = plan.types[i.name]; return <span key={i.name} style={{ display: 'contents' }}><dt>{i.name}</dt><dd>{ltBrief(i.kind, i.paid, c, earnOf(plan, i.name))}, {c.types.join(', ')}{c.applyBy === 'hr' ? ', applied by HR on behalf' : ''}{c.onNotice === 'restrict' ? ', not during resignation' : ''}</dd></span>; })
           : <><dt>Leave</dt><dd>None credited</dd></>}
         <dt>Leave year</dt><dd>{yr[plan.lv.year] || plan.lv.year}{plan.lv.prorate ? ', pro-rated for joiners' : ''}</dd></dl>}
       {plan && <div className="row" style={{ marginTop: 12 }}><button className="btn" onClick={() => goPlan(plan.id)}>Open this plan</button></div>}
@@ -376,29 +425,66 @@ function PolicyOne({ id, sh, tab, setTab, onBack, onOpen, goPlan }: { id: string
   </>;
 }
 
-/** Leave simulator (prototype simModal / leaveSim): monthly credit of casual and privilege leave from a joining date. */
+/** Leave simulator (prototype simModal / leaveSim): monthly credit of casual and privilege leave from a joining date.
+ *  A type earned by working days counts paid days day by day from the paid days in a month typed here, spread evenly
+ *  over each month (the month's length: nothing is loss of pay), from the accrual start (the end of probation, or
+ *  joining when back-dated at confirmation, then credited when probation ends). The day after each whole block of the
+ *  rule's paid days, its days earned are credited; the rest counts toward the next block, the count starts again with
+ *  each leave year, up to Days a year when set. */
 function Simulator({ name, s, plan, onClose }: { name: string; s: any; plan: any; onClose: () => void }) {
   const [doj, setDoj] = useState(today());
+  const [wd, setWd] = useState('');
   const cl = ltOf(plan, 'Casual leave'), pl = ltOf(plan, 'Privilege leave');
+  const ecl = cl.on ? earnOf(plan, 'Casual leave') : null, epl = pl.on ? earnOf(plan, 'Privilege leave') : null;
   const d0 = new Date(doj + 'T00:00:00'), pe = new Date(d0); pe.setMonth(pe.getMonth() + (+s.prob || 0));
   let a = 0, b = 0, caught = false;
   const r2 = (x: number) => Math.round(x * 100) / 100;
+  const yr = plan?.lv?.year, ysM = yr === 'fin' ? 3 : yr === 'anniv' ? d0.getMonth() : 0, ysD = yr === 'anniv' ? d0.getDate() : 1; // the leave year's first day
+  /** Each credit of a type earned by working days in the 13 months shown: the date it comes and the days. */
+  const earnRun = (c: any, e: Earn | null) => {
+    const out: { on: Date; n: number }[] = [];
+    if (!e || !(e.every > 0) || wd === '' || isNaN(+d0)) return out;
+    const unit = Math.round(e.every * 2), start = c.from === 'prob' && !c.catchup ? pe : d0, end = new Date(d0.getFullYear(), d0.getMonth() + 13, 0);
+    let cum = 0, got = 0;
+    for (const d = new Date(d0); d <= end; d.setDate(d.getDate() + 1)) {
+      if (+d > +d0 && d.getMonth() === ysM && d.getDate() === ysD) { cum = 0; got = 0; } // a new leave year: the count starts again
+      if (d < start) continue;
+      const dim = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+      cum += Math.min(+wd, dim) / dim;
+      let now = Math.floor(cum * 2 / unit + 1e-9) * e.per;
+      if (+c.days > 0) now = Math.min(now, +c.days);
+      if (now > got) {
+        const on = new Date(d); on.setDate(on.getDate() + 1); // credited the day after the Nth paid day
+        out.push({ on: c.from === 'prob' && c.catchup && on < pe ? new Date(pe) : on, n: r2(now - got) });
+        got = now;
+      }
+    }
+    return out;
+  };
+  const runCl = earnRun(cl, ecl), runPl = earnRun(pl, epl);
+  const inMonth = (run: { on: Date; n: number }[], m: Date) => run.filter((x) => x.on.getFullYear() === m.getFullYear() && x.on.getMonth() === m.getMonth());
+  const dayM = (d: Date) => d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
   const rows = isNaN(+d0) ? [] : Array.from({ length: 13 }, (_, i) => {
     const m = new Date(d0.getFullYear(), d0.getMonth() + i, 1), end = new Date(m.getFullYear(), m.getMonth() + 1, 0);
+    const xc = inMonth(runCl, m), xp = inMonth(runPl, m);
     let c = 0, p = 0;
-    if (cl.on) { if (cl.credit === 'monthly') c = cl.days / 12; else if (i === 0) c = cl.days * (12 - d0.getMonth()) / 12; }
-    if (pl.on) { if (pl.from === 'doj') p = pl.days / 12; else if (end >= pe) { p = pl.days / 12; if (!caught) { caught = true; if (pl.catchup) p += pl.days / 12 * i; } } }
+    if (cl.on) { if (ecl) c = xc.reduce((t, x) => t + x.n, 0); else if (cl.credit === 'monthly') c = cl.days / 12; else if (i === 0) c = cl.days * (12 - d0.getMonth()) / 12; }
+    if (pl.on) { if (epl) p = xp.reduce((t, x) => t + x.n, 0); else if (pl.from === 'doj') p = pl.days / 12; else if (end >= pe) { p = pl.days / 12; if (!caught) { caught = true; if (pl.catchup) p += pl.days / 12 * i; } } }
     a += c; b += p;
-    return { m: m.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }), c: r2(c), p: r2(p), cl: r2(a), pl: r2(b) };
+    const on = [...(xc.length ? [`CL ${[...new Set(xc.map((x) => dayM(x.on)))].join(', ')}`] : []), ...(xp.length ? [`PL ${[...new Set(xp.map((x) => dayM(x.on)))].join(', ')}`] : [])].join(' · ');
+    return { m: m.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }), c: r2(c), p: r2(p), cl: r2(a), pl: r2(b), on };
   });
+  const anyEarn = !!(ecl || epl);
   return <Modal wide onClose={onClose}>
     <div className="row sp"><h2>Leave simulator: {name}</h2><button className="btn sm" onClick={onClose}>Close</button></div>
-    <label className="field" style={{ maxWidth: 220, margin: '10px 0' }}><span>Date of joining</span><input type="date" value={doj} onChange={(e) => setDoj(e.target.value)} /></label>
-    <p className="ink2">Joining {fmtD(doj)}. Probation {s.prob ? 'ends ' + fmtD(iso(pe)) : 'not applicable'}. {plText(plan)}.</p>
-    <div className="tw"><table><thead><tr><th>Month</th><th className="num">CL credit</th><th className="num">CL balance</th><th className="num">PL credit</th><th className="num">PL balance</th></tr></thead><tbody>
-      {rows.map((r) => <tr key={r.m}><td>{r.m}</td><td className="num">{r.c}</td><td className="num"><b>{r.cl}</b></td><td className="num">{r.p}</td><td className="num"><b>{r.pl}</b></td></tr>)}
+    <div className="row" style={{ gap: 12, margin: '10px 0' }}><label className="field" style={{ maxWidth: 220, margin: 0 }}><span>Date of joining</span><input type="date" value={doj} onChange={(e) => setDoj(e.target.value)} /></label>
+      {anyEarn && <label className="field" style={{ maxWidth: 220, margin: 0 }}><span>Paid days in a month</span><input type="number" min={0} max={31} step={0.5} placeholder="Paid days in a month" value={wd} onChange={(e) => setWd(e.target.value)} /></label>}</div>
+    <p className="ink2">Joining {fmtD(doj)}. Probation {s.prob ? 'ends ' + fmtD(iso(pe)) : 'not applicable'}. {ecl ? clText(plan) + '. ' : ''}{plText(plan)}.</p>
+    {anyEarn && wd === '' && <p className="mute" style={{ fontSize: 12.5 }}>Type the paid days in a month to see what the leave earned by working days gives.</p>}
+    <div className="tw"><table><thead><tr><th>Month</th><th className="num">CL credit</th><th className="num">CL balance</th><th className="num">PL credit</th><th className="num">PL balance</th>{anyEarn && <th>Credited on</th>}</tr></thead><tbody>
+      {rows.map((r) => <tr key={r.m}><td>{r.m}</td><td className="num">{r.c}</td><td className="num"><b>{r.cl}</b></td><td className="num">{r.p}</td><td className="num"><b>{r.pl}</b></td>{anyEarn && <td className="mute" style={{ fontSize: 12.5 }}>{r.on}</td>}</tr>)}
     </tbody></table></div>
-    <p className="mute" style={{ fontSize: 12 }}>Balances before any leave taken or carry forward.</p>
+    <p className="mute" style={{ fontSize: 12 }}>Balances before any leave taken or carry forward.{anyEarn ? ` Earned by working days: ${PAID_DAYS}, here the paid days typed above spread evenly over each month (type the month's length when nothing is loss of pay). Credited the day after the Nth paid day; the count starts again with each leave year. Real balances use each person's attendance, and only active employees earn.` : ''}</p>
   </Modal>;
 }
 
@@ -420,58 +506,130 @@ function Blackouts({ list, edit, save }: { list: any[]; edit: boolean; save: (fn
   </div>;
 }
 
-/** Applies to (prototype mapBlock). Mappings are switched off, never deleted. */
+/** The master each mapping level picks its value from (a place by id; department, designation, grade and type by name). */
+const MAP_SRC: Record<string, string> = { location: 'location', cluster: 'cluster', department: 'department', designation: 'designation', grade: 'grade', type: 'employment_type', city: 'city', state: 'state' };
+
+/** The value of a mapping at one level: one select, or a department and a place for Department + place. A blank value
+ * takes the first choice; a current value no longer active stays listed. Key it by level so a new level starts fresh. */
+function MapValuePick({ level, value, set, names }: { level: string; value: string; set: (v: string) => void; names?: Record<string, string> | null }) {
+  const place = COMBO[level];
+  const src = MAP_SRC[place || level];
+  const opts = useLoad(() => (src ? api<any[]>(`/masters/${src}?status=Active`) : Promise.resolve([] as any[])), [src]);
+  const depts = useLoad(() => (place ? api<any[]>('/masters/department?status=Active') : Promise.resolve([] as any[])), [place]);
+  const byName = !place && ['department', 'designation', 'grade', 'type'].includes(level);
+  const ov = (opts.data ?? []).map((x) => [byName ? x.name : x.id, x.name] as [string, string]);
+  const cut = place ? value.lastIndexOf('|') : -1;
+  const dep = place ? (cut > 0 ? value.slice(0, cut) : depts.data?.[0]?.name ?? '') : '';
+  const pv = place ? (cut > 0 ? value.slice(cut + 1) : ov[0]?.[0] ?? '') : value || ov[0]?.[0] || '';
+  const full = place ? (dep && pv ? dep + '|' + pv : '') : pv;
+  useEffect(() => { if (full && full !== value) set(full); }, [full]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (level === 'employee') return <b>{refLabel(level, value, names)}</b>;
+  const pOpts = pv && !ov.some(([k]) => k === pv) ? [[pv, names?.[pv] ?? pv] as [string, string], ...ov] : ov;
+  const dOpts = (depts.data ?? []).map((x) => x.name as string);
+  return <>
+    {place && <select aria-label="Department" value={dep} onChange={(e) => set(e.target.value + '|' + pv)}>{(dep && !dOpts.includes(dep) ? [dep, ...dOpts] : dOpts).map((x) => <option key={x} value={x}>{x}</option>)}</select>}
+    {place && <span className="mute">at</span>}
+    <select aria-label={place ? LVL[place] : 'Applies to'} value={pv} onChange={(e) => set(place ? dep + '|' + e.target.value : e.target.value)}>{pOpts.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+  </>;
+}
+
+/** Applies to (prototype mapBlock). Mappings are switched off, never deleted; a mapping is on one policy at a time. */
 function Mappings({ p, n, sh, edit, onSaved }: { p: any; n: number; sh: Shared; edit: boolean; onSaved: () => void }) {
+  const { can } = useAuth();
+  const [bulk, setBulk] = useState(false); // bulk upload in a dialog here, not on Bulk update (owner, 24 Nov 2026)
   const names = useRefNames();
-  const [lvl, setLvl] = useState('department');
-  const [ref, setRef] = useState('');
-  const src: Record<string, string> = { location: 'location', cluster: 'cluster', department: 'department', designation: 'designation', grade: 'grade', type: 'employment_type', city: 'city', state: 'state' };
-  const opts = useLoad(() => api<any[]>(`/masters/${src[lvl]}?status=Active`), [lvl]);
-  const byName = ['department', 'designation', 'grade', 'type'].includes(lvl);
-  const ov = opts.data?.map((x) => [byName ? x.name : x.id, x.name] as [string, string]) ?? [];
-  const cur = ref || ov[0]?.[0] || '';
+  const [lvl, setLvl] = useState('dept_location'); // Department + Location first (owner, 24 Nov 2026)
+  const [cur, setCur] = useState('');
+  const [ed, setEd] = useState<any>(null); // the mapping being edited
   // Policy conflict check: every save is previewed first; people who already get another policy through another
-  // mapping need HR's choice (Replace, Keep, Pick people or Cancel), which the server stores as exceptions.
+  // mapping need HR's choice (Replace, Keep, Pick people or Cancel), which the server stores as exceptions. A mapping
+  // another policy already has is refused ("Already applied to …").
   const [conf, setConf] = useState<{ maps: any[]; pv: any; done: string } | null>(null);
   const body = (maps: any[]) => maps.map((m) => ({ level: m.level, ref: m.ref, on: m.on }));
   const put = async (id: string, maps: any[], done: string) => {
     const pv = await api<any>(`/policies/${id}/maps/preview`, { body: { maps: body(maps) } });
     if (pv.conflicts?.length) { setConf({ maps, pv, done }); return false; }
     await api(`/policies/${id}/maps`, { method: 'PUT', body: { maps: body(maps) } });
-    if (pv.moves?.length) toast(pv.moves.map((g: any) => g.text).join('. '));
     return true;
   };
   const resolve = async (resolution: { mode: string; move?: string[] }) => {
     if (!conf) return;
     try {
       await api(`/policies/${p.id}/maps`, { method: 'PUT', body: { maps: body(conf.maps), resolution } });
-      toast(conf.done); setConf(null); setRef(''); onSaved();
+      toast(conf.done); setConf(null); setCur(''); onSaved();
     } catch (x: any) { toast(x.message); }
   };
   const tog = async (i: number) => { try { if (await put(p.id, p.maps.map((m: any, j: number) => (j === i ? { ...m, on: !m.on } : m)), 'Saved')) onSaved(); } catch (x: any) { toast(x.message); } };
   const add = async () => {
     if (!cur) { toast('Pick what to map'); return; }
+    if (p.maps.some((m: any) => m.on && m.level === lvl && m.ref === cur)) { toast('Already applied to this policy'); return; }
     try {
-      // The server moves the mapping off any other policy.
       if (await put(p.id, p.maps.some((m: any) => m.level === lvl && m.ref === cur) ? p.maps.map((m: any) => (m.level === lvl && m.ref === cur ? { ...m, on: true } : m)) : [...p.maps, { level: lvl, ref: cur, on: true }], 'Mapped')) {
-        setRef(''); toast('Mapped'); onSaved();
+        setCur(''); toast('Mapped'); onSaved();
       }
     } catch (x: any) { toast(x.message); }
   };
+  const levels = [...Object.entries(LVL).filter(([k]) => k === 'dept_location'), ...Object.entries(LVL).filter(([k]) => k !== 'employee' && k !== 'dept_location' && !COMBO[k]),
+    ...Object.entries(LVL).filter(([k]) => COMBO[k] && k !== 'dept_location')];
   return <>
-    <div className="note" style={{ marginBottom: 14 }}>{n} employees are on this policy. When a person matches more than one policy: {ORDER_TEXT}. The first level that matches decides, so a person mapped by name always gets that policy. A new employee picks up a policy automatically from their location, department, designation, grade, type or city. For thousands of changes at once, use Bulk update with the Work Policy column.</div>
-    <div className="card"><div className="tw"><table><thead><tr><th>Level</th><th>Applies to</th><th>Employees</th><th>Active</th></tr></thead><tbody>
-      {p.maps.map((m: any, i: number) => <tr key={i}><td>{LVL[m.level]}</td><td><b>{names.data?.[m.ref] ?? m.ref}</b>{m.exception && <> <Pill k="warn">Exception</Pill><div className="mute" style={{ fontSize: 12 }}>{m.note}</div></>}</td><td>{m.on ? m.employees ?? 0 : '—'}</td><td><Switch on={m.on} disabled={!edit} onChange={() => tog(i)} /></td></tr>)}
-      {!p.maps.length && <tr><td colSpan={4} className="mute">Not mapped to anyone yet.</td></tr>}
+    <div className="note" style={{ marginBottom: 14 }}>{n} employees are on this policy. When a person matches more than one policy: {ORDER_TEXT}. The first level that matches decides, so a person mapped by name always gets that policy, and a department at a place (Department + Location and so on) comes before the place or the department alone. A new employee picks up a policy automatically from their location, department, designation, grade, type or city. For thousands of changes at once, use Bulk update with the Work Policy column.</div>
+    <div className="card">
+      {edit && can('bulk.update') && <div className="row sp" style={{ marginBottom: 10 }}><span className="mute" style={{ fontSize: 12.5 }}>Many Department + Location pairs at once:</span>
+        <button className="btn sm" onClick={() => setBulk(true)}>Bulk upload</button></div>}
+      {bulk && <BulkModal tpl="polmap" title="Bulk upload: work policy mapping" onClose={() => setBulk(false)} onApplied={onSaved} />}
+      <div className="tw"><table><thead><tr><th>Level</th><th>Applies to</th><th>Employees</th><th>Active</th>{edit && <th></th>}</tr></thead><tbody>
+      {p.maps.map((m: any, i: number) => <tr key={i}><td>{LVL[m.level]}</td><td><b>{refLabel(m.level, m.ref, names.data)}</b>{m.exception && <> <Pill k="warn">Exception</Pill><div className="mute" style={{ fontSize: 12 }}>{m.note}</div></>}</td><td>{m.on ? m.employees ?? 0 : '—'}</td><td><Switch on={m.on} disabled={!edit} onChange={() => tog(i)} /></td>
+        {edit && <td>{m.on && m.id ? <button className="btn sm" onClick={() => setEd(m)}>Edit</button> : null}</td>}</tr>)}
+      {!p.maps.length && <tr><td colSpan={edit ? 5 : 4} className="mute">Not mapped to anyone yet.</td></tr>}
     </tbody></table></div>
       {edit && <><h3 style={{ margin: '16px 0 8px', fontSize: 14 }}>Add mapping</h3>
-        <div className="row"><select value={lvl} onChange={(e) => { setLvl(e.target.value); setRef(''); }}>{Object.entries(LVL).filter(([k]) => k !== 'employee').map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
-          <select value={cur} onChange={(e) => setRef(e.target.value)}>{ov.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+        <div className="row"><select aria-label="Level" value={lvl} onChange={(e) => { setLvl(e.target.value); setCur(''); }}>{levels.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+          <MapValuePick key={lvl} level={lvl} value={cur} set={setCur} names={names.data} />
           <button className="btn primary" onClick={add}>Add</button></div>
-        <p className="mute" style={{ fontSize: 12, margin: '8px 0 0' }}>Mapping a level to this policy moves it from any other policy. Mappings are switched off, never deleted. If the people it covers already get another policy, you are asked what to do before anything is saved.</p></>}
+        <p className="mute" style={{ fontSize: 12, margin: '8px 0 0' }}>A mapping is applied to one policy at a time: one that another policy already has is refused ("Already applied to …"); switch it off there, or Edit it there to move it here. Mappings are switched off, never deleted. If the people it covers already get another policy through a different level, you are asked what to do before anything is saved.
+          {COMBO[lvl] && ` ${LVL[lvl]} covers only the people of that department at that ${LVL[COMBO[lvl]].toLowerCase()}, and comes before the ${LVL[COMBO[lvl]].toLowerCase()} or the department mapped alone.`}</p></>}
     </div>
     {conf && <ConflictDialog policy={p.name} pv={conf.pv} onChoose={resolve} onClose={() => setConf(null)} />}
+    {ed && <MapEdit m={ed} p={p} sh={sh} names={names.data} onClose={() => setEd(null)} onSaved={() => { setEd(null); onSaved(); }} />}
   </>;
+}
+
+/** Edit one mapping: its value and/or the policy it is on. Previewed first: a mapping another policy has is refused,
+ * people it moves who get another policy through a different level need HR's choice, and a move to another policy
+ * is confirmed. */
+function MapEdit({ m, p, sh, names, onClose, onSaved }: { m: any; p: any; sh: Shared; names?: Record<string, string> | null; onClose: () => void; onSaved: () => void }) {
+  const [ref, setRef] = useState<string>(m.ref);
+  const [to, setTo] = useState<string>(p.id);
+  const [pv, setPv] = useState<any>(null); // the preview of a move, waiting for Confirm
+  const [conf, setConf] = useState<any>(null);
+  const url = `/policies/${p.id}/maps/${m.id}`;
+  useEffect(() => setPv(null), [ref]); // a changed value is previewed again
+  const save = async (extra: any = {}) => {
+    try { await api(url, { method: 'PUT', body: { ref, policyId: to, ...extra } }); toast(to !== p.id ? `Moved to ${sh.pols.find((x) => x.id === to)?.name}` : 'Mapping saved'); onSaved(); } catch (x: any) { toast(x.message); }
+  };
+  const go = async () => {
+    try {
+      const r = await api<any>(`${url}/preview`, { body: { ref, policyId: to } });
+      if (r.unchanged) { toast('Nothing changed'); return; }
+      if (r.conflicts?.length) { setConf(r); return; }
+      if (r.move) { setPv(r); return; }
+      await save();
+    } catch (x: any) { toast(x.message); }
+  };
+  if (conf) return <ConflictDialog policy={conf.to} pv={conf} onChoose={(resolution) => save({ resolution })} onClose={() => setConf(null)} />;
+  return <Modal onClose={onClose}>
+    <div className="row sp"><h2>Edit mapping</h2><button className="btn sm" onClick={onClose}>Close</button></div>
+    <p className="mute" style={{ fontSize: 12.5, margin: '8px 0 12px' }}>{LVL[m.level]}: {refLabel(m.level, m.ref, names)} on {p.name}. The old mapping is switched off and kept in the history; the change is audited on both policies.</p>
+    <div className="form">
+      <div className="field"><span>{LVL[m.level]}</span><div className="row" style={{ gap: 6 }}><MapValuePick level={m.level} value={ref} set={setRef} names={names} /></div></div>
+      <label className="field"><span>Work policy</span><select value={to} onChange={(e) => { setTo(e.target.value); setPv(null); }}>{sh.pols.map((x) => <option key={x.id} value={x.id}>{x.name}{x.status !== 'Active' ? ' (inactive)' : ''}</option>)}</select></label>
+    </div>
+    {pv && <div className="note warn" style={{ marginTop: 12 }}>Move {refLabel(m.level, ref, names)} from {pv.from} to {pv.to}?{pv.moves?.length ? ' ' + pv.moves.map((g: any) => g.text).join('. ') + '.' : ''}{pv.newly ? ` ${pv.newly} other ${pv.newly === 1 ? 'person moves' : 'people move'} to ${pv.to}.` : ''}</div>}
+    <div className="row" style={{ marginTop: 16, justifyContent: 'flex-end' }}>
+      <button className="btn" onClick={onClose}>Cancel</button>
+      {pv ? <button className="btn primary" onClick={() => save()}>Confirm move</button> : <button className="btn primary" onClick={go}>Save</button>}
+    </div>
+  </Modal>;
 }
 
 /** The policy conflict check: who the new mapping covers that already gets another policy, and HR's choice. */
@@ -519,15 +677,18 @@ function History({ hist, sh }: { hist: any[]; sh: Shared }) {
     if (k === 'blackouts') return 'Blackout periods';
     if (k.startsWith('calMap.')) return 'Holiday calendar for ' + (names.data?.[k.slice(7)] ?? k.slice(7));
     if (k.startsWith('offCap.')) return 'Off cap ' + k.slice(7);
+    if (k.startsWith('dev.')) return devLabel(k);
     const ng = /^notice\.grade\.(.+)\.(probM|prob|conf)$/.exec(k);
     if (ng) return `${({ probM: 'Probation (months)', prob: 'Notice in probation', conf: 'Notice after confirmation' } as Record<string, string>)[ng[2]]}, ${ng[1]}`;
     if (k.startsWith('notice.grade.')) return 'Probation and notice ' + k.slice(13);
     const m = /^applies to (\w+)\|(.+)$/.exec(k);
-    if (m) return `Applies to ${LVL[m[1]] ?? m[1]}: ${names.data?.[m[2]] ?? m[2]}`;
+    if (m) return `Applies to ${LVL[m[1]] ?? m[1]}: ${refLabel(m[1], m[2], names.data)}`;
     return k;
   };
   const val = (f: string, v: any) => {
     if (v == null) return '—';
+    if (HM_KEYS.includes(f.replace(/^settings\./, '')) && typeof v === 'number') return hmText(v);
+    if (/^(settings\.)?dev\.\w+\.act$/.test(f)) return devActText(v);
     if (f === 'leavePlanId') return sh.plans.plans.find((x) => x.plan.id === v)?.plan.name ?? String(v);
     if (f === 'calendarId' || f.startsWith('calMap.')) return sh.cals.find((c) => c.id === v)?.name ?? String(v);
     if (Array.isArray(v)) return v.map((b) => (b && typeof b === 'object' ? (b.from ? `${b.name} ${fmtD(b.from)} to ${fmtD(b.to)}${b.on ? '' : ' (off)'}` : JSON.stringify(b)) : String(b))).join(', ') || 'none';
@@ -540,6 +701,7 @@ function History({ hist, sh }: { hist: any[]; sh: Shared }) {
     if (c.field.startsWith('settings.') && REMOVED.test(k)) return [];
     if (k === 'status') return [[label(c.field), c.from ?? (c.to === 'Inactive' ? 'Active' : 'Inactive'), String(c.to)]];
     if (k.startsWith('applies to ')) return [[label(c.field), c.from != null ? onOff(c.from) : onOff(c.to) === 'On' ? 'Off' : 'On', onOff(c.to)]];
+    if (k === 'mapping moved') return [[`Mapping moved${c.note ? ' (' + c.note + ')' : ''}`, String(c.from), String(c.to)]];
     if (k === 'blackouts' && Array.isArray(c.to)) {
       const a: any[] = Array.isArray(c.from) ? c.from : [], out: [string, string, string][] = [];
       c.to.forEach((x: any, i: number) => {
@@ -564,10 +726,11 @@ function History({ hist, sh }: { hist: any[]; sh: Shared }) {
 function Coverage({ sh }: { sh: Shared }) {
   const { data, error } = useLoad(() => api<{ rows: any[]; total: number; matrix?: Record<string, Record<string, number>>; defaults?: any[]; defaultTotal?: number }>('/policies/coverage'), []);
   if (!data) return <Loading error={error} />;
-  const vias = [...Object.values(LVL), 'Default'];
   // The full matrix and every default row come from the server; the first rows are the fallback.
   const cnt: Record<string, Record<string, number>> = data.matrix ?? {};
   if (!data.matrix) data.rows.forEach((r) => { (cnt[r.policyId] ??= {})[r.via] = (cnt[r.policyId]?.[r.via] || 0) + 1; });
+  // Department + place columns only when someone is on a policy through one.
+  const vias = [...Object.entries(LVL).filter(([k, v]) => !COMBO[k] || Object.values(cnt).some((x) => x[v])).map(([, v]) => v), 'Default'];
   const def = data.defaults ?? data.rows.filter((r) => r.via === 'Default'), defN = data.defaultTotal ?? def.length;
   return <>
     <div className="note" style={{ marginBottom: 14 }}>Shows which policy each of the {data.total.toLocaleString('en-IN')} employees ends up on, and through which mapping. Anyone on “Default” matches no mapping and falls back to the first active policy. Fix those by mapping their location, department or type.</div>
@@ -604,40 +767,79 @@ function Overlaps() {
 
 // ---------- Holiday calendars ----------
 
+const HOL_KINDS = ['National', 'Regional', 'Optional'];
+/** A year written in a calendar's name ("Gujarat 2027"), as the server reads it. */
+const yearIn = (n: string) => /(?:^|\D)((?:19|20)\d{2})(?:\D|$)/.exec(n)?.[1] ?? '';
+
+/** One holiday in the calendar dialog: date, name and type are edited in place and saved per row; the switch saves at once. */
+function HolRow({ x, edit, year, save }: { x: any; edit: boolean; year: number; save: (h: any) => Promise<boolean> }) {
+  const [d, setD] = useState({ date: x.date, name: x.name, kind: x.kind });
+  useEffect(() => setD({ date: x.date, name: x.name, kind: x.kind }), [x.date, x.name, x.kind]);
+  const changed = d.date !== x.date || d.name.trim() !== x.name || d.kind !== x.kind;
+  if (!edit) return <tr><td>{fmtD(x.date)}</td><td>{x.name}</td><td><Pill k={x.kind === 'National' ? 'info' : 'n'}>{x.kind}</Pill></td><td><Switch on={x.on_list} disabled /></td><td /></tr>;
+  const lim = year ? { min: `${year}-01-01`, max: `${year}-12-31` } : {};
+  const saveRow = async () => {
+    if (!d.date || !d.name.trim()) { toast('Enter date and name'); return; }
+    if (await save({ id: x.id, date: d.date, name: d.name.trim(), kind: d.kind })) toast('Holiday saved');
+  };
+  return <tr>
+    <td><input type="date" aria-label="Date" {...lim} value={d.date} onChange={(e) => setD({ ...d, date: e.target.value })} style={{ maxWidth: 160 }} /></td>
+    <td><input type="text" aria-label="Holiday" value={d.name} onChange={(e) => setD({ ...d, name: e.target.value })} style={{ minWidth: 150 }} /></td>
+    <td><select aria-label="Type" value={d.kind} onChange={(e) => setD({ ...d, kind: e.target.value })}>{HOL_KINDS.map((k) => <option key={k}>{k}</option>)}</select></td>
+    <td><Switch on={x.on_list} onChange={() => save({ id: x.id, on: !x.on_list })} /></td>
+    <td style={{ whiteSpace: 'nowrap' }}>{changed && <><button className="btn sm primary" onClick={saveRow}>Save</button> <button className="btn sm" onClick={() => setD({ date: x.date, name: x.name, kind: x.kind })}>Undo</button></>}</td>
+  </tr>;
+}
+
 function Calendars({ sh }: { sh: Shared }) {
   const { can } = useAuth();
   const edit = can('pol.policies', 2);
-  const [nc, setNc] = useState({ name: '', from: '' });
+  const [nc, setNc] = useState({ name: '', from: '', year: '' });
   const [open, setOpen] = useState('');
   const [h, setH] = useState({ date: '', name: '', kind: 'National' });
+  const [nm, setNm] = useState('');
   const cal = sh.cals.find((c) => c.id === open);
+  useEffect(() => setNm(cal?.name ?? ''), [open, cal?.name]);
   const put = async (id: string, body: any) => { try { await api(`/calendars/${id}`, { method: 'PUT', body }); sh.reload(); return true; } catch (x: any) { toast(x.message); return false; } };
   const add = async () => {
     if (!nc.name.trim()) { toast('Name the calendar'); return; }
-    try { await api('/calendars', { body: { name: nc.name.trim(), copyFrom: nc.from || sh.cals[0]?.id || '' } }); setNc({ name: '', from: '' }); sh.reload(); toast('Calendar added'); } catch (x: any) { toast(x.message); }
+    try {
+      await api('/calendars', { body: { name: nc.name.trim(), copyFrom: nc.from, ...(+nc.year ? { year: +nc.year } : {}) } });
+      setNc({ name: '', from: '', year: '' }); sh.reload(); toast(nc.from ? 'Calendar added with the holidays copied' : 'Calendar added. Add its holidays');
+    } catch (x: any) { toast(x.message); }
   };
   const addH = async () => {
     if (!h.date || !h.name.trim()) { toast('Enter date and name'); return; }
     if (await put(cal.id, { holiday: { date: h.date, name: h.name.trim(), kind: h.kind } })) setH({ date: '', name: '', kind: 'National' });
   };
+  const flip = async (c: any) => { const on = c.status !== 'Active'; if (await put(c.id, { active: on })) toast(`${c.name} is ${on ? 'active' : 'inactive'}`); };
+  const rename = async () => { if (!nm.trim()) { toast('Name the calendar'); return; } if (await put(cal.id, { name: nm.trim() })) toast('Name saved'); };
+  const lim = cal?.year ? { min: `${cal.year}-01-01`, max: `${cal.year}-12-31` } : {};
   return <>
     {edit && <div className="card" style={{ marginBottom: 14 }}><h3>Add calendar</h3><div className="row">
-      <input type="text" value={nc.name} onChange={(e) => setNc({ ...nc, name: e.target.value })} placeholder="e.g. Gujarat 2026" style={{ maxWidth: 260 }} />
-      <select value={nc.from || sh.cals[0]?.id || ''} onChange={(e) => setNc({ ...nc, from: e.target.value })}>{sh.cals.map((c) => <option key={c.id} value={c.id}>Copy from {c.name}</option>)}</select>
-      <button className="btn primary" onClick={add}>Add calendar</button></div></div>}
-    <div className="card"><div className="tw"><table><thead><tr><th>Calendar</th><th>Holidays</th><th>Status</th><th></th></tr></thead><tbody>
-      {sh.cals.map((c) => <tr key={c.id}><td><b>{c.name}</b></td><td>{c.holidays.filter((x: any) => x.on_list).length} active, {c.holidays.length} total</td><td><Pill k={c.status === 'Active' ? 'ok' : 'n'}>{c.status}</Pill></td><td><button className="btn sm" onClick={() => setOpen(c.id)}>Holidays</button></td></tr>)}
-    </tbody></table></div><p className="mute" style={{ fontSize: 12, margin: '12px 0 0' }}>Confirm each state's notified holiday list before use.</p></div>
+      <input type="text" aria-label="Calendar name" value={nc.name} onChange={(e) => setNc({ ...nc, name: e.target.value, year: yearIn(e.target.value) || nc.year })} placeholder="e.g. Gujarat 2026" style={{ maxWidth: 260 }} />
+      <input type="number" aria-label="Year" min={2000} max={2100} value={nc.year} onChange={(e) => setNc({ ...nc, year: e.target.value })} placeholder={`Year, ${new Date().getFullYear()}`} style={{ maxWidth: 130 }} />
+      <select aria-label="Start from" value={nc.from} onChange={(e) => setNc({ ...nc, from: e.target.value })}><option value="">Start empty</option>{sh.cals.map((c) => <option key={c.id} value={c.id}>Copy from {c.name}</option>)}</select>
+      <button className="btn primary" onClick={add}>Add calendar</button></div>
+      <p className="mute" style={{ fontSize: 12, margin: '8px 0 0' }}>A new calendar starts empty. Copy another calendar to start from its holidays, then edit their dates for the new year.</p></div>}
+    <div className="card"><div className="tw"><table><thead><tr><th>Calendar</th><th>Year</th><th>Holidays</th><th>Used by</th><th>Active</th><th></th></tr></thead><tbody>
+      {sh.cals.map((c) => <tr key={c.id}><td><b>{c.name}</b></td><td>{c.year || '—'}</td><td>{c.holidays.filter((x: any) => x.on_list).length} active, {c.holidays.length} total</td>
+        <td style={{ fontSize: 12.5 }}>{c.usedBy?.length ? c.usedBy.join(', ') : <span className="mute">No policy</span>}</td>
+        <td><Switch on={c.status === 'Active'} disabled={!edit} onChange={() => flip(c)} /></td><td><button className="btn sm" onClick={() => setOpen(c.id)}>Holidays</button></td></tr>)}
+    </tbody></table></div><p className="mute" style={{ fontSize: 12, margin: '12px 0 0' }}>Confirm each state's notified holiday list before use. A calendar a policy uses cannot be made inactive, and an inactive calendar cannot be picked for a policy.</p></div>
     {cal && <Modal wide onClose={() => setOpen('')}>
-      <div className="row sp"><h2>{cal.name}</h2><button className="btn sm" onClick={() => setOpen('')}>Close</button></div>
-      <div className="tw" style={{ maxHeight: '44vh', overflow: 'auto' }}><table><thead><tr><th>Date</th><th>Holiday</th><th>Type</th><th>Active</th></tr></thead><tbody>
-        {[...cal.holidays].sort((a: any, b: any) => a.date.localeCompare(b.date)).map((x: any) => <tr key={x.id}><td>{fmtD(x.date)}</td><td>{x.name}</td><td><Pill k={x.kind === 'National' ? 'info' : 'n'}>{x.kind}</Pill></td>
-          <td><Switch on={x.on_list} disabled={!edit} onChange={() => put(cal.id, { holiday: { id: x.id, date: x.date, name: x.name, on: !x.on_list } })} /></td></tr>)}
+      <div className="row sp"><div className="row">{edit ? <><input type="text" aria-label="Calendar name" value={nm} onChange={(e) => setNm(e.target.value)} style={{ maxWidth: 260, fontWeight: 700 }} />
+        {nm.trim() !== cal.name && <button className="btn sm primary" onClick={rename}>Save name</button>}</> : <h2 style={{ margin: 0 }}>{cal.name}</h2>}
+        {cal.status !== 'Active' && <Pill>Inactive</Pill>}</div><button className="btn sm" onClick={() => setOpen('')}>Close</button></div>
+      <p className="mute" style={{ fontSize: 12.5, margin: '8px 0 10px' }}>{cal.year ? `Holidays of ${cal.year}. ` : ''}Change a date, name or type and press Save on that row. A holiday in a payroll month already approved or published cannot be changed.</p>
+      <div className="tw" style={{ maxHeight: '44vh', overflow: 'auto' }}><table><thead><tr><th>Date</th><th>Holiday</th><th>Type</th><th>Active</th><th></th></tr></thead><tbody>
+        {[...cal.holidays].sort((a: any, b: any) => a.date.localeCompare(b.date)).map((x: any) => <HolRow key={x.id} x={x} edit={edit} year={cal.year} save={(hol) => put(cal.id, { holiday: hol })} />)}
+        {!cal.holidays.length && <tr><td colSpan={5} className="mute">No holidays yet.</td></tr>}
       </tbody></table></div>
       {edit && <><h3 style={{ margin: '16px 0 8px' }}>Add holiday</h3><div className="row">
-        <input type="date" value={h.date} onChange={(e) => setH({ ...h, date: e.target.value })} style={{ maxWidth: 170 }} />
+        <input type="date" aria-label="New holiday date" {...lim} value={h.date} onChange={(e) => setH({ ...h, date: e.target.value })} style={{ maxWidth: 170 }} />
         <input type="text" value={h.name} onChange={(e) => setH({ ...h, name: e.target.value })} placeholder="Holiday name" style={{ maxWidth: 220 }} />
-        <select value={h.kind} onChange={(e) => setH({ ...h, kind: e.target.value })}>{['National', 'Regional', 'Optional'].map((k) => <option key={k}>{k}</option>)}</select>
+        <select value={h.kind} onChange={(e) => setH({ ...h, kind: e.target.value })}>{HOL_KINDS.map((k) => <option key={k}>{k}</option>)}</select>
         <button className="btn primary" onClick={addH}>Add</button></div></>}
     </Modal>}
   </>;
@@ -645,10 +847,13 @@ function Calendars({ sh }: { sh: Shared }) {
 
 // ---------- Leave plans ----------
 
-/** Fields of a leave type in a plan (prototype ltFields). */
-const ltFields = (kind: string) => {
+/** Fields of a leave type in a plan (prototype ltFields). A type in an Earn by working days rule (earned) shows its
+ *  Credit as that rule and Days a year as an optional cap. */
+const ltFields = (kind: string, earned = false) => {
   const a: PF[] = [['on', 'Available in this plan', 'yn', null], ['gender', 'For', 'sel', [['all', 'Everyone'], ['Female', 'Women only'], ['Male', 'Men only']]], ['minSvc', 'Months of service needed', 'num', null], ['inProb', 'Usable in probation', 'yn', null]];
-  if (kind === 'balance') a.push(['days', 'Days a year', 'num', null], ['credit', 'Credit', 'sel', [['monthly', 'Monthly'], ['upfront', 'Upfront for the year']]], ['from', 'Accrual starts', 'sel', [['doj', 'From joining'], ['prob', 'After probation is completed']]],
+  if (kind === 'balance') a.push(['days', earned ? 'Days a year, the most that can be earned (optional)' : 'Days a year', 'num', null, earned ? 'Blank or 0: no cap. Earned only by paid days (tab Earn by working days).' : ''],
+    ['credit', 'Credit', 'sel', earned ? [['earn', 'By working days (see Earn by working days)']] : [['monthly', 'Monthly'], ['upfront', 'Upfront for the year']]],
+    ['from', 'Accrual starts', 'sel', [['doj', 'From joining'], ['prob', 'After probation is completed']]],
     ['catchup', 'Back-date at confirmation', 'yn', null], ['cf', 'Carry forward (days)', 'num', null, '', 1], ['encash', 'Encashment on exit', 'yn', null, '', 1]);
   if (kind === 'event') a.push(['days', 'Days for one occasion', 'num', null], ['times', 'Most times in service, 0 for no limit', 'num', null]);
   a.push(['adv', 'Minimum notice (days before the leave starts)', 'num', null], ['advOnly', 'Must be applied in advance, no back-dating', 'yn', null], ['back', 'Days after the leave date it can still be applied, when back-dating is allowed', 'num', null],
@@ -755,6 +960,8 @@ function PlanOne({ pl: saved, sh, emps, onBack, onOpen }: { pl: any; sh: Shared;
       if (c.on && i.kind === 'event' && !(c.days >= 1)) { toast(`${n}: days for one occasion must be at least 1`); return; }
       if (c.docAfter > 0 && !String(c.docLabel || '').trim()) { toast(`${n}: name the document that is needed`); return; }
     }
+    const why = earnProblem(pl.lv.earn ?? []);
+    if (why) { toast(why); setT('earn'); return; }
     const n = nChanges({ a: saved.name, b: saved.description, lv: saved.lv, lrx: saved.lrx, t: saved.types }, { a: pl.name, b: pl.description, lv: pl.lv, lrx: pl.lrx, t: pl.types });
     if (!eff) { toast('Pick the date the change applies from'); return; }
     try { await put(pl, { effectiveFrom: eff }); toast(n ? `Saved, ${n} change${n === 1 ? '' : 's'} recorded. ${ps.length} polic${ps.length === 1 ? 'y' : 'ies'} updated` : 'Nothing changed'); sh.reload(); } catch (x: any) { toast(x.message); }
@@ -781,21 +988,27 @@ function PlanOne({ pl: saved, sh, emps, onBack, onOpen }: { pl: any; sh: Shared;
     <div className="card" style={{ marginBottom: 14 }}><h3>Leave year</h3><div className="form">
       <Fld f={['lv.year', 'Leave year', 'sel', [['cal', 'January to December'], ['fin', 'April to March'], ['anniv', 'Joining anniversary']]]} v={pl.lv.year} set={(v) => setLv('year', v)} />
       <Fld f={['lv.prorate', 'Pro-rate for joiners and leavers', 'yn', null]} v={pl.lv.prorate} set={(v) => setLv('prorate', v)} />
-      <Fld f={['lv.half', 'Half-day leave allowed', 'yn', null, '', 1]} v={pl.lv.half} set={(v) => setLv('half', v)} />
+      <Fld f={['lv.half', 'Half-day leave allowed', 'yn', null, 'First or second half of one day: 0.5 of the balance; the other half follows the shift\'s half-day hours.']} v={pl.lv.half} set={(v) => setLv('half', v)} />
       <Fld f={['lv.neg', 'Negative balance allowed (days)', 'num', null, '0 means not allowed.']} v={pl.lv.neg} set={(v) => setLv('neg', v)} />
     </div></div>
+    <div className="card" style={{ marginBottom: 14 }}><h3>Short leave</h3><div className="form">
+      <Fld f={['lv.shortOff', 'Short leave allowed', 'yn', null, 'Part of one day, from a time to a time, through the leave approval. No balance is used.']} v={!pl.lv.shortOff} set={(v) => setLv('shortOff', !v)} />
+      {!pl.lv.shortOff && <><Fld f={['lv.shortN', 'Short leaves allowed in a month', 'num', null, 'Blank or 0 means 2.']} v={pl.lv.shortN || 2} set={(v) => setLv('shortN', Math.max(0, Math.floor(+v || 0)))} />
+        <Fld f={['lv.shortH', 'Most hours in one short leave', 'num', null, 'Blank or 0 means 2.']} v={pl.lv.shortH || 2} set={(v) => setLv('shortH', Math.max(0, +v || 0))} /></>}
+    </div><p className="mute" style={{ fontSize: 12, margin: '8px 0 0' }}>An approved short leave excuses that time: no late mark, early going or short-hours penalty, and the day stays Present.</p></div>
     <p className="mute" style={{ fontSize: 12.5, margin: '0 0 8px' }}>Open a leave type to set who it applies to, notice, documents, resignation and who applies. A ◦ marks a setting that is saved with the plan and applied in the full build.</p>
     {types.map((i) => {
-      const c = pl.types[i.name], setT_ = (k: string, v: any) => setPl({ ...pl, types: { ...pl.types, [i.name]: { ...c, [k]: v } } });
+      const c = pl.types[i.name], setT_ = (k: string, v: any) => setPl({ ...pl, types: { ...pl.types, [i.name]: { ...c, [k]: v } } }), earned = i.kind === 'balance' ? earnOf(pl, i.name) : null;
       return <details key={i.name} className="card" style={{ marginBottom: 10 }}>
-        <summary style={{ cursor: 'pointer', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}><b>{i.name}</b><Pill k={c.on ? 'ok' : 'n'}>{c.on ? 'On' : 'Off'}</Pill><span className="mute" style={{ fontSize: 12.5 }}>{ltBrief(i.kind, i.paid, c)} · {c.types.join(', ') || 'No employment type'}</span></summary>
-        <div style={{ marginTop: 12 }}><div className="form">{ltFields(i.kind).map((f) => <Fld key={f[0]} f={f} v={f[2] === 'num' ? Math.max(0, c[f[0]] ?? 0) : c[f[0]]} set={(v) => setT_(f[0], f[2] === 'num' ? Math.max(0, Math.floor(+v || 0)) : v)} />)}</div>
+        <summary style={{ cursor: 'pointer', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}><b>{i.name}</b><Pill k={c.on ? 'ok' : 'n'}>{c.on ? 'On' : 'Off'}</Pill><span className="mute" style={{ fontSize: 12.5 }}>{ltBrief(i.kind, i.paid, c, earned)} · {c.types.join(', ') || 'No employment type'}</span></summary>
+        <div style={{ marginTop: 12 }}><div className="form">{ltFields(i.kind, !!earned).map((f) => <Fld key={f[0]} f={f} v={earned && f[0] === 'credit' ? 'earn' : earned && f[0] === 'days' && !c.days ? '' : f[2] === 'num' ? Math.max(0, c[f[0]] ?? 0) : c[f[0]]} set={(v) => { if (!(earned && f[0] === 'credit')) setT_(f[0], f[2] === 'num' ? Math.max(0, Math.floor(+v || 0)) : v); }} />)}</div>
           <div style={{ marginTop: 12 }}><b style={{ fontSize: 13 }}>Applies to employment types</b><div className="row" style={{ gap: 16, marginTop: 6 }}>{LT_EMP.map((e) => <label key={e}><input type="checkbox" checked={c.types.includes(e)} onChange={(ev) => setT_('types', ev.target.checked ? [...c.types, e] : c.types.filter((x: string) => x !== e))} /> {e}</label>)}</div></div>
-          <p className="mute" style={{ fontSize: 12, margin: '10px 0 0' }}>{i.kind === 'balance' ? 'Days build up through the year and are checked against the balance when someone applies. ' : i.kind === 'event' ? 'A fixed number of days for one occasion, with no yearly balance. ' : 'No balance is kept. '}{!i.paid ? 'Unpaid: these days are loss of pay in payroll. ' : ''}{c.applyBy === 'hr' ? 'Only HRBP or Corporate HR can raise this request, for the employee. ' : ''}</p></div>
+          <p className="mute" style={{ fontSize: 12, margin: '10px 0 0' }}>{i.kind === 'balance' ? (earned ? `Earned only by working days (tab Earn by working days): ${PAID_DAYS}, credited the day after the Nth paid day, active employees only; no monthly or upfront credit; checked against the balance when someone applies. ` : 'Days build up through the year and are checked against the balance when someone applies. ') : i.kind === 'event' ? 'A fixed number of days for one occasion, with no yearly balance. ' : 'No balance is kept. '}{!i.paid ? 'Unpaid: these days are loss of pay in payroll. ' : ''}{c.applyBy === 'hr' ? 'Only HRBP or Corporate HR can raise this request, for the employee. ' : ''}</p></div>
       </details>;
     })}
     {sh.plans.types.some((i) => i.status !== 'Active') && <p className="mute" style={{ fontSize: 12 }}>{s_(sh.plans.types.filter((i) => i.status !== 'Active').length, 'inactive leave type is', 'inactive leave types are')} hidden. Reactivate from the Leave plans list.</p>}
   </>;
+  if (t === 'earn') body = <EarnRules pl={pl} types={sh.plans.types} set={(r) => setLv('earn', r)} />;
   if (t === 'rules') body = <div className="card" style={{ marginBottom: 14 }}><h3>Protecting service levels</h3><div className="form">
     {yn('staffOn', 'Limit people on leave on one day', pl.lrx.staffOn, (v) => setLrx('staffOn', v))}
     <label className="field"><span>Most of a department at a location on leave (%)</span><input type="number" value={pl.lrx.staffPct} onChange={(e) => setLrx('staffPct', +e.target.value || 0)} /></label>
@@ -809,7 +1022,7 @@ function PlanOne({ pl: saved, sh, emps, onBack, onOpen }: { pl: any; sh: Shared;
       <div className="row"><button className="btn sm" onClick={onBack}>All leave plans</button><h2 style={{ margin: 0, fontSize: 20 }}>{saved.name}</h2><Pill k={saved.status === 'Active' ? 'ok' : 'n'}>{saved.status}</Pill><span className="mute">{ps.length} polic{ps.length === 1 ? 'y' : 'ies'} · {emps} employees</span></div>
       <div className="row">{canE && <><button className="btn sm" onClick={dup}>Duplicate</button><button className="btn sm" onClick={toggle}>{saved.status === 'Active' ? 'Make inactive' : 'Reactivate'}</button></>}</div>
     </div>
-    <div className="tabs" style={{ marginBottom: 14 }}>{[['bal', 'Leave types'], ['rules', 'Cover and limits'], ['hist', 'History']].map(([k, l]) => <button key={k} className={`tab ${t === k ? 'on' : ''}`} onClick={() => setT(k)}>{l}</button>)}</div>
+    <div className="tabs" style={{ marginBottom: 14 }}>{[['bal', 'Leave types'], ['earn', 'Earn by working days'], ['rules', 'Cover and limits'], ['hist', 'History']].map(([k, l]) => <button key={k} className={`tab ${t === k ? 'on' : ''}`} onClick={() => setT(k)}>{l}</button>)}</div>
     <fieldset disabled={!canE} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>{body}</fieldset>
     {canE && t !== 'hist' && <div className="row" style={{ marginTop: 16, position: 'sticky', bottom: 0, background: 'var(--bg,#f5f6f8)', padding: '10px 0' }}>
       <label className="field" style={{ margin: 0 }}><span>Applies from</span><input type="date" value={eff} onChange={(e) => setEff(e.target.value)} /></label>
@@ -817,16 +1030,63 @@ function PlanOne({ pl: saved, sh, emps, onBack, onOpen }: { pl: any; sh: Shared;
   </>;
 }
 
+/** What is wrong with the Earn by working days rules before saving ('' when nothing; the server checks the same). */
+const earnProblem = (rules: any[]) => {
+  const seen: Record<string, number> = {}, half = (v: number) => Math.round(v * 2) === v * 2;
+  for (const r of rules) {
+    if (!(+r.days > 0) || !half(+r.days)) return 'Earn by working days: type the paid days of each rule, in whole or half days';
+    if (!(r.types ?? []).length) return `Earn by working days, every ${r.days} paid days: add at least one leave type`;
+    for (const x of r.types) {
+      if (!x.type) return `Earn by working days, every ${r.days} paid days: choose the leave type of each row`;
+      if (!(+x.days > 0) || !half(+x.days)) return `Earn by working days, ${x.type}: type the days earned, in whole or half days`;
+      if (seen[x.type] != null) return `${x.type} is already in the rule for every ${seen[x.type]} paid days. A leave type can be in only one rule`;
+      seen[x.type] = r.days;
+    }
+  }
+  return '';
+};
+
+/** Earn by working days (owner, 24 Nov 2026; evening: working days are paid days, credited the day after the Nth): rules
+ *  of "every time the employee completes these paid days, these leave types are credited these days". Every number is
+ *  typed by the admin; nothing is filled in. */
+function EarnRules({ pl, types, set }: { pl: any; types: any[]; set: (rules: any[]) => void }) {
+  const rules: any[] = pl.lv.earn ?? [];
+  const bal = types.filter((i) => i.kind === 'balance' && i.status === 'Active' && pl.types[i.name]);
+  const upd = (i: number, r: any) => set(rules.map((x, j) => (j === i ? r : x)));
+  const row = (i: number, k: number, x: any) => upd(i, { ...rules[i], types: rules[i].types.map((y: any, j: number) => (j === k ? { ...y, ...x } : y)) });
+  const num = (v: string) => (v === '' ? null : Math.max(0, +v));
+  return <>
+    <div className="note" style={{ marginBottom: 14 }}>Each rule: every time an employee completes the paid days, each leave type in it is credited its days earned, from the day after the Nth paid day (not at the month end). Working days here are {PAID_DAYS}: a day counts 1 less its loss of pay as payroll sees it, so a no-punch day counts until it turns to loss of pay after the regularization window. Days count once they are over, from joining (or the accrual start set on the Leave types tab), and only while the employee is active: nothing after the last working day. The count runs through the leave year, so a block can run across months; the days left over count toward the next block, and the count starts again with each leave year. A leave type in a rule is earned only this way, with no monthly or upfront credit; its Days a year is an optional cap. A leave type can be in only one rule.</div>
+    {rules.map((r, i) => <div key={i} className="card" style={{ marginBottom: 10 }}>
+      <div className="row sp" style={{ alignItems: 'flex-end' }}><label className="field" style={{ maxWidth: 220, margin: 0 }}><span>Paid days</span>
+        <input type="number" min={0} step={0.5} placeholder="Paid days" value={r.days ?? ''} onChange={(e) => upd(i, { ...r, days: num(e.target.value) })} /></label>
+        <button className="btn sm" onClick={() => set(rules.filter((_, j) => j !== i))}>Remove rule</button></div>
+      <div className="tw" style={{ marginTop: 10 }}><table><thead><tr><th>Leave type</th><th>Days earned</th><th></th></tr></thead><tbody>
+        {(r.types ?? []).map((x: any, k: number) => <tr key={k}>
+          <td><select aria-label="Leave type" value={x.type ?? ''} onChange={(e) => row(i, k, { type: e.target.value })}><option value="">Choose a leave type</option>
+            {bal.map((b) => <option key={b.name} value={b.name}>{b.name}{pl.types[b.name]?.on ? '' : ' (off in this plan)'}</option>)}</select></td>
+          <td><input type="number" min={0} step={0.5} placeholder="Days earned" aria-label="Days earned" value={x.days ?? ''} onChange={(e) => row(i, k, { days: num(e.target.value) })} /></td>
+          <td><button className="btn sm" onClick={() => upd(i, { ...r, types: r.types.filter((_: any, j: number) => j !== k) })}>Remove</button></td></tr>)}
+        {!(r.types ?? []).length && <tr><td colSpan={3} className="mute">No leave type in this rule yet.</td></tr>}
+      </tbody></table></div>
+      <div className="row" style={{ marginTop: 8 }}><button className="btn sm" onClick={() => upd(i, { ...r, types: [...(r.types ?? []), { type: '', days: null }] })}>Add leave type</button></div>
+    </div>)}
+    {!rules.length && <p className="mute" style={{ fontSize: 12.5 }}>No rule. Every leave type is credited as set on the Leave types tab.</p>}
+    <button className="btn" onClick={() => set([...rules, { days: null, types: [{ type: '', days: null }] }])}>Add rule</button>
+  </>;
+}
+
 /** A leave plan history field (server path such as types.Casual leave.days) as the setting's label. */
-const LP_LAB: Record<string, string> = { name: 'Plan name', description: 'Description', 'lv.year': 'Leave year', 'lv.prorate': 'Pro-rate for joiners and leavers', 'lv.half': 'Half-day leave allowed',
-  'lv.neg': 'Negative balance allowed (days)', 'lrx.staffOn': 'Limit people on leave on one day', 'lrx.staffPct': 'Most of a department at a location on leave (%)', 'lrx.club': 'Casual leave joined to privilege leave', status: 'Status' };
+const LP_LAB: Record<string, string> = { name: 'Plan name', description: 'Description', 'lv.earn': 'Earn by working days', 'lv.year': 'Leave year', 'lv.prorate': 'Pro-rate for joiners and leavers', 'lv.half': 'Half-day leave allowed',
+  'lv.neg': 'Negative balance allowed (days)', 'lv.shortOff': 'Short leave switched off', 'lv.shortN': 'Short leaves allowed in a month', 'lv.shortH': 'Most hours in one short leave', 'lrx.staffOn': 'Limit people on leave on one day', 'lrx.staffPct': 'Most of a department at a location on leave (%)', 'lrx.club': 'Casual leave joined to privilege leave', status: 'Status' };
 const lpLabel = (f: string, types: any[]) => {
   if (LP_LAB[f]) return LP_LAB[f];
   const m = /^types\.(.+)\.([^.]+)$/.exec(f);
   if (m) { const k = types.find((x) => x.name === m[1])?.kind ?? 'balance', l = ltFields(k).find((x) => x[0] === m[2])?.[1]; return `${m[1]}: ${l ?? (m[2] === 'types' ? 'Applies to employment types' : m[2])}`; }
   return f;
 };
-const lpVal = (v: any) => (v == null ? '—' : typeof v === 'boolean' ? (v ? 'Yes' : 'No') : Array.isArray(v) ? v.join(', ') || 'none' : typeof v === 'object' ? JSON.stringify(v) : String(v));
+const lpVal = (v: any) => (v == null ? '—' : typeof v === 'boolean' ? (v ? 'Yes' : 'No') : Array.isArray(v) && v.some((x) => x && typeof x === 'object')
+  ? v.map((r: any) => `every ${r.days} paid days: ${(r.types ?? []).map((x: any) => `${x.type} ${x.days}`).join(', ')}`).join('; ') : Array.isArray(v) ? v.join(', ') || 'none' : typeof v === 'object' ? JSON.stringify(v) : String(v));
 
 // ---------- Exceptions ----------
 

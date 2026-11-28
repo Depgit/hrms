@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { api, fmtD, inr, openDoc, today, uploadDoc } from '../api';
 import { useAuth } from '../auth';
-import { Field, Loading, Pill, toast, useLoad } from '../components/ui';
+import { Field, Loading, Modal, Pill, toast, useLoad } from '../components/ui';
+import { Statement } from './Compensation';
 
 /* The hiring lifecycle (hiring.go, workforce plan module 1): offer versions and HR-recorded answers, the Offer ID at
    acceptance, joining-day outcomes, the waiting window, early exit, the background check, the status timeline, the
@@ -15,15 +16,39 @@ const VTONE: Record<string, Tone> = { Accepted: 'ok', Sent: 'info', Approved: 'i
 const fmtDT = (s?: string | null) => (s ? new Date(s).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '');
 const addDays = (d: string, n: number) => { const x = new Date(d + 'T00:00:00'); x.setDate(x.getDate() + n); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
 
-/** The status timeline: every change, who, when, from → to and why. Newest first. */
-export function Timeline({ events, empty = 'Nothing recorded yet.' }: { events?: LifeEvent[] | null; empty?: string }) {
+/** The status timeline: every change, who, when, from → to and why. Newest first. With the offer versions, an
+ *  "Offer vN …" line opens that version's breakup: tap the gross (owner, 27 Nov 2026). */
+export function Timeline({ events, empty = 'Nothing recorded yet.', versions }: { events?: LifeEvent[] | null; empty?: string; versions?: any[] }) {
+  const [pv, setPv] = useState<any>(null);
   const l = [...(events ?? [])].reverse();
   if (!l.length) return <p className="mute" style={{ margin: 0, fontSize: 13 }}>{empty}</p>;
-  return <ul className="log">{l.map((e, i) => <li key={i}>
+  const verOf = (a: string) => { const m = /^Offer v(\d+)\b/.exec(a); return m ? (versions ?? []).find((v) => v.version === +m[1] && v.pay) : undefined; };
+  const reason = (e: LifeEvent, v: any) => {
+    const r = e.reason || '';
+    const m = v && /gross ₹[\d,]+/.exec(r);
+    if (!v) return r;
+    if (!m) return <>{r}{r ? ' · ' : ''}<a role="button" tabIndex={0} className="lnk" onClick={() => setPv(v)}>See the breakup</a></>;
+    return <>{r.slice(0, m.index)}<a role="button" tabIndex={0} className="lnk" title="See the breakup of this offer" onClick={() => setPv(v)}>{m[0]}</a>{r.slice(m.index + m[0].length)}</>;
+  };
+  return <><ul className="log">{l.map((e, i) => { const v = verOf(e.action); return <li key={i}>
     <b>{e.action}</b>{e.from || e.to ? <span className="ink2"> · {e.from || '—'} → {e.to || '—'}</span> : null}
     <span className="mute"> · {e.by} · {fmtDT(e.at)}{e.date ? ` · effective ${fmtD(e.date)}` : ''}</span>
-    {e.reason && <div className="ink2" style={{ fontSize: 12.5 }}>{e.reason}</div>}
-  </li>)}</ul>;
+    {(e.reason || v) && <div className="ink2" style={{ fontSize: 12.5 }}>{reason(e, v)}</div>}
+  </li>; })}</ul>
+    {pv && <VersionPay v={pv} onClose={() => setPv(null)} />}</>;
+}
+
+/** One offer version's breakup as it was decided (offer_version.pay), or worked out again for an old version. */
+export function VersionPay({ v, onClose }: { v: any; onClose: () => void }) {
+  const p = v.pay || {};
+  return <Modal wide onClose={onClose}>
+    <h2 style={{ marginTop: 0 }}>Offer v{v.version} breakup · gross {inr(v.gross)} a month</h2>
+    <p className="ink2" style={{ fontSize: 13, margin: '0 0 10px' }}>{v.type} · joining {fmtD(v.doj)}{v.grade ? ` · grade ${v.grade}` : ''}{p.structure ? ` · structure ${p.structure}` : ''}{p.ctcYear ? ` · CTC ${inr(p.ctcYear)} a year` : ''}</p>
+    {p.live ? <div className="note warn" style={{ marginBottom: 10 }}>This version was raised before breakups were kept, so it is worked out again from its gross and details with today's salary structure. If the structure or rates changed since, the amounts sent may have differed.</div>
+      : <p className="mute" style={{ fontSize: 12.5, margin: '0 0 10px' }}>As worked out {v.releasedAt ? 'when the offer was sent' : 'when the offer was raised'}{p.at ? ` (${fmtDT(p.at)})` : ''}. Later changes to the structure do not change it.</p>}
+    {p.breakup ? <Statement c={p.breakup} type={v.type} std={p.rates} rules={p.rules ? { [v.type]: p.rules } : undefined} /> : <p className="mute">No breakup for this version.</p>}
+    <div className="row" style={{ marginTop: 12 }}><button className="btn" onClick={onClose}>Close</button></div>
+  </Modal>;
 }
 
 /** A small inline form: a reason (and maybe a date or days) before an action. */
@@ -46,13 +71,14 @@ function Ask({ label, date, days, rehire, minDate, maxDate, onCancel, onGo, go, 
 /** Offer versions (v1, v2…) and the candidate's answer, recorded by HR: Accepted, Question about the breakup, Declined. */
 export function OfferVersions({ x, act, busy }: { x: any; act: Act; busy: boolean }) {
   const [ask, setAsk] = useState<'' | 'query' | 'decline' | 'expiry'>('');
+  const [pv, setPv] = useState<any>(null);
   const c = x.can || {};
   const vs: any[] = x.offerVersions || [];
   const step = (s: string, body: any, ok: string) => act(() => api(`/offers/${x.offer_id}/${s}`, { body }), (r) => r?.result || ok).then(() => setAsk(''));
   return <>
     {vs.length > 0 && <div className="tw" style={{ marginTop: 8 }}><table><thead><tr><th>Version</th><th>Status</th><th className="num">Gross a month</th><th>Joining</th><th>Answer due</th><th>Answer</th></tr></thead>
       <tbody>{vs.map((v) => <tr key={v.version}><td className="mono">v{v.version}{v.frozen ? ' · frozen' : ''}</td><td><Pill k={VTONE[v.status] ?? 'n'}>{v.status}</Pill></td>
-        <td className="num">{inr(v.gross)}</td><td>{fmtD(v.doj)}</td><td>{v.expiresOn ? fmtD(v.expiresOn) : '—'}</td>
+        <td className="num">{v.pay ? <a role="button" tabIndex={0} className="lnk" title="See the breakup" onClick={() => setPv(v)}>{inr(v.gross)}</a> : inr(v.gross)}</td><td>{fmtD(v.doj)}</td><td>{v.expiresOn ? fmtD(v.expiresOn) : '—'}</td>
         <td style={{ fontSize: 12.5 }}>{v.answer || <span className="mute">—</span>}{v.answeredBy && <div className="mute">{v.answeredBy} · {fmtDT(v.answeredAt)}</div>}</td></tr>)}</tbody></table></div>}
     {c.accept && <div className="row" style={{ marginTop: 10 }}>
       <span className="ink2" style={{ fontSize: 13 }}>Candidate's answer{x.expires_on ? ` (due by ${fmtD(x.expires_on)})` : ''}:</span>
@@ -64,8 +90,35 @@ export function OfferVersions({ x, act, busy }: { x: any; act: Act; busy: boolea
     {x.query_text && !x.accepted_at && !x.declined_at && <div className="note warn" style={{ marginTop: 10 }}><b>Question about the breakup:</b> {x.query_text}<div className="mute" style={{ fontSize: 12 }}>Revise the offer: a new version goes for approval and is sent again.</div></div>}
     {ask === 'query' && <Ask label="What did the candidate ask?" go="Record the question" onCancel={() => setAsk('')} onGo={(v) => step('query', { reason: v.reason }, 'Question recorded')} />}
     {ask === 'decline' && <Ask label="Why did the candidate decline?" go="Mark declined" tone="bad" onCancel={() => setAsk('')} onGo={(v) => step('decline', { reason: v.reason }, 'Marked declined')} />}
+    {pv && <VersionPay v={pv} onClose={() => setPv(null)} />}
     {ask === 'expiry' && <Ask label="Why move it?" date={x.expires_on || today()} minDate={today()} go="Move the expiry date" onCancel={() => setAsk('')} onGo={(v) => step('expiry', { expires: v.date, reason: v.reason }, 'Expiry moved')} />}
   </>;
+}
+
+/** Offer at joining (offer_at_joining.go): HR chooses it for a selected candidate instead of raising the offer now,
+ *  with the expected joining date and a note. */
+export function OfferAtJoiningChoose({ x, act, busy }: { x: any; act: Act; busy: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [v, setV] = useState({ date: today(), note: '' });
+  if (!open) return <button className="btn" onClick={() => setOpen(true)}>Offer at joining</button>;
+  return <div className="card" style={{ marginTop: 10, flexBasis: '100%' }}>
+    <p className="ink2" style={{ fontSize: 13, margin: '0 0 8px' }}>No offer now. On the joining day you raise the offer (the same form), it goes for Offer approval as usual, and Mark joined after the approval is the acceptance: the Offer ID is issued and the offer letter given at joining.</p>
+    <div className="form">
+      <Field label="Expected joining date"><input type="date" value={v.date} min={today()} onChange={(e) => setV({ ...v, date: e.target.value })} /></Field>
+      <label className="field" style={{ gridColumn: '1 / -1' }}><span>Note (optional)</span><input type="text" value={v.note} onChange={(e) => setV({ ...v, note: e.target.value })} /></label>
+    </div>
+    <div className="row" style={{ marginTop: 10 }}><button className="btn" onClick={() => setOpen(false)}>Cancel</button>
+      <button className="btn primary" disabled={busy || !v.date} onClick={() => act(() => api(`/candidates/${x.id}/offer-at-joining`, { body: v }), (r) => r.result).then(() => setOpen(false))}>Choose offer at joining</button></div>
+  </div>;
+}
+
+/** Where an offer-at-joining candidate stands: the expected date, the note and what Mark joined waits for. */
+export function OfferAtJoiningNote({ x }: { x: any }) {
+  const o = x.offerAtJoining;
+  if (!o) return null;
+  return <div className="note" style={{ marginTop: 8 }}><b>Offer at joining</b>: expected to join on {fmtD(o.doj)}{o.note ? ` · ${o.note}` : ''} <span className="mute">(chosen by {o.by})</span>.
+    <div className="ink2" style={{ fontSize: 12.5 }}>{!x.offer_id ? (o.due ? 'The joining day has come: raise the offer at joining. It goes for Offer approval; Mark joined comes after the approval.' : `Raise the offer at joining on ${fmtD(o.doj)}. Until then you can still raise the usual offer or close the candidate.`)
+      : o.waitingFor || 'Approved. Mark joined: joining is the acceptance, the Offer ID is issued and the offer letter is given.'}</div></div>;
 }
 
 /** Joining-day outcomes for an accepted offer: joined on the actual date, no-show (waiting), date moved, withdrew,
@@ -89,14 +142,15 @@ export function JoiningOutcomes({ x, act, busy, onDetails }: { x: any; act: Act;
         <button className="btn bad" onClick={() => setAsk('decline')}>Offer declined</button>
       </>}
     </div>
-    {x.doj && <p className="mute" style={{ fontSize: 12, margin: '6px 0 0' }}>Joining date on the offer: {fmtD(x.doj)}.</p>}
+    {x.offerAtJoining && !c.markJoined && x.offerAtJoining.waitingFor && x.offer_id && <p className="ink2" style={{ fontSize: 12.5, margin: '6px 0 0' }}>Mark joined: {x.offerAtJoining.waitingFor}.</p>}
+    {(x.doj || x.offerAtJoining) && <p className="mute" style={{ fontSize: 12, margin: '6px 0 0' }}>{x.offerAtJoining ? `Expected joining date: ${fmtD(x.offerAtJoining.doj)}.` : `Joining date on the offer: ${fmtD(x.doj)}.`}</p>}
     {ask === 'no-show' && <Ask label="What happened (not answering, phone off…)" optional go={`Start waiting (${x.hiring?.waitDays ?? 7} days)`} onCancel={() => setAsk('')} onGo={(v) => ev({ action: 'no-show', reason: v.reason })} />}
-    {ask === 'doj' && <Ask label="Why is the joining date changing?" date={addDays(x.doj || today(), 7)} go="Reschedule joining" onCancel={() => setAsk('')} onGo={(v) => ev({ action: 'doj', date: v.date, reason: v.reason })} />}
+    {ask === 'doj' && <Ask label="Why is the joining date changing?" date={addDays(x.offerAtJoining?.doj || x.doj || today(), 7)} go="Reschedule joining" onCancel={() => setAsk('')} onGo={(v) => ev({ action: 'doj', date: v.date, reason: v.reason })} />}
     {ask === 'decline' && <Ask label="Why did the candidate decline?" go="Close: offer declined" tone="bad" onCancel={() => setAsk('')} onGo={(v) => ev({ action: declineAction, reason: v.reason })} />}
-    {/* The joiner's link and joining details are their own section, not a joining outcome. */}
-    <div className="card" style={{ marginTop: 14 }}><h3>Joiner's link and joining details</h3>
+    {/* The joiner's link and joining details are their own section, not a joining outcome (after joining for an offer at joining). */}
+    {!x.offerAtJoining && <div className="card" style={{ marginTop: 14 }}><h3>Joiner's link and joining details</h3>
       <p className="mute" style={{ fontSize: 12.5, margin: '-4px 0 8px' }}>Send the joiner their link so their details and documents are in before the first day. Required before the Employee ID is issued.</p>
-      <button className="btn" onClick={onDetails}>Open joiner's link and joining details</button></div>
+      <button className="btn" onClick={onDetails}>Open joiner's link and joining details</button></div>}
   </>;
 }
 
@@ -182,7 +236,12 @@ export function BgvPanel({ x, reload }: { x: any; reload: () => void }) {
 /** Form setup › Hiring: the waiting window, automatic close, the background check rule and offer expiry. */
 export function HireSettings() {
   const { can } = useAuth();
-  const { data, reload } = useLoad(() => api<{ hiring: any }>('/onboarding/settings'), []);
+  const { data, reload } = useLoad(() => api<{ hiring: any; nextNo?: number }>('/onboarding/settings'), []);
+  const [nextNo, setNextNo] = useState('');
+  const saveNext = async () => {
+    if (!window.confirm(`The next candidate gets SI-${String(+nextNo).padStart(4, '0')} (then OI/JI with the same number). Numbers cannot be moved back. Save?`)) return;
+    try { await api('/onboarding/settings', { method: 'PUT', body: { nextNo: +nextNo } }); toast('Saved'); setNextNo(''); reload(); } catch (x: any) { toast(x.message); }
+  };
   const depts = useLoad(() => api<any[]>('/masters/department?status=Active'), []);
   const types = useLoad(() => api<any[]>('/masters/employment_type?status=Active'), []);
   const [v, setV] = useState<any>(null);
@@ -205,6 +264,10 @@ export function HireSettings() {
       <Field label="When the window ends"><select disabled={!edit} value={String(!!cur.waitAutoClose)} onChange={(e) => set('waitAutoClose', e.target.value === 'true')}><option value="false">HR confirms the close</option><option value="true">Close automatically</option></select></Field>
       <Field label="Background check"><select disabled={!edit} value={cur.bgvOff ? 'off' : String(!!cur.bgvBlocks)} onChange={(e) => { const v = e.target.value; setV({ ...cur, bgvOff: v === 'off', bgvBlocks: v === 'true' }); }}><option value="off">Not used: we do no background check</option><option value="true">Pending or discrepancy holds the Employee ID</option><option value="false">Recorded, does not hold the Employee ID</option></select></Field>
     </div>
+    <h3 className="sec">Hiring number (SI / OI / JI)</h3>
+    <p className="mute" style={{ fontSize: 12.5, margin: '0 0 8px' }}>The next candidate gets <b>SI-{String(data?.nextNo ?? '').padStart(4, '0')}</b>; the offer and the Joining ID keep the same number, and the Realtime portal code is that number in 6 digits. Set it past the portal's highest code so new codes never clash. It only moves forward.</p>
+    {edit && <div className="row" style={{ gap: 8, alignItems: 'flex-end' }}><Field label="Next hiring number"><input type="number" min={data?.nextNo ?? 1} max={999999} value={nextNo} placeholder={String(data?.nextNo ?? '')} onChange={(e) => setNextNo(e.target.value)} /></Field>
+      <button className="btn primary" disabled={!nextNo || +nextNo <= (data?.nextNo ?? 0) - 1} onClick={saveNext}>Set</button></div>}
     <h3 className="sec">Release the offer letter at</h3>
     <p className="mute" style={{ fontSize: 12.5, margin: '0 0 8px' }}>Offer release is the default. For the departments and employment types chosen here the letter is released at <b>joining</b>: the offer is still approved, released and accepted as usual, but the letter is not generated or given to the candidate until HR marks them joined, when it is released automatically (audited). A department or a type chosen is enough.</p>
     <Field label="Departments: letter at joining">{pick('letterJoinDepts', (depts.data ?? []).map((x) => x.name))}</Field>
@@ -230,7 +293,8 @@ export function EmployeeLifecycle({ id }: { id: string }) {
           {' '}· Stage {data.stage ? <><Pill k="info">{data.stage}</Pill>{data.stageSince ? <span className="mute"> since {fmtD(data.stageSince)}</span> : null}</> : <span className="mute">not set</span>}
           {data.aliases?.length > 0 && <span className="mute"> · also found as {data.aliases.join(', ')}</span>}</div>
         {data.hireIds && <div className="ink2" style={{ fontSize: 13, marginTop: 4 }}>Shortlisting ID <b className="mono">{data.hireIds.si}</b> · Offer ID <b className="mono">{data.hireIds.oi}</b> · Joining ID <b className="mono">{data.hireIds.ji}</b>
-          {data.hireIds.via === 'import' && <span className="mute"> · one number from the candidate series, given at import</span>}</div>}</div>
+          {data.hireIds.via === 'code' && <span className="mute"> · from the Employee code</span>}
+          {data.hireIds.via === 'import' && <span className="mute"> · a number of the candidate series (the Employee code’s number was taken or missing)</span>}</div>}</div>
       {data.canSetStage && <label className="field" style={{ margin: 0 }}><span>Set the stage</span><select value={ask} onChange={(e) => setAsk(e.target.value)}><option value="">Choose</option>
         {(data.stages as string[]).filter((s) => s !== 'Joining' && s !== data.stage).map((s) => <option key={s}>{s}</option>)}</select></label>}
     </div>

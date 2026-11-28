@@ -60,7 +60,7 @@ func (s *Server) routesHst(m *http.ServeMux) {
 	m.HandleFunc("GET /api/hst/board", s.a(s.hstBoard))
 	m.HandleFunc("GET /api/hst/board.xlsx", s.sheet(s.hstBoardSheet))
 	m.HandleFunc("GET /api/hst/split", s.a(s.hstSplitGet))
-	m.HandleFunc("GET /api/hst/waiting", s.a(s.hstWaiting))            // hst_auto.go
+	m.HandleFunc("GET /api/hst/waiting", s.a(s.hstWaiting))             // hst_auto.go
 	m.HandleFunc("POST /api/hst/waiting/{id}/drop", s.a(s.hstWaitDrop)) // hst_auto.go
 	m.HandleFunc("GET /api/hst/clusters", s.a(s.hstAccomClusters))      // hst_auto.go
 }

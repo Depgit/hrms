@@ -29,9 +29,9 @@ func TestRealtimeMatchPortalCodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	portal := []realtime.Employee{
-		{Name: name("EMP-1020"), Code: "1201", Card: "00001201", Phone: fmt.Sprint(pers["mobile"])},                        // Sure: mobile and name
-		{Name: name("EMP-1009"), Code: "1209", Card: "00001209", DOJ: doj9},                                                // Sure: name and date of joining
-		{Name: name("EMP-1011"), Code: "1211", Card: "00001211"},                                                           // Likely: name only
+		{Name: name("EMP-1020"), Code: "1020", Card: "00001020", Phone: fmt.Sprint(pers["mobile"])},                        // Sure: the Employee ID's number
+		{Name: name("EMP-1009"), Code: "1009", Card: "00001009", DOJ: doj9},                                                // Sure: the Employee ID's number
+		{Name: name("EMP-1011"), Code: "1211", Card: "00001211"},                                                           // the same name only: never proposed (owner, 28 Nov 2026)
 		{Name: name("EMP-1014"), Code: "7777", Card: "00007777"},                                                           // already given
 		{Name: "Made Up Person", Code: "9100", Card: "00009100", Dept: "Kitchen", Desig: "Commi I", Branch: "SaltStayz X"}, // not in the HRMS
 	}
@@ -47,7 +47,7 @@ func TestRealtimeMatchPortalCodes(t *testing.T) {
 	if s, _ := c.do("POST", "/api/attendance/realtime/match", "EMP-1020", "Employee", nil); s != 403 {
 		t.Fatalf("employee start: %d", s)
 	}
-	if s, _ := c.do("POST", "/api/attendance/realtime/match/apply", "EMP-1020", "Employee", map[string]any{"pairs": []any{map[string]any{"employeeId": "EMP-1020", "code": "1201"}}}); s != 403 {
+	if s, _ := c.do("POST", "/api/attendance/realtime/match/apply", "EMP-1020", "Employee", map[string]any{"pairs": []any{map[string]any{"employeeId": "EMP-1020", "code": "1020"}}}); s != 403 {
 		t.Fatalf("employee apply: %d", s)
 	}
 
@@ -79,7 +79,7 @@ func TestRealtimeMatchPortalCodes(t *testing.T) {
 
 	s, g := c.do("GET", "/api/attendance/realtime/match?level=Sure", "EMP-1002", "HR Admin", nil)
 	counts, _ := g["counts"].(map[string]any)
-	if s != 200 || g["portal"] != 5.0 || g["used"] != 1.0 || g["leftover"] != 1.0 || counts["Sure"] != 2.0 || counts["Likely"] != 1.0 || g["total"] != 2.0 {
+	if s != 200 || g["portal"] != 5.0 || g["used"] != 1.0 || g["leftover"] != 2.0 || counts["Sure"] != 2.0 || counts["Likely"] != 0.0 || g["total"] != 2.0 {
 		t.Fatalf("result: %d %v", s, g)
 	}
 	picks := map[string]string{}
@@ -90,7 +90,7 @@ func TestRealtimeMatchPortalCodes(t *testing.T) {
 			picks[fmt.Sprint(r["employeeId"])] = l + " " + fmt.Sprint(r["pick"].(map[string]any)["code"])
 		}
 	}
-	if picks["EMP-1020"] != "Sure 1201" || picks["EMP-1009"] != "Sure 1209" || picks["EMP-1011"] != "Likely 1211" {
+	if picks["EMP-1020"] != "Sure 1020" || picks["EMP-1009"] != "Sure 1009" || picks["EMP-1011"] != "" {
 		t.Fatalf("picks: %v", picks)
 	}
 	// Search and paging.
@@ -101,18 +101,18 @@ func TestRealtimeMatchPortalCodes(t *testing.T) {
 	// Downloads: the proposals in the Employee master update format, and the portal people not in the HRMS.
 	s, raw := c.getRaw("/api/attendance/realtime/match/download?format=csv", "EMP-1002", "HR Admin")
 	recs, _ := csv.NewReader(strings.NewReader(strings.TrimPrefix(string(raw), "\xef\xbb\xbf"))).ReadAll()
-	if s != 200 || len(recs) != 4 || recs[0][0] != "Employee ID" || recs[0][len(recs[0])-1] != "Attendance code" {
+	if s != 200 || len(recs) != 3 || recs[0][0] != "Employee ID" || recs[0][len(recs[0])-1] != "Attendance code" {
 		t.Fatalf("download: %d %v", s, recs)
 	}
 	got := map[string]string{}
 	for _, r := range recs[1:] {
 		got[r[0]] = r[len(r)-1]
 	}
-	if got["EMP-1020"] != "1201" || got["EMP-1011"] != "1211" {
+	if got["EMP-1020"] != "1020" || got["EMP-1011"] != "" {
 		t.Fatalf("download rows: %v", got)
 	}
 	// The file goes through Bulk update as it is.
-	if _, r := c.sendFile("/api/bulk/upd/check", "EMP-1002", "HR Admin", "codes.csv", raw); r["ok"] != 3.0 {
+	if _, r := c.sendFile("/api/bulk/upd/check", "EMP-1002", "HR Admin", "codes.csv", raw); r["ok"] != 2.0 {
 		t.Fatalf("bulk check of the download: %v", r)
 	}
 	if s, raw := c.getRaw("/api/attendance/realtime/match/download?what=portal&format=csv", "EMP-1002", "HR Admin"); s != 200 || !strings.Contains(string(raw), "Made Up Person") || strings.Contains(string(raw), "7777") {
@@ -121,9 +121,9 @@ func TestRealtimeMatchPortalCodes(t *testing.T) {
 
 	// Apply: two good, and the refusals.
 	pairs := []any{
-		map[string]any{"employeeId": "EMP-1020", "code": "00001201"}, // by card number: the EmpCode is stored
-		map[string]any{"employeeId": "EMP-1009", "code": "1209"},
-		map[string]any{"employeeId": "EMP-1011", "code": "1209"},  // given to EMP-1009 above
+		map[string]any{"employeeId": "EMP-1020", "code": "00001020"}, // by card number: the EmpCode is stored
+		map[string]any{"employeeId": "EMP-1009", "code": "1009"},
+		map[string]any{"employeeId": "EMP-1011", "code": "1009"},  // given to EMP-1009 above
 		map[string]any{"employeeId": "EMP-1014", "code": "1211"},  // already has a code
 		map[string]any{"employeeId": "EMP-1012", "code": "55555"}, // not a portal code
 		map[string]any{"employeeId": "EMP-9999", "code": "1211"},  // nobody
@@ -134,15 +134,15 @@ func TestRealtimeMatchPortalCodes(t *testing.T) {
 	}
 	res := ap["results"].([]any)
 	errOf := func(i int) string { return fmt.Sprint(res[i].(map[string]any)["error"]) }
-	if res[0].(map[string]any)["code"] != "1201" || !strings.Contains(errOf(2), "two employees") || !strings.Contains(errOf(3), "Already has") ||
+	if res[0].(map[string]any)["code"] != "1020" || !strings.Contains(errOf(2), "two employees") || !strings.Contains(errOf(3), "Already has") ||
 		!strings.Contains(errOf(4), "not in the portal") || !strings.Contains(errOf(5), "No such employee") {
 		t.Fatalf("results: %v", res)
 	}
-	if apiDoc(st, "employee", bson.M{"_id": "EMP-1020"})["attendance_code"] != "1201" || apiDoc(st, "employee", bson.M{"_id": "EMP-1009"})["attendance_code"] != "1209" ||
+	if apiDoc(st, "employee", bson.M{"_id": "EMP-1020"})["attendance_code"] != "1020" || apiDoc(st, "employee", bson.M{"_id": "EMP-1009"})["attendance_code"] != "1009" ||
 		apiDoc(st, "employee", bson.M{"_id": "EMP-1011"})["attendance_code"] != nil {
 		t.Fatal("stored codes")
 	}
-	if a := apiDoc(st, "audit_log", bson.M{"entity": "employee", "entity_id": "EMP-1020", "action": "Attendance code 1201 given from the Realtime portal match"}); a == nil {
+	if a := apiDoc(st, "audit_log", bson.M{"entity": "employee", "entity_id": "EMP-1020", "action": "Attendance code 1020 given from the Realtime portal match"}); a == nil {
 		t.Fatal("apply not audited")
 	}
 	// Applied people drop out of the proposals.

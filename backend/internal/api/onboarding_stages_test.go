@@ -64,7 +64,8 @@ func offerData(st *store.Store, first, last, phone string) map[string]any {
 	hub, city := hubPlace(st)
 	return map[string]any{"first": first, "last": last, "type": "Permanent", "doj": today(), "dept": "Front Office", "desig": "Front Office Supervisor",
 		"grade": "G3", "city": city, "loc": hub, "gross": 26000, "phone": phone, "email": strings.ToLower(first+"."+last) + "@example.com",
-		"jobRole": "Front desk", "jobSkill": "Guest service"} // required like the department (owner, 14 Nov 2026)
+		"jobRole": "Front desk", "jobSkill": "Guest service", // required like the department (owner, 14 Nov 2026)
+		"pfWant": "Yes"} // "Does the employee want PF?" required for Permanent (owner, 26 Nov 2026)
 }
 
 func joinData(pan string) map[string]any {

@@ -191,8 +191,11 @@ func saveMaster(ctx context.Context, tx store.Q, c *Ctx, t, id string, vals map[
 		if res.After, err = tx.C(m.table).FindOne(ctx, bson.M{"_id": newID}); err != nil {
 			return res, err
 		}
-		if t == "shift" { // its first version (Set shift)
+		if t == "shift" { // its first version (Set shift), and where it applies: everywhere until changed (shift_maps.go)
 			if err := ensureBaseVersion(ctx, tx, fmt.Sprint(res.After["id"])); err != nil {
+				return res, err
+			}
+			if err := shiftAllEverywhere(ctx, tx, c, fmt.Sprint(res.After["id"])); err != nil {
 				return res, err
 			}
 		}
@@ -201,7 +204,9 @@ func saveMaster(ctx context.Context, tx store.Q, c *Ctx, t, id string, vals map[
 	_, st := vals["start_time"]
 	_, en := vals["end_time"]
 	_, br := vals["break_minutes"]
-	timing := t == "shift" && (st || en || br)
+	_, s2 := vals["start2_time"]
+	_, e2 := vals["end2_time"]
+	timing := t == "shift" && (st || en || br || s2 || e2)
 	if timing { // keep the old timings as the version before today
 		if err := ensureBaseVersion(ctx, tx, id); err != nil {
 			return res, err
@@ -214,8 +219,8 @@ func saveMaster(ctx context.Context, tx store.Q, c *Ctx, t, id string, vals map[
 		// Today's version takes the shift's new timings; a version added today keeps its attendance rules.
 		now := tx.Now()
 		if _, err := tx.C("shift_version").Upsert(ctx, bson.M{"shift_id": id, "effective_from": store.DateOf(now)},
-			bson.M{"start_time": res.After["start_time"], "end_time": res.After["end_time"], "break_minutes": res.After["break_minutes"],
-				"created_by": c.Name + " (" + c.EmployeeID + ")", "created_at": now, "note": "Changed in the shift list"},
+			bson.M{"start_time": res.After["start_time"], "end_time": res.After["end_time"], "start2_time": res.After["start2_time"], "end2_time": res.After["end2_time"],
+				"break_minutes": res.After["break_minutes"], "created_by": c.Name + " (" + c.EmployeeID + ")", "created_at": now, "note": "Changed in the shift list"},
 			bson.M{"rules": res.After["rules"]}); err != nil {
 			return res, err
 		}
@@ -288,15 +293,6 @@ func checkMaster(ctx context.Context, tx store.Q, t string, m master, before sto
 		}
 		if err := checkShiftTiming(before, vals); err != nil {
 			return err
-		}
-		if ids, ok := vals["location_ids"].([]string); ok {
-			if len(ids) == 0 {
-				return bad("Pick at least one location, or all locations")
-			}
-			n, err := tx.C("location").Count(ctx, bson.M{"_id": bson.M{"$in": ids}})
-			if err != nil || n != int64(len(uniq(ids))) {
-				return orErr(err, bad("A location of the shift does not exist"))
-			}
 		}
 	}
 	// The parent must exist and be active when it is set or changed.
@@ -461,13 +457,16 @@ func masterRulesHolders(ctx context.Context, q store.Q, id, dept, name string) (
 	return active, joining + moves, nil
 }
 
-// checkShiftTiming: start and end differ, the break is shorter than the shift, and a shift whose rules say it ends
-// the next day (or not) keeps times that agree (Set shift owns the rules).
+// checkShiftTiming: start and end differ, the break is shorter than the shift, a split shift's second part comes
+// after the first on the same day, and a shift whose rules say it ends the next day (or not) keeps times that agree
+// (Set shift owns the rules).
 func checkShiftTiming(before store.Row, vals map[string]any) error {
 	_, a := vals["start_time"]
 	_, b := vals["end_time"]
 	_, c := vals["break_minutes"]
-	if !a && !b && !c {
+	_, d := vals["start2_time"]
+	_, e := vals["end2_time"]
+	if !a && !b && !c && !d && !e {
 		return nil
 	}
 	get := func(k string) any {
@@ -487,6 +486,19 @@ func checkShiftTiming(before store.Row, vals map[string]any) error {
 	length := en - st
 	if length <= 0 {
 		length += 1440
+	}
+	nextDay := false
+	if before != nil {
+		if r, ok := before["rules"].(map[string]any); ok {
+			nextDay, _ = r["nextDay"].(bool)
+		}
+	}
+	if _, msg := splitProblem(st, en, str(get("start2_time")), str(get("end2_time")), nextDay); msg != "" {
+		return bad("%s", msg)
+	}
+	if s2, ok := attend.Min(str(get("start2_time"))); ok {
+		e2, _ := attend.Min(str(get("end2_time")))
+		length += e2 - s2
 	}
 	if brk, _ := num64(get("break_minutes")); brk >= float64(length) {
 		return bad("Break minutes must be shorter than the shift")
@@ -602,6 +614,8 @@ func renameRefs(ctx context.Context, tx store.Q, c *Ctx, t string, before store.
 		run("pending approvals", rename("approval_request", bson.M{"status": "Pending"}, "facts.grade"))
 	case "department":
 		run("work policy mappings", rename("work_policy_map", bson.M{"level": "department"}, "ref"))
+		// A department together with a place (policy_combo.go) carries the name inside its ref.
+		run("work policy combined mappings", func() (int64, error) { return renameComboDept(ctx, tx, old, name) })
 		run("role mappings", replaceIn("user_role_map", "id", "departments"))
 		run("onboarding documents", replaceIn("onb_document", "key", "depts"))
 		run("company policies", func() (int64, error) { return masterRulesAudience(ctx, tx, old, name) })

@@ -65,8 +65,8 @@ func (s *Server) runMaintenance(ctx context.Context) error {
 	if _, err := s.PfExemptSweep(ctx); err != nil { // PF exemption of joiners (pfuan.go)
 		return fmt.Errorf("PF exemption: %w", err)
 	}
-	s.costSweepLogged(ctx) // cost snapshots of published months not frozen yet (cost.go)
-	s.hstSweepLogged(ctx)  // accommodation reminders: lease end, rent increase, check-out after exit or transfer (hst.go)
+	s.costSweepLogged(ctx)    // cost snapshots of published months not frozen yet (cost.go)
+	s.hstSweepLogged(ctx)     // accommodation reminders: lease end, rent increase, check-out after exit or transfer (hst.go)
 	s.hstWaitSweepLogged(ctx) // joiners waiting for a bed get one when it frees up (hst_auto.go)
 	return nil
 }
@@ -84,6 +84,7 @@ func (s *Server) StartJobs(ctx context.Context) error {
 	jobs.AddWorker(workers, &driveSweepWorker{s: s})
 	jobs.AddWorker(workers, &docSweepWorker{s: s})
 	jobs.AddWorker(workers, &attAlertWorker{s: s})
+	jobs.AddWorker(workers, &attDevWorker{s: s})
 	jobs.AddWorker(workers, &hireSweepWorker{s: s})
 	jobs.AddWorker(workers, &portalWriteWorker{s: s})
 	jobs.AddWorker(workers, &portalSweepWorker{s: s})
@@ -111,6 +112,10 @@ func (s *Server) StartJobs(ctx context.Context) error {
 			// Attendance alerts: missing punch, late, not punched in, manager digest, cut-off (att_alerts.go).
 			jobs.NewPeriodicJob(jobs.PeriodicInterval(attAlertEvery),
 				func() (jobs.JobArgs, *jobs.InsertOpts) { return AttAlertArgs{}, nil }, nil),
+			// Deviations beyond a work policy's allowance to HR Admins and the manager, and leave days called to work and
+			// worked noted on their request (dev_allow.go, work_call.go); independent of the alert settings.
+			jobs.NewPeriodicJob(jobs.PeriodicInterval(attDevEvery),
+				func() (jobs.JobArgs, *jobs.InsertOpts) { return AttDevArgs{}, nil }, nil),
 			// Hiring lifecycle: offer reminders and lapse, waiting-window reminders and automatic close (hiring.go).
 			jobs.NewPeriodicJob(jobs.PeriodicInterval(hireSweepEvery),
 				func() (jobs.JobArgs, *jobs.InsertOpts) { return HireSweepArgs{}, nil }, &jobs.PeriodicJobOpts{RunOnStart: true}),

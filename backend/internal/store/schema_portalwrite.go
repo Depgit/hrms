@@ -11,10 +11,12 @@ package store
 //     before it are not listed to mark left), and lists (the portal form's departments, designations, branches and
 //     shifts as last read, with when).
 //   - portal_map (new): HR's one-time mapping of HRMS values to the portal's list choices: kind (dept, desig, branch,
-//     shift), ref (the HRMS department, designation, property id or shift code) and value (the portal's choice,
-//     as its text).
+//     shift; since 25 Nov 2026 also policy and wo, both keyed by the work policy id: the portal's Office Time Policy
+//     and First Weekly Off), ref (the HRMS department, designation, property id, shift code or work policy id) and
+//     value (the portal's choice, as its text). The kind check is the HRMS's own (no migration).
 //   - portal_send (new): every confirmed send: employee_id, action, code, ok, unclear, the fields sent, the portal's
-//     message, at and by. Never changed after it is written.
+//     message, at and by; since 25 Nov 2026 also device (the punch machine a create chose) and notes (e.g. "No punch
+//     machine chosen: …"), both optional, so no migration. Never changed after it is written.
 //
 // Migration 016 creates the two collections and their indexes, gives HR Admin the new right att.portal (Edit) and
 // records when sending started. Nothing existing is rewritten.
@@ -45,7 +47,7 @@ var portalMapTable = &Table{
 	PK:      []string{"id"},
 	IDIsPK:  true,
 	Indexes: []Index{{Name: "portal_map_key", Keys: []IndexKey{{Field: "kind"}, {Field: "ref"}}, Unique: true}},
-	Checks:  []Check{{Name: "portal_map_kind_check", Conds: []Cond{{Col: "kind", Op: "in", Val: []any{"dept", "desig", "branch", "shift"}}}}},
+	Checks:  []Check{{Name: "portal_map_kind_check", Conds: []Cond{{Col: "kind", Op: "in", Val: []any{"dept", "desig", "branch", "shift", "policy", "wo"}}}}},
 }
 
 var portalSendTable = &Table{
@@ -61,6 +63,8 @@ var portalSendTable = &Table{
 		{Name: "message", Type: TText},
 		{Name: "by", Type: TText},
 		{Name: "at", Type: TTimestamptz, NotNull: true, Default: Default{Kind: DefNow}},
+		{Name: "device", Type: TText}, // 25 Nov 2026: the punch machine a create chose ("RSS… / Branch"); null = none
+		{Name: "notes", Type: TJSONB}, // 25 Nov 2026: notes for HR that did not stop the write (no punch machine chosen…)
 	},
 	PK:      []string{"id"},
 	IDIsPK:  true,

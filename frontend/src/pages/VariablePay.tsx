@@ -50,7 +50,8 @@ export default function VariablePay() {
         <div className="row" style={{ gap: 8 }}><Pill k="info">{x.due} due</Pill><Pill k={x.entered === x.due ? 'ok' : 'warn'}>{x.entered} entered</Pill>
           {x.due > x.entered && <Pill k="bad">{x.due - x.entered} not entered</Pill>}</div>
       </div>
-      {!x.can && <p className="mute" style={{ fontSize: 12.5 }}>{x.ym < x.open ? `${ymLabel(x.ym)} is already paid.` : 'You can see the amounts but not enter them.'}</p>}
+      {x.allInNote && <div className="note" style={{ marginTop: 10 }}>{x.allInNote}. Nothing is entered here for these months; the payslip shows the amount.</div>}
+      {!x.can && !x.allInNote && <p className="mute" style={{ fontSize: 12.5 }}>{x.ym < x.open ? `${ymLabel(x.ym)} is already paid.` : 'You can see the amounts but not enter them.'}</p>}
       <div className="tw" style={{ marginTop: 10 }}><table><thead><tr><th>Employee</th><th>Structure</th><th className="num">Target a month</th><th>Component</th><th>Payout</th><th className="num">Target for the cycle</th><th className="num">Amount to pay</th></tr></thead>
         <tbody>{(pg.rows ?? []).flatMap((r: any) => r.comps.filter((c: any) => !dueOnly || c.due).map((c: any, i: number) => <tr key={r.employeeId + c.code}>
           {i === 0 && <><td rowSpan={r.comps.filter((y: any) => !dueOnly || y.due).length}><b>{r.name}</b> <span className="mono mute">{r.employeeId}</span><div className="mute" style={{ fontSize: 12 }}>{r.location} · {r.type}</div></td>

@@ -46,7 +46,7 @@ func takenOf(ctx context.Context, q store.Q, empID, ltype string) (approved, pen
 
 // leaveRoutesOf matches an employee's leave requests of a type ("" for any type) in the given statuses.
 func leaveRoutesOf(empID, ltype string, status ...string) bson.D {
-	f := bson.D{{Key: "wf", Value: "leave"}, {Key: "employee_id", Value: empID}}
+	f := bson.D{{Key: "wf", Value: "leave"}, {Key: "employee_id", Value: empID}, notShort} // a short leave is no day of leave
 	if ltype != "" {
 		f = append(f, bson.E{Key: "payload.ltype", Value: ltype})
 	}
@@ -139,13 +139,15 @@ func (s *Server) leaveBalances(r *http.Request, c *Ctx) (any, error) {
 			continue
 		}
 		row := map[string]any{"type": name, "kind": lt.Kind, "paid": lt.Paid, "applyBy": cfg.ApplyBy, "docAfter": cfg.DocAfter, "docLabel": cfg.DocLabel,
-			"rules": ruleText(*cfg, lt)}
+			"rules": ruleText(*cfg, lt, pl.LV, name)}
 		if lt.Kind == leave.KindBalance {
 			ap, pe, err := takenOf(ctx, s.st.DB, id, name)
 			if err != nil {
 				return nil, err
 			}
-			row["balance"] = leave.Compute(*cfg, pl.LV, p.S.ProbMonths(e.Grade), e.DOJ, on, openingOf(ctx, s.st.DB, id, name, on), ap, pe)
+			if row["balance"], err = leaveBalOf(ctx, s.st.DB, ts, e, p, cfg, name, on, ap, pe); err != nil {
+				return nil, err
+			}
 		}
 		if name == "Comp-off" { // no new comp-off is earned; what was credited stays usable until used or expired
 			row["compoff"] = compoffBalance(ctx, s.st.DB, id, on)
@@ -153,20 +155,28 @@ func (s *Server) leaveBalances(r *http.Request, c *Ctx) (any, error) {
 		out = append(out, row)
 	}
 	planName, half := "", false
+	var short map[string]any
 	if pl != nil {
 		planName, half = pl.Name, pl.LV.Half
+		if on, n, h := pl.LV.Short(); on && calc.RulesFor(calc.EmploymentType(e.Type)).Leave {
+			short = map[string]any{"perMonth": n, "maxHours": h}
+		}
 	}
 	// Optional holidays: the policy's number a year and an opening balance loaded for this year (b1_bulk.go).
 	optHol := map[string]any{"perYear": p.S.OptHol, "opening": optHolOpeningOf(ctx, s.st.DB, id, on)}
 	return map[string]any{"types": out, "policy": p.Name, "via": via, "plan": planName, "half": half, "scoreBlock": leaveScoreBlock(ctx, s.st.DB, e, p),
-		"optHol": optHol}, nil
+		"optHol": optHol, "short": short}, nil
 }
 
-func ruleText(c leave.TypeCfg, lt leaveType) string {
+func ruleText(c leave.TypeCfg, lt leaveType, lv leave.LV, name string) string {
 	parts := []string{}
 	switch lt.Kind {
 	case leave.KindBalance:
-		parts = append(parts, fmt.Sprintf("%v days a year", c.Days))
+		if blk, in := lv.BlockFor(name, c); in {
+			parts = append(parts, "earned by working days: "+blk.Text(c.Days))
+		} else {
+			parts = append(parts, fmt.Sprintf("%v days a year", c.Days))
+		}
 	case leave.KindEvent:
 		parts = append(parts, fmt.Sprintf("up to %v days an occasion", c.Days))
 	}
@@ -213,6 +223,14 @@ func leaveCover(ctx context.Context, q store.Q, ts *timeSet, e *emp, p *workPoli
 // total of the same type and the approval group from the plan (spec 7.3).
 func leaveFacts(ctx context.Context, q store.Q, empID string, p *requestPayload) (approval.Facts, error) {
 	f := approval.Facts{}
+	if p.Short || p.LType == leave.ShortLeaveType {
+		return shortLeaveFacts(ctx, q, empID, p)
+	}
+	if !p.Half {
+		p.HalfOf = ""
+	} else if p.HalfOf != "second" {
+		p.HalfOf = "first" // the first half unless the second is chosen
+	}
 	if !isDate(p.From) || !isDate(p.To) || p.To < p.From {
 		return f, bad("Give a valid from and to date")
 	}
@@ -245,6 +263,10 @@ func leaveFacts(ctx context.Context, q store.Q, empID string, p *requestPayload)
 		bson.E{Key: "payload.to", Value: bson.D{{Key: "$gte", Value: p.From}}}, bson.E{Key: "payload.from", Value: bson.D{{Key: "$lte", Value: p.To}}})); overlap {
 		return f, bad("There is already a leave request on these dates")
 	}
+	if short, _ := q.C("approval_request").Exists(ctx, bson.D{{Key: "wf", Value: "leave"}, {Key: "employee_id", Value: empID}, {Key: "payload.short", Value: true},
+		{Key: "status", Value: bson.D{{Key: "$in", Value: bson.A{"Pending", "Approved"}}}}, {Key: "payload.from", Value: bson.D{{Key: "$gte", Value: p.From}, {Key: "$lte", Value: p.To}}}}); short {
+		return f, bad("There is a short leave on these dates. Cancel it first, then apply for the leave")
+	}
 	lo := policy.AddDays(p.From, -30)
 	prior, err := leaveRoutesDays(ctx, q, append(leaveRoutesOf(empID, p.LType, "Pending", "Approved"),
 		bson.E{Key: "payload.to", Value: bson.D{{Key: "$gte", Value: lo}}}, bson.E{Key: "payload.from", Value: bson.D{{Key: "$lte", Value: p.To}}}))
@@ -265,6 +287,9 @@ var hrRoles = []string{"HR Admin", "HRBP", "HRBP Corporate"}
 
 // leaveErrors are the eligibility, balance and window rules (ltErrors + winErrors).
 func leaveErrors(ctx context.Context, q store.Q, c *Ctx, empID string, p *requestPayload, days float64) []string {
+	if p.Short {
+		return shortLeaveErrors(ctx, q, empID, p)
+	}
 	er := []string{}
 	ts, err := loadTimeSet(ctx, q)
 	if err != nil {
@@ -337,7 +362,10 @@ func leaveErrors(ctx context.Context, q store.Q, c *Ctx, empID string, p *reques
 		if err != nil {
 			return append(er, err.Error())
 		}
-		b := leave.Compute(*cfg, ts.plan(pol).LV, pol.S.ProbMonths(e.Grade), e.DOJ, p.From, openingOf(ctx, q, e.ID, p.LType, p.From), ap, pe)
+		b, err := leaveBalOf(ctx, q, ts, e, pol, cfg, p.LType, p.From, ap, pe)
+		if err != nil {
+			return append(er, err.Error())
+		}
 		if b.InProbBlock {
 			er = append(er, p.LType+" cannot be used during probation under this leave plan")
 		} else if days > b.Bal+b.Neg {
@@ -414,7 +442,7 @@ func leaveErrors(ctx context.Context, q store.Q, c *Ctx, empID string, p *reques
 			// The team's other leave, approved or waiting (anyone at the property in the department, whatever
 			// their status), each counted on the dates it covers.
 			reqs, _ := q.C("approval_request").Find(ctx, bson.D{{Key: "wf", Value: "leave"}, {Key: "status", Value: bson.D{{Key: "$in", Value: bson.A{"Pending", "Approved"}}}},
-				{Key: "employee_id", Value: bson.D{{Key: "$in", Value: mates}, {Key: "$ne", Value: e.ID}}}},
+				{Key: "employee_id", Value: bson.D{{Key: "$in", Value: mates}, {Key: "$ne", Value: e.ID}}}, notShort},
 				options.Find().SetProjection(bson.D{{Key: "employee_id", Value: 1}, {Key: "payload.cov", Value: 1}, {Key: "payload.from", Value: 1}, {Key: "payload.to", Value: 1}}))
 			for _, d := range p.Cov {
 				who := map[string]bool{}

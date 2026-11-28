@@ -224,7 +224,7 @@ func TestMasterUpdateWorkbook(t *testing.T) {
 			t.Fatalf("States header %v", head[0])
 		}
 		sh, _ := f.GetRows("Shifts")
-		if strings.Join(sh[0][:6], "|") != "Name|Code|Start (HH:MM)|End (HH:MM)|Break minutes|Locations (All locations, or names separated by ;)" {
+		if strings.Join(sh[0][:6], "|") != "Name|Code|Start (HH:MM)|End (HH:MM)|Break minutes|Applies to (read-only: Department at Location, separated by ;)" {
 			t.Fatalf("Shifts header %v", sh[0])
 		}
 		regions, _ := f.GetRows("Regions")
@@ -237,7 +237,11 @@ func TestMasterUpdateWorkbook(t *testing.T) {
 				spl = r
 			}
 		}
-		if len(spl) < 9 || spl[6] != "Inactive" || spl[7] != "2026-04-01" || spl[8] != "Discontinued" {
+		// A split shift's second part (24 Nov 2026) comes after Applies to (the old Locations): blank for a shift in one part.
+		if strings.Join(sh[0][6:8], "|") != "Second part start (HH:MM, None for no second part)|Second part end (HH:MM, None for no second part)" {
+			t.Fatalf("Shifts header %v", sh[0])
+		}
+		if len(spl) < 11 || spl[6] != "" || spl[7] != "" || spl[8] != "Inactive" || spl[9] != "2026-04-01" || spl[10] != "Discontinued" {
 			t.Fatalf("the retired Split shift: %v", spl)
 		}
 		dvs, _ := f.GetDataValidations("States")
@@ -602,8 +606,8 @@ func TestMasterRenames(t *testing.T) {
 		}
 		hk := db.id("department", bson.M{"name": "Housekeeping"})
 		fb := db.id("department", bson.M{"name": "F&B"})
-		A("POST", "/api/masters/designation", map[string]any{"name": "Supervisor", "department_id": hk, "grades": []string{"G2"}})
-		sup := A("POST", "/api/masters/designation", map[string]any{"name": "Supervisor", "department_id": fb, "grades": []string{"G2"}})
+		A("POST", "/api/masters/designation", map[string]any{"name": "Supervisor", "department_id": hk})
+		sup := A("POST", "/api/masters/designation", map[string]any{"name": "Supervisor", "department_id": fb})
 		db.write(st.DB.C("work_policy_map").Insert(ctx, bson.M{"policy_id": other, "level": "designation", "ref": "Supervisor", "created_by": "test"}))
 		// The workbook renames the F&B one (by its Row ID); the Housekeeping one keeps the old name.
 		r := c.mbRun(t, "apply", "EMP-1002", "HR Admin", mbFile(t, mbSh{"Designations", [][]any{mbHeader("Name", "Department", "Grades", "Row ID"),
@@ -614,14 +618,12 @@ func TestMasterRenames(t *testing.T) {
 		if got := db.list("work_policy_map", bson.M{"level": "designation", "on_map": true, "policy_id": other}, "ref"); got != "F&B Lead,Supervisor" {
 			t.Fatalf("both names keep the policy: %s", got)
 		}
-		if got := db.texts(db.one("designation", bson.M{"_id": sup["id"]})["grades"]); got != "G2,G3" {
-			t.Fatalf("grades: %s", got)
-		}
-		A("POST", "/api/masters/designation", map[string]any{"name": "Supervisor", "department_id": db.id("department", bson.M{"name": "Front Office"}), "grades": []string{"G2"}})
+		A("POST", "/api/masters/designation", map[string]any{"name": "Supervisor", "department_id": db.id("department", bson.M{"name": "Front Office"})})
 		dup := c.mbRun(t, "check", "EMP-1002", "HR Admin", mbFile(t, mbSh{"Designations", [][]any{mbHeader("Name", "Department", "Grades"), {"Supervisor", "", "G2"}, {"Lead", "F&B", "G99"}}}))
 		rows := mbRowsOf(mbSheetOf(t, dup, "Designations"))
+		// Grades are not on designations any more (owner, 27 Nov 2026): a Grades column is ignored.
 		if len(rows) != 2 || !strings.Contains(mbText(rows[0]["errors"]), "in more than one department") && !strings.Contains(mbText(rows[0]["errors"]), "Give the Department") ||
-			!strings.Contains(mbText(rows[1]["errors"]), "Grade G99 is not in Grades") {
+			strings.Contains(mbText(rows[1]["errors"]), "G99") {
 			t.Fatalf("designation errors: %v", rows)
 		}
 	})
@@ -644,9 +646,6 @@ func TestMasterRenames(t *testing.T) {
 		}
 		if got := fmt.Sprint(db.one("region", bson.M{"_id": db.one("state", bson.M{"name": "Delhi"})["region_id"]})["name"]); got != "North India" {
 			t.Fatalf("Delhi is in %s", got)
-		}
-		if got := db.texts(db.one("designation", bson.M{"name": "Sales Head"})["grades"]); got != "Grade 6" {
-			t.Fatalf("Sales Head grades %s", got)
 		}
 	})
 
@@ -712,7 +711,7 @@ func TestMasterFixedNamesAndMoves(t *testing.T) {
 		n := db.count("employee", bson.M{"designation_id": fd, "status": "Active"})
 		refused("/api/masters/designation/"+fd, map[string]any{"department_id": hk}, n+" active employee")
 		refused("/api/masters/designation/"+fd, map[string]any{"department_id": hk}, "hold this designation in Front Office; move them first with Bulk update")
-		_, tr := c.do("POST", "/api/masters/designation", "EMP-1002", "HR Admin", map[string]any{"name": "Trainee", "department_id": db.id("department", bson.M{"name": "Front Office"}), "grades": []string{"G1"}})
+		_, tr := c.do("POST", "/api/masters/designation", "EMP-1002", "HR Admin", map[string]any{"name": "Trainee", "department_id": db.id("department", bson.M{"name": "Front Office"})})
 		if s, r := c.do("PATCH", "/api/masters/designation/"+fmt.Sprint(tr["id"]), "EMP-1002", "HR Admin", map[string]any{"department_id": hk}); s != 200 {
 			t.Fatalf("an unused designation moves: %d %v", s, r)
 		}

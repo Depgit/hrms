@@ -98,11 +98,21 @@ func mastersShiftList(ctx context.Context, q store.Q, table string, match, order
 	for _, v := range vers {
 		byShift[str(v["id"])] = v
 	}
+	applies, pairs, err := shiftApplies(ctx, q)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]store.Row, 0, len(shifts))
 	for _, x := range shifts {
 		row := store.Row{"effective_from": nil, "next_from": nil, "versions": int64(1)}
-		for _, k := range []string{"id", "code", "name", "start_time", "end_time", "break_minutes", "location_ids", "status", "inactive_since", "inactive_reason", "created_at", "rules"} {
+		for _, k := range []string{"id", "code", "name", "start_time", "end_time", "start2_time", "end2_time", "break_minutes", "status", "inactive_since",
+			"inactive_reason", "created_at", "rules"} {
 			row[k] = x[k]
+		}
+		// Where it applies: its switched-on Department + Location rows (shift_maps.go), as text and as id pairs ("" = all).
+		row["applies"], row["maps"] = applies[str(x["id"])], pairs[str(x["id"])]
+		if row["applies"] == nil {
+			row["applies"], row["maps"] = []string{}, []map[string]string{}
 		}
 		if v, ok := byShift[str(x["id"])]; ok {
 			row["effective_from"], row["next_from"], row["versions"] = v["cur"], v["nxt"], v["n"]
@@ -173,13 +183,14 @@ var masters = map[string]master{
 		impact: mastersPlaceImpact()},
 	"department": {table: "department", right: "mas.job", label: "department", fields: []field{{name: "name", kind: "text", required: true}, {name: "corporate", kind: "bool", lbl: "Approval flow"}},
 		list: mastersList(), impact: mastersIDImpact("department_id")},
-	"designation": {table: "designation", right: "mas.job", label: "designation", fields: []field{{name: "name", kind: "text", required: true}, {name: "department_id", kind: "uuid", required: true, lbl: "Department"}, {name: "grades", kind: "texts", required: true}},
+	"designation": {table: "designation", right: "mas.job", label: "designation", fields: []field{{name: "name", kind: "text", required: true}, {name: "department_id", kind: "uuid", required: true, lbl: "Department"}},
 		list:   mastersList(mastersJoin{"department", "department_id", "_d", bson.D{{Key: "department", Value: "$_d.name"}}}),
 		impact: mastersIDImpact("designation_id")},
 	"grade": {table: "grade", right: "mas.job", label: "grade", fields: []field{{name: "name", kind: "text", required: true}}, list: mastersList(),
 		impact: mastersNameImpact("grade", "name", "grade")},
 	"shift": {table: "shift", right: "mas.job", label: "shift", fields: []field{{name: "code", kind: "text", required: true}, {name: "name", kind: "text", required: true}, {name: "start_time", kind: "time", required: true, lbl: "Start"},
-		{name: "end_time", kind: "time", required: true, lbl: "End"}, {name: "break_minutes", kind: "int"}, {name: "location_ids", kind: "uuids", lbl: "Locations"}},
+		{name: "end_time", kind: "time", required: true, lbl: "End"}, {name: "break_minutes", kind: "int"},
+		{name: "start2_time", kind: "time", lbl: "Second part start"}, {name: "end2_time", kind: "time", lbl: "Second part end"}},
 		list:   mastersShiftList,
 		impact: mastersNameImpact("shift", "code", "shift_code")},
 	"qualification": {table: "simple_master", kind: "qualification", right: "mas.job", label: "qualification", fields: []field{{name: "name", kind: "text", required: true}}, list: mastersList()},
@@ -218,6 +229,10 @@ func (m master) validate(body map[string]any, create bool) (map[string]any, erro
 		f, ok := known[k]
 		if !ok {
 			return nil, bad("Unknown field %s", k)
+		}
+		if s, _ := v.(string); f.kind == "time" && !f.required && (v == nil || strings.TrimSpace(s) == "") {
+			out[k] = nil // an optional time cleared (a split shift's second part)
+			continue
 		}
 		switch f.kind {
 		case "text", "enum", "time":

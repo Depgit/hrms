@@ -13,7 +13,6 @@ import (
 
 	"github.com/saltstayz/hrms/internal/approval"
 	"github.com/saltstayz/hrms/internal/calc"
-	"github.com/saltstayz/hrms/internal/leave"
 	"github.com/saltstayz/hrms/internal/policy"
 	"github.com/saltstayz/hrms/internal/store"
 )
@@ -45,7 +44,7 @@ func (s *Server) fnfCompute(ctx context.Context, q store.Q, id string) (*emp, []
 	lwd, fm := *e.LWD, (*e.LWD)[:7]
 	gross, _ := grossFor(ctx, q, id, fm)
 	_, st := structureFor(ctx, q, id, lwd)
-	basic := math.Round(calc.Calc(calc.Input{Type: calc.EmploymentType(e.Type), Gross: gross, Structure: &st, AllBasic: payFor(ctx, q, id, e.Type).allBasicIn(fm)}).Basic)
+	basic := math.Round(calc.Calc(calc.Input{Type: calc.EmploymentType(e.Type), Gross: gross, Structure: &st, AllBasic: payFor(ctx, q, id, e.Type).allBasicIn(fm), AllIn: allInOn(ctx, q, fm)}).Basic)
 	L := []fnfLine{}
 	ts, err := loadTimeSet(ctx, q)
 	if err != nil {
@@ -59,7 +58,10 @@ func (s *Server) fnfCompute(ctx context.Context, q store.Q, id string) (*emp, []
 		if cfg := ts.typeCfg(pol, "Privilege leave"); cfg != nil && cfg.On && (cfg.Encash || pl.LV.PlEnc) {
 			ap, pe, err := takenOf(ctx, q, id, "Privilege leave")
 			if err == nil {
-				b := leave.Compute(*cfg, pl.LV, pol.S.ProbMonths(e.Grade), e.DOJ, lwd, openingOf(ctx, q, id, "Privilege leave", lwd), ap, pe)
+				b, err := leaveBalOf(ctx, q, ts, e, pol, cfg, "Privilege leave", lwd, ap, pe)
+				if err != nil {
+					return nil, nil, err
+				}
 				if days, amt := calc.LeaveEncashment(basic, b.Bal); amt > 0 {
 					L = append(L, fnfLine{Key: "enc", Kind: "earn", Label: fmt.Sprintf("Leave encashment, %v PL days", days), Amount: amt, Note: fmt.Sprintf("Basic %s ÷ 26 × %v", calc.Inr(basic), days)})
 				}

@@ -138,6 +138,7 @@ func onboardingStagesCandidates(ctx context.Context, q store.Q, filter bson.D, s
 			"joined_by": x["joined_by"], "employee_created_at": x["employee_created_at"], "closed_kind": x["closed_kind"], "closed_reason": x["closed_reason"],
 			"closed_at": x["closed_at"], "closed_by": x["closed_by"],
 			"offer_no": x["offer_no"], "offer_version": x["offer_version"], "waiting_window": x["waiting"], "bgv": x["bgv"], "ji_at": x["ji_at"], "approved_at": x["approved_at"],
+			"oaj_at": x["oaj_at"], "oaj_by": x["oaj_by"], "oaj_doj": x["oaj_doj"], "oaj_note": x["oaj_note"], "at_joining": onboardingCol(o, "at_joining"), // offer_at_joining.go
 			"expires_on": onboardingCol(o, "expires_on"), "query_at": onboardingCol(o, "query_at"), "query_text": onboardingCol(o, "query_text"), "lapsed_at": onboardingCol(o, "lapsed_at"),
 			"shortlist_status": onboardingCol(sr, "status"), "interview_status": onboardingCol(ir, "status"),
 			"offer_id": onboardingCol(o, "id"), "type": onboardingCol(o, "type"), "doj": onboardingCol(o, "doj"), "gross": onboardingCol(o, "gross"),
@@ -171,6 +172,9 @@ func bucket(x store.Row) string {
 	if x["stage"] != "Closed" && x["waiting_window"] != nil { // no-show or stopped coming (hiring.go)
 		return "Waiting"
 	}
+	if oajOpen(x) { // offer at joining: waiting for the joining day, the offer's approval or Mark joined (offer_at_joining.go)
+		return "Offer at joining"
+	}
 	if x["stage"] == "Joined" {
 		switch {
 		case x["ji_at"] != nil && x["approved_at"] == nil && x["verified_at"] != nil: // verified; the Employee ID waits (background check)
@@ -184,7 +188,7 @@ func bucket(x store.Row) string {
 	return str(x["stage"])
 }
 
-var pipelineBuckets = []string{"Shortlisted", "Interview", "Offer", "Waiting", "Joined", "With Payroll", "Done", "Closed"}
+var pipelineBuckets = []string{"Shortlisted", "Interview", "Offer", "Offer at joining", "Waiting", "Joined", "With Payroll", "Done", "Closed"}
 
 // waitingOn is the stage and the person a pending request waits on.
 func waitingOn(ctx context.Context, q store.Q, reqID string) (string, string) {
@@ -269,6 +273,19 @@ func describe(ctx context.Context, q store.Q, x store.Row, fs []onbField, ds []o
 			}
 		default:
 			status, waiting = fmt.Sprintf("Offer accepted (%s). Joining on %s", currentID(x), longDate(str(x["doj"]))), "HR"
+		}
+	case "Offer at joining":
+		v := max(1, toInt(x["offer_version"]))
+		switch {
+		case !oajOfferLive(x) && x["offer_id"] != nil:
+			status, waiting = fmt.Sprintf("Offer at joining v%d not approved. Revise it or close", v), "HR"
+		case x["offer_id"] == nil:
+			status, waiting = "Offer at joining: waiting for the joining day, expected on "+longDate(oajDOJ(x)), "HR"
+		case x["offer_status"] == "Pending":
+			st, who := waitingOn(ctx, q, str(x["offer_request_id"]))
+			status, waiting = fmt.Sprintf("Offer at joining v%d: waiting for offer approval", v), withName(st, who)
+		default:
+			status, waiting = fmt.Sprintf("Offer at joining v%d approved. Mark joined: joining is the acceptance", v), "HR"
 		}
 	case "Waiting":
 		if w := waitOf(x["waiting_window"], today()); w != nil {
@@ -435,7 +452,8 @@ func (s *Server) onbSettingsGet(r *http.Request, c *Ctx) (any, error) {
 	if c.Level("onb.pipeline") < 1 && c.Level("onb.raise") < 1 && c.Level("onb.setup") < 1 {
 		return nil, forbidden("")
 	}
-	return map[string]any{"employeeIdAt": employeeIDAt(r.Context(), s.st.DB), "hiring": loadHireSettings(r.Context(), s.st.DB)}, nil
+	return map[string]any{"employeeIdAt": employeeIDAt(r.Context(), s.st.DB), "hiring": loadHireSettings(r.Context(), s.st.DB),
+		"nextNo": onboardingStagesPeekSeq(r.Context(), s.st.DB, "candidate_seq")}, nil
 }
 
 func (s *Server) onbSettingsPut(r *http.Request, c *Ctx) (any, error) {
@@ -445,6 +463,7 @@ func (s *Server) onbSettingsPut(r *http.Request, c *Ctx) (any, error) {
 	var b struct {
 		EmployeeIDAt string        `json:"employeeIdAt"`
 		Hiring       *hireSettings `json:"hiring"` // the hiring lifecycle's settings (hiring.go)
+		NextNo       *int          `json:"nextNo"` // the next number of the SI/OI/JI series (owner, 26 Nov 2026)
 	}
 	if err := decode(r, &b); err != nil {
 		return nil, err
@@ -452,6 +471,9 @@ func (s *Server) onbSettingsPut(r *http.Request, c *Ctx) (any, error) {
 	ctx := r.Context()
 	if b.Hiring != nil {
 		return s.hireSettingsPut(ctx, c, *b.Hiring)
+	}
+	if b.NextNo != nil {
+		return s.hireNextNoPut(ctx, c, *b.NextNo)
 	}
 	if b.EmployeeIDAt != "documents" && b.EmployeeIDAt != "joining" {
 		return nil, bad("Choose when the Employee ID is created")
@@ -479,21 +501,60 @@ type expRow struct {
 type shortlistBody struct {
 	Data       map[string]any `json:"data"`
 	Experience []expRow       `json:"experience"`
+	// Draft: the DRAFT- key the shortlist form uploaded its documents under (files.go draftOwner). They move to the
+	// candidate (owner SI-0001) when the shortlist is saved (claimShortlistDocs).
+	Draft string `json:"draft"`
 }
 
 type shortlist struct {
-	d        map[string]string
+	d        map[string]string // what the shortlist asks (shortlistAsked), as given
 	job      offerJob
 	ctc      float64
 	exp      []expRow
 	manager  string
 	codeMode string
+	docs     map[string]store.Row // the documents uploaded under the draft key
 }
 
+var reYM = regexp.MustCompile(`^\d{4}-(0[1-9]|1[0-2])$`) // genders: personal.go
+
+// The Shortlisting stage of Form setup (owner, 26 Nov 2026; store/schema_shortlist.go). The shortlist form asks the
+// fields and documents whose Shortlisting is Mandatory or Optional, for the candidate's employment type (Permanent
+// unless Employment type itself is asked at shortlisting) and, for documents, department. Besides them it always asks
+// what Form setup does not hold: the existing CTC, the work experience and the hiring manager (and a rejoin's code).
 var (
-	reYM     = regexp.MustCompile(`^\d{4}-(0[1-9]|1[0-2])$`)
-	personal = []string{"first", "last", "phone", "email", "dob", "gender", "addr"} // genders: personal.go
+	// shortlistOwn are the shortlist form's own inputs that are not Form setup fields.
+	shortlistOwn = []string{"ctc", "manager", "rejoinOf", "codeMode"}
+	// shortlistAlwaysLabels are the fields the shortlist always asks (store.ShortlistAlways), in the form's order.
+	shortlistAlwaysLabels = [][2]string{{"first", "First name"}, {"last", "Last name"}, {"city", "Work city"}, {"loc", "Reporting location"},
+		{"dept", "Department"}, {"desig", "Designation"}}
+	// shortlistNotData are kept on the candidate itself, not in candidate.data: the existing CTC, the hiring manager,
+	// the rejoin, the job and the place (ids).
+	shortlistNotData = map[string]bool{"ctc": true, "manager": true, "rejoinOf": true, "codeMode": true, "dept": true, "desig": true, "city": true, "loc": true}
 )
+
+// shortlistType is the employment type the shortlist counts for "Applies to": the type given, when Form setup asks
+// it at shortlisting; else Permanent, as the offer form starts.
+func shortlistType(fs []onbField, in map[string]string) string {
+	for _, f := range fs {
+		if f.Key == "type" && f.On && f.Shortlist > 0 && in["type"] != "" {
+			return in["type"]
+		}
+	}
+	return "Permanent"
+}
+
+// shortlistAsked are the Form setup fields the shortlist asks for this type and these answers: the ones always asked
+// and those whose Shortlisting is Mandatory or Optional.
+func shortlistAsked(fs []onbField, typ string, in map[string]string) []onbField {
+	out := []onbField{}
+	for _, f := range fs {
+		if store.ShortlistAlways(f.Key) || (f.Shortlist > 0 && f.Kind != "flow" && f.Kind != "policy" && f.applies(typ, in)) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
 
 // canApprove: the hiring manager decides the shortlist and the interview in their Approvals, so they must have a
 // role view with approvals: a team of their own (Line Manager) or a mapped role that decides requests.
@@ -524,45 +585,67 @@ func onboardingStagesApproverRoles(ctx context.Context, q store.Q, activeOnly bo
 	return q.C("role").Distinct(ctx, "name", bson.D{{Key: "name", Value: bson.D{{Key: "$in", Value: roles}}}, {Key: "active", Value: true}})
 }
 
-// shortlistProblems checks the shortlist form and resolves its job, place and hiring manager.
+// shortlistProblems checks the shortlist form and resolves its job, place and hiring manager. What Form setup asks at
+// shortlisting is required when Mandatory there; anything else posted is dropped.
 func (s *Server) shortlistProblems(ctx context.Context, q store.Q, c *Ctx, b shortlistBody) (shortlist, []string) {
-	d := cleanData(b.Data)
+	in := cleanData(b.Data)
 	errs := []string{}
 	add := func(f string, a ...any) { errs = append(errs, fmt.Sprintf(f, a...)) }
-	for _, k := range []string{"first", "last"} {
-		if d[k] == "" {
-			add("%s is required", map[string]string{"first": "First name", "last": "Last name"}[k])
-		} else if len(d[k]) > 60 {
+	fs, ds, err := loadSetup(ctx, q)
+	if err != nil {
+		add("Form setup could not be read. Try again")
+	}
+	typ := shortlistType(fs, in)
+	asked := shortlistAsked(fs, typ, in)
+	d := map[string]string{}
+	for _, k := range shortlistOwn {
+		if v, ok := in[k]; ok {
+			d[k] = v
+		}
+	}
+	for _, k := range shortlistAlwaysLabels {
+		if v, ok := in[k[0]]; ok {
+			d[k[0]] = v
+		}
+	}
+	for _, f := range asked {
+		if v, ok := in[f.Key]; ok {
+			d[f.Key] = v
+		}
+	}
+	for _, k := range shortlistAlwaysLabels[:2] {
+		if d[k[0]] == "" {
+			add("%s is required", k[1])
+		} else if len(d[k[0]]) > 60 {
 			add("Keep names under 60 characters")
 		}
 	}
-	d["phone"] = strings.ReplaceAll(d["phone"], " ", "")
-	switch {
-	case d["phone"] == "":
-		add("Mobile number is required")
-	case !reMobile.MatchString(d["phone"]):
+	for _, f := range asked { // Mandatory at shortlisting (Form setup)
+		if f.Shortlist == 2 && !store.ShortlistAlways(f.Key) && d[f.Key] == "" {
+			add("%s is required", f.Label)
+		}
+	}
+	if v, ok := d["phone"]; ok {
+		d["phone"] = strings.ReplaceAll(v, " ", "")
+	}
+	if v := d["phone"]; v != "" && !reMobile.MatchString(v) {
 		add("Mobile number must be 10 digits")
 	}
-	switch {
-	case d["email"] == "":
-		add("Personal email is required")
-	case !reEmail.MatchString(d["email"]):
+	if v := d["email"]; v != "" && !reEmail.MatchString(v) {
 		add("Personal email looks invalid")
 	}
-	switch {
-	case d["dob"] == "":
-		add("Date of birth is required")
-	case !isDate(d["dob"]) || d["dob"] >= today():
+	switch v := d["dob"]; {
+	case v == "":
+	case !isDate(v) || v >= today():
 		add("Date of birth must be a past date")
-	case d["dob"] > time.Now().AddDate(-18, 0, 0).Format("2006-01-02"):
+	case v > time.Now().AddDate(-18, 0, 0).Format("2006-01-02"):
 		add("The candidate must be at least 18 years old")
 	}
-	if d["gender"] == "" {
-		add("Gender is required")
-	} else if !containsStr(genders, d["gender"]) {
+	if v := d["gender"]; v != "" && !containsStr(genders, v) {
 		add("Choose a gender from the list")
 	}
-	sl := shortlist{d: d}
+	checkFormat(d, &errs) // the formats of the other fields asked (Aadhaar, PAN, bank …)
+	sl := shortlist{d: d, docs: map[string]store.Row{}}
 	if v := d["ctc"]; v == "" {
 		add("Existing CTC is required (0 for a fresher)")
 	} else if f, err := strconv.ParseFloat(v, 64); err != nil || f < 0 || f > 1e9 {
@@ -597,13 +680,18 @@ func (s *Server) shortlistProblems(ctx context.Context, q store.Q, c *Ctx, b sho
 			sl.exp = append(sl.exp, e)
 		}
 	}
-	for k, l := range map[string]string{"city": "Work city", "loc": "Reporting location", "dept": "Department", "desig": "Designation"} {
-		if d[k] == "" {
-			add("%s is required", l)
+	for _, k := range shortlistAlwaysLabels[2:] {
+		if d[k[0]] == "" {
+			add("%s is required", k[1])
 		}
 	}
-	// The job and place resolve as on the offer form; the type is asked at the offer.
-	jd := map[string]string{"type": "Permanent", "dept": d["dept"], "desig": d["desig"], "city": d["city"], "loc": d["loc"], "rejoinOf": d["rejoinOf"]}
+	// The job and place resolve as on the offer form, with whatever else the shortlist asks (grade, managers, shift …);
+	// the type is Permanent unless asked here (it is asked at the offer).
+	jd := map[string]string{}
+	for k, v := range d {
+		jd[k] = v
+	}
+	jd["type"] = typ
 	sl.job = resolveJob(ctx, q, jd, &errs)
 	sl.job.Name = strings.TrimSpace(d["first"] + " " + d["last"])
 	sl.manager = d["manager"]
@@ -638,7 +726,49 @@ func (s *Server) shortlistProblems(ctx context.Context, q store.Q, c *Ctx, b sho
 			add("%s (%s) is already in the pipeline with this mobile number", x["id"], x["name"])
 		}
 	}
+	// Documents Mandatory at shortlisting, for the type and department, uploaded under the form's draft key.
+	if b.Draft != "" {
+		if !draftOwner(b.Draft) {
+			add("The documents' upload key is not valid. Upload them again")
+		} else {
+			sl.docs, _ = docsOf(ctx, q, "offer", b.Draft)
+		}
+	}
+	for _, doc := range ds {
+		if doc.Shortlist == 2 && doc.applies(typ, d["dept"]) && sl.docs[doc.Key] == nil {
+			add("%s must be uploaded with the shortlist", doc.Label)
+		}
+	}
 	return sl, dedupe(errs)
+}
+
+// claimShortlistDocs gives the documents uploaded under the shortlist form's draft key to the new candidate (owner
+// SI-0001), where the offer's and joining's documents are kept, so they count at those stages and are not asked
+// again. Only the raiser's own uploads can be claimed. It returns the document ids and the keys of the current ones.
+func claimShortlistDocs(ctx context.Context, tx store.Q, c *Ctx, draft, cand string) ([]string, []string, error) {
+	if !draftOwner(draft) {
+		return nil, nil, nil
+	}
+	owner := bson.M{"owner_kind": "offer", "owner_id": draft}
+	rows, err := tx.C("document").Find(ctx, owner)
+	if err != nil {
+		return nil, nil, err
+	}
+	ids, keys := []string{}, []string{}
+	for _, r := range rows {
+		if !strings.HasSuffix(str(r["uploaded_by"]), "("+c.EmployeeID+")") { // uploaded_by is "Name (EMP-…)"
+			return nil, nil, forbidden("These documents were uploaded by someone else. Upload them again")
+		}
+		ids = append(ids, str(r["id"]))
+		if r["replaced_at"] == nil {
+			keys = append(keys, str(r["doc_key"]))
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil, nil
+	}
+	_, err = tx.C("document").UpdateMany(ctx, owner, bson.M{"$set": bson.M{"owner_kind": "candidate", "owner_id": cand}})
+	return ids, keys, err
 }
 
 // onboardingStagesOpenCandidate is the first candidate (by number) matching cond who is still in the pipeline: not
@@ -720,6 +850,28 @@ func onboardingStagesPeekSeq(ctx context.Context, q store.Q, name string) int64 
 	return 1
 }
 
+// hireNextNoPut moves the SI/OI/JI series forward so the next candidate gets this number (owner, 26 Nov 2026: start
+// after the Realtime portal's codes, so the Joining ID's number is free as the portal code). Only forward: a number
+// at or below one already given would repeat an ID. Up to 6 digits (the portal code is the ID's number in 6 digits).
+func (s *Server) hireNextNoPut(ctx context.Context, c *Ctx, next int) (any, error) {
+	cur := int(onboardingStagesPeekSeq(ctx, s.st.DB, "candidate_seq"))
+	switch {
+	case next > 999999:
+		return nil, bad("The hiring number has at most 6 digits")
+	case next < cur:
+		return nil, bad("Numbers up to %d are already used: the next number can be %d or higher", cur-1, cur)
+	case next == cur:
+		return map[string]any{"nextNo": cur}, nil
+	}
+	return map[string]any{"nextNo": next}, s.st.Tx(ctx, func(tx store.Q) error {
+		if err := store.RaiseSeq(ctx, tx, "candidate_seq", int64(next-1)); err != nil {
+			return err
+		}
+		return audit(ctx, tx, c, fmt.Sprintf("Next hiring number set to %d (was %d): the next candidate is %s", next, cur, stageID("SI", next)),
+			"onb_setting", "1", map[string]any{"nextNo": cur}, map[string]any{"nextNo": next})
+	})
+}
+
 // candidateCreate saves the shortlist as SI-0001 and sends it for approval (wf shortlist).
 func (s *Server) candidateCreate(r *http.Request, c *Ctx) (any, error) {
 	if err := c.Need("onb.raise", 2); err != nil {
@@ -739,15 +891,16 @@ func (s *Server) candidateCreate(r *http.Request, c *Ctx) (any, error) {
 		return nil, forbidden("This location is outside your access")
 	}
 	var out map[string]any
+	var docIDs []string
 	err := s.st.Tx(ctx, func(tx store.Q) error {
 		n, err := store.NextSeq(ctx, tx, "candidate_seq")
 		if err != nil {
 			return err
 		}
 		id := stageID("SI", int(n))
-		data := map[string]any{}
-		for _, k := range personal {
-			if v := sl.d[k]; v != "" {
+		data := map[string]any{} // every field given at shortlisting: it prefills the offer and the joining form
+		for k, v := range sl.d {
+			if v != "" && !shortlistNotData[k] {
 				data[k] = v
 			}
 		}
@@ -765,6 +918,11 @@ func (s *Server) candidateCreate(r *http.Request, c *Ctx) (any, error) {
 			{Key: "raised_by", Value: c.EmployeeID}, {Key: "raised_role", Value: c.Role}}); err != nil {
 			return err
 		}
+		moved, keys, err := claimShortlistDocs(ctx, tx, c, b.Draft, id)
+		if err != nil {
+			return err
+		}
+		docIDs = moved
 		req, err := s.createRequestTx(ctx, tx, c, "shortlist", id, approval.Facts{}, map[string]string{"candidateId": id})
 		if err != nil {
 			return err
@@ -777,8 +935,13 @@ func (s *Server) candidateCreate(r *http.Request, c *Ctx) (any, error) {
 			return err
 		}
 		return audit(ctx, tx, c, "Shortlisted "+sl.job.Name+" as "+id, "candidate", id, nil, map[string]any{"department": sl.job.Dept, "designation": sl.job.Desig,
-			"location": sl.job.Loc, "hiringManager": sl.manager, "rejoinOf": sl.job.RejoinOf})
+			"location": sl.job.Loc, "hiringManager": sl.manager, "rejoinOf": sl.job.RejoinOf, "documents": keys})
 	})
+	if err == nil {
+		for _, d := range docIDs { // to Google Drive now that they belong to the candidate (a draft's files wait)
+			s.driveQueue(ctx, d)
+		}
+	}
 	return out, err
 }
 
@@ -867,7 +1030,7 @@ func (s *Server) systemRequestTx(ctx context.Context, tx store.Q, wf, subjectID,
 		return nil, err
 	}
 	if len(req.Chain) == 0 {
-		return req, s.finalize(ctx, tx, req)
+		return req, s.autoApprove(ctx, tx, req, p.HierarchyOff)
 	}
 	return req, nil
 }
@@ -892,6 +1055,9 @@ func (s *Server) finalizeShortlist(ctx context.Context, tx store.Q, r *Request) 
 	}
 	if _, err := tx.C("candidate").Update(ctx, bson.D{{Key: "_id", Value: r.EmployeeID}}, bson.D{{Key: "$set", Value: bson.D{{Key: "interview_request_id", Value: req.ID}}}}); err != nil {
 		return "", err
+	}
+	if req.Status == "Approved" { // the interview flow's approval hierarchy is off: selected at once
+		return fmt.Sprintf("Shortlist approved. No interview approval needed (%s): selected, raise the offer.", req.ID), nil
 	}
 	who := ""
 	if req.Status == "Pending" && req.Step < len(req.Chain) {
@@ -1123,7 +1289,12 @@ func (s *Server) candidateJoined(r *http.Request, c *Ctx) (any, error) {
 		if err != nil {
 			return err
 		}
-		if x["stage"] != "Offer" || x["accepted_at"] == nil || x["declined_at"] != nil {
+		oaj := oajOpen(x) // offer at joining: the approved offer is accepted by joining (offer_at_joining.go)
+		if oaj {
+			if why := oajReady(x); why != "" {
+				return bad("%s", why)
+			}
+		} else if x["stage"] != "Offer" || x["accepted_at"] == nil || x["declined_at"] != nil {
 			return bad("Mark joined once the candidate has accepted the offer")
 		}
 		if w := waitOf(x["waiting_window"], today()); w != nil && b.Date < w.Since {
@@ -1145,6 +1316,11 @@ func (s *Server) candidateJoined(r *http.Request, c *Ctx) (any, error) {
 			}
 		}
 		id := str(x["id"])
+		if oaj {
+			if err := oajAccept(ctx, tx, c, x, b.Date); err != nil {
+				return err
+			}
+		}
 		// From the joining day the person is a normal employee on the Joining ID (hiring.go).
 		code, err := s.hireJoin(ctx, tx, c, x, b.Date)
 		if err != nil {
@@ -1182,6 +1358,9 @@ func (s *Server) candidateClose(kind string) authedFn {
 			}
 			if x["stage"] != "Offer" {
 				return bad("Only a candidate at the offer stage can be closed here")
+			}
+			if oajOpen(x) && kind == "Withdrawn" && oajOfferLive(x) {
+				return bad("The offer at joining is raised. Use Offer declined in Joining")
 			}
 			switch kind {
 			case "Not joined":
@@ -1358,18 +1537,29 @@ func (s *Server) candidateGet(r *http.Request, c *Ctx) (any, error) {
 	docs, _ := docsOf(ctx, s.st.DB, "candidate", id)
 	x["docs"] = docs
 	x["employeeIdAt"] = employeeIDAt(ctx, s.st.DB)
-	// What the offer form starts from: the shortlist, with today's names of the job and place.
+	// What the offer form starts from: the shortlist (every value given there), with today's names of the job and
+	// place. An approver without the rights reads no ID or bank numbers (shortlistHidden).
+	hide := shortlistHidden(c, fs)
 	d := rowData(x)
 	pre := map[string]any{"dept": x["department"], "desig": x["designation"], "city": x["city_id"], "loc": x["location_id"], "l1": x["manager_id"]}
-	for _, k := range personal {
-		if v := d[k]; v != "" {
+	for k, v := range d {
+		if v != "" && k != "experience" && k != "codeMode" && !shortlistNotData[k] && !hide[k] {
 			pre[k] = v
 		}
 	}
+	if m, ok := x["data"].(map[string]any); ok {
+		for k := range hide {
+			delete(m, k)
+		}
+	}
+	x["shortlistItems"] = shortlistItems(fs, ds, x, d, docs, hide)
 	if m, ok := x["offer_data"].(map[string]any); ok && x["offer_id"] != nil {
 		for k, v := range m { // a revised offer starts from the one sent
 			pre[k] = v
 		}
+	}
+	if oajOpen(x) && x["offer_id"] == nil { // the offer at joining starts on the expected joining date
+		pre["doj"] = x["oaj_doj"]
 	}
 	x["prefill"] = pre
 	if m, ok := x["data"].(map[string]any); ok {
@@ -1381,6 +1571,9 @@ func (s *Server) candidateGet(r *http.Request, c *Ctx) (any, error) {
 	can := map[string]bool{}
 	can["raiseOffer"] = edit && c.Level("onb.raise") >= 2 && x["stage"] == "Offer" && (x["offer_id"] == nil || x["offer_status"] == "Rejected" || x["offer_status"] == "Cancelled")
 	can["markJoined"] = edit && x["stage"] == "Offer" && x["accepted_at"] != nil && x["declined_at"] == nil
+	// Offer at joining (offer_at_joining.go): chosen instead of raising, and Mark joined once that offer is approved.
+	can["offerAtJoining"] = edit && c.Level("onb.raise") >= 2 && x["stage"] == "Offer" && x["oaj_at"] == nil && !oajOfferLive(x) && x["waiting_window"] == nil
+	can["markJoined"] = can["markJoined"] || (edit && oajOpen(x) && oajReady(x) == "")
 	can["raiseOffer"] = can["raiseOffer"] || (edit && c.Level("onb.raise") >= 2 && x["stage"] == "Offer" && x["query_at"] != nil && x["accepted_at"] == nil && x["declined_at"] == nil)
 	can["close"] = edit && x["stage"] == "Offer" && (x["offer_id"] == nil || x["offer_status"] == "Rejected" || x["offer_status"] == "Cancelled")
 	can["upload"] = edit && x["stage"] != "Closed"
@@ -1393,6 +1586,49 @@ func (s *Server) candidateGet(r *http.Request, c *Ctx) (any, error) {
 	hireView(ctx, s.st.DB, c, x) // versions, waiting, background check, timeline (hiring.go)
 	delete(x, "offer_data")
 	return x, nil
+}
+
+// shortlistHidden are the fields whose values a caller outside onboarding (an approver deciding the shortlist or the
+// interview) does not read on the candidate: ID numbers without the government ID right, bank details without the
+// bank right, as copies of ID documents (idDocAllowed).
+func shortlistHidden(c *Ctx, fs []onbField) map[string]bool {
+	out := map[string]bool{}
+	if c.Level("onb.raise") >= 1 || c.Level("onb.pipeline") >= 1 {
+		return out
+	}
+	for _, f := range fs {
+		if (f.Section == "Identity and statutory" && c.Level("emp.govid") < 1) || (f.Section == "Bank" && c.Level("emp.bank") < 1) {
+			out[f.Key] = true
+		}
+	}
+	return out
+}
+
+// shortlistFixedView are the fields the candidate's view shows in its own rows (the shortlist form's fixed ones).
+var shortlistFixedView = map[string]bool{"first": true, "last": true, "phone": true, "email": true, "dob": true, "gender": true, "addr": true,
+	"dept": true, "desig": true, "city": true, "loc": true}
+
+// shortlistItems is what the candidate's view adds from Form setup's Shortlisting: the other fields given at
+// shortlisting (label and value), and the documents asked there for the candidate's type and department, each with
+// its file when uploaded.
+func shortlistItems(fs []onbField, ds []onbDoc, x store.Row, d map[string]string, docs map[string]store.Row, hide map[string]bool) map[string]any {
+	fields := []map[string]string{}
+	for _, f := range fs {
+		if v := d[f.Key]; v != "" && !shortlistFixedView[f.Key] && !hide[f.Key] {
+			fields = append(fields, map[string]string{"key": f.Key, "label": f.Label, "value": v})
+		}
+	}
+	typ := d["type"]
+	if typ == "" {
+		typ = "Permanent"
+	}
+	list := []map[string]any{}
+	for _, doc := range ds {
+		if doc.Shortlist > 0 && doc.applies(typ, str(x["department"])) {
+			list = append(list, map[string]any{"key": doc.Key, "label": doc.Label, "required": doc.Shortlist == 2, "doc": docs[doc.Key]})
+		}
+	}
+	return map[string]any{"fields": fields, "docs": list}
 }
 
 // candidateManagers lists who can be the hiring manager: active people with a team or an approver role.

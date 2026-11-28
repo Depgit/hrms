@@ -452,7 +452,13 @@ func (s *Server) employeeExtras(ctx context.Context, c *Ctx, e store.Row, id str
 				if t, ok := ts.types[n]; !ok || t.Status != "Active" || cfg == nil || !cfg.On || !containsStr(cfg.Types, x.Type) || !leaveTypeOK(x.Type, n) {
 					return map[string]any{"on": false}
 				}
-				return map[string]any{"on": true, "days": cfg.Days, "from": cfg.From, "credit": cfg.Credit}
+				out := map[string]any{"on": true, "days": cfg.Days, "from": cfg.From, "credit": cfg.Credit}
+				if pl := ts.plan(p); pl != nil {
+					if blk, in := pl.LV.BlockFor(n, *cfg); in { // earned by working days (owner, 24 Nov 2026)
+						out["earn"] = blk
+					}
+				}
+				return out
 			}
 			pol["cl"], pol["pl"] = lt("Casual leave"), lt("Privilege leave")
 			if pl := ts.plan(p); pl != nil {

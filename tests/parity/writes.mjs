@@ -231,7 +231,7 @@ export async function runWrites({ today, rec, files, log }) {
     const iv = await call('onb.interview', LM, 'POST', `/api/candidates/${si}/interview`, { date: today, result: 'Selected', feedback: 'Calm and clear with guests' });
     const oid = iv.body?.offerId ?? iv.body?.candidateId ?? 'MISSING'; // the Offer ID now comes at acceptance (hiring.go)
     await get('onb.offer-stage', HRBP, `/api/candidates/${oid}`);
-    const od = { first: 'Riya', last: 'Sharma', type: 'Permanent', doj: today, dept: 'Front Office', desig: 'Front Office Supervisor', grade: 'G3', city, loc: hub, gross: 26000, phone: '9876501234', email: 'riya.sharma@example.com' };
+    const od = { first: 'Riya', last: 'Sharma', type: 'Permanent', doj: today, dept: 'Front Office', desig: 'Front Office Supervisor', grade: 'G3', city, loc: hub, gross: 26000, phone: '9876501234', email: 'riya.sharma@example.com', pfWant: 'Yes' };
     await call('onb.offer-without-candidate', HRBP, 'POST', '/api/offers', { data: od });
     await call('onb.offer-check', HRBP, 'POST', '/api/offers/check', { data: od, candidate: si });
     await upload('onb.aadhaar', HRBP, 'candidate', si, 'aadhaar');

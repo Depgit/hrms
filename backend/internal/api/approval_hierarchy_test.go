@@ -9,9 +9,10 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
-// The "Approval hierarchy required" tick of a flow (meaning of 19 Nov): cleared, a new request still waits for its
-// approvers, and HR may skip approval with a reason (history line, audit, the usual next steps). Skipping is refused
-// without a reason, for a non-HR role, for an HR role that neither raised it nor sets up approvals, and on a ticked flow.
+// The "Approval hierarchy required" tick of a flow (meaning of 21 Nov 2026): cleared, a new request goes to nobody
+// and is approved at once (history line, the usual next steps). A request raised before and still waiting keeps its
+// approvers, and HR may skip it with a reason; skipping is refused without a reason, for a non-HR role, for an HR
+// role that neither raised it nor sets up approvals, and on a ticked flow.
 func TestApprovalHierarchyOff(t *testing.T) {
 	c, _, st := setupFull(t)
 	ctx := context.Background()
@@ -69,15 +70,33 @@ func TestApprovalHierarchyOff(t *testing.T) {
 		t.Fatalf("the rules changed:\n%s\n%s", before, got)
 	}
 	_, tr := hr("POST", "/api/approvals/flows/p_claim/"+flow+"/test", map[string]any{"facts": map[string]any{"amt": 700}})
-	if tr["hierarchyOff"] != true || len(tr["chain"].([]any)) == 0 {
+	if tr["hierarchyOff"] != true || len(tr["chain"].([]any)) != 0 {
 		t.Fatalf("test a request: %v", tr)
 	}
 
-	// Unticked: the request still waits for its approvers.
-	off := claim()
-	id := off["id"].(string)
-	if off["status"] != "Pending" || fmt.Sprint(off["chain"]) != fmt.Sprint(first["chain"]) || off["canSkip"] != true {
-		t.Fatalf("hierarchy off: %v %v %v", off["status"], off["chain"], off["canSkip"])
+	// Unticked: a new request is approved at once, nobody asked, its next step done (the claim's ledger line).
+	auto := claim()
+	if auto["status"] != "Approved" || len(auto["chain"].([]any)) != 0 || auto["canSkip"] != false {
+		t.Fatalf("hierarchy off: %v %v %v", auto["status"], auto["chain"], auto["canSkip"])
+	}
+	note := false
+	for _, h := range auto["history"].([]any) {
+		note = note || h.(map[string]any)["note"] == "Approved automatically: approval hierarchy is off"
+	}
+	if !note {
+		t.Fatalf("auto history: %v", auto["history"])
+	}
+	if n, _ := st.DB.C("ledger").Count(ctx, bson.M{"source_id": auto["id"]}); n != 1 {
+		t.Fatalf("auto ledger lines: %d", n)
+	}
+	if _, sc := hr("GET", "/api/approvals/skip-check?wf=p_claim&subject=EMP-1014", nil); sc["skip"] != false {
+		t.Fatalf("skip offered on a raise form: %v", sc)
+	}
+
+	// The request raised before the tick was cleared still waits for its approvers; HR may skip it.
+	id := first["id"].(string)
+	if _, w := hr("GET", "/api/approvals/"+id, nil); w["status"] != "Pending" || w["canSkip"] != true {
+		t.Fatalf("waiting one: %v %v", w["status"], w["canSkip"])
 	}
 	if s, _ := skip(id, "EMP-1002", "HR Admin", "  "); s != 400 {
 		t.Fatalf("skipped without a reason: %d", s)
@@ -91,15 +110,10 @@ func TestApprovalHierarchyOff(t *testing.T) {
 	if s, _ := skip(id, "EMP-1014", "Employee", "Urgent"); s != 403 {
 		t.Fatalf("the employee skipped: %d", s)
 	}
-	if _, w := hr("GET", "/api/approvals/"+id, nil); w["status"] != "Pending" {
-		t.Fatalf("a refused skip moved it: %v", w["status"])
-	}
-
 	if s, r := skip(id, "EMP-1002", "HR Admin", "Bill checked by HR"); s != 200 || r["status"] != "Approved" {
 		t.Fatalf("skip: %d %v", s, r)
 	}
-	done := map[string]any{}
-	_, done = hr("GET", "/api/approvals/"+id, nil)
+	_, done := hr("GET", "/api/approvals/"+id, nil)
 	found := false
 	for _, h := range done["history"].([]any) {
 		m := h.(map[string]any)
@@ -111,34 +125,8 @@ func TestApprovalHierarchyOff(t *testing.T) {
 	if n, _ := st.DB.C("audit_log").Count(ctx, bson.M{"action": "Approval skipped", "entity_id": id}); n != 1 {
 		t.Fatalf("audit: %d", n)
 	}
-	// The usual next step of an approved claim: its line in the pay ledger.
 	if n, _ := st.DB.C("ledger").Count(ctx, bson.M{"source_id": id}); n != 1 {
 		t.Fatalf("ledger lines: %d", n)
-	}
-	// Nothing waits on the approvers any more.
-	if _, q := hr("GET", "/api/approvals?tab=mine", nil); q != nil {
-		for _, x := range q["list"].([]any) {
-			if x.(map[string]any)["id"] == id {
-				t.Fatalf("still in the queue")
-			}
-		}
-	}
-
-	// "Skip approval" when HR raises it: approved at once; without a reason nothing is raised.
-	raise := func(q string) (int, map[string]any) {
-		t.Helper()
-		_, doc := c.upload("EMP-1002", "HR Admin", "employee", "EMP-1014", "Bill")
-		return hr("POST", "/api/approvals"+q, map[string]any{"wf": "p_claim", "employeeId": "EMP-1014", "payload": map[string]any{"amount": 300, "claimType": "Travel", "billDate": today(), "doc": doc["id"]}})
-	}
-	n0, _ := st.DB.C("approval_request").Count(ctx, bson.M{"wf": "p_claim"})
-	if s, _ := raise("?skipApproval="); s != 400 {
-		t.Fatalf("raised with a skip and no reason: %d", s)
-	}
-	if n, _ := st.DB.C("approval_request").Count(ctx, bson.M{"wf": "p_claim"}); n != n0 {
-		t.Fatalf("a refused skip raised a request")
-	}
-	if s, r := raise("?skipApproval=Paid+at+the+desk"); s != 200 || r["status"] != "Approved" {
-		t.Fatalf("raise with skip: %d %v", s, r)
 	}
 
 	if s, r := hr("PUT", path, map[string]any{"on": true}); s != 200 || r["hierarchy"] != true {

@@ -20,6 +20,7 @@ type Server struct {
 	jobs       *jobs.Client // background job queue (jobs.go); nil until StartJobs
 	devOTP     bool
 	sms        SMSSender
+	otp        OTPSender
 	files      storage.Store
 	finalizers map[string]Finalizer
 	drive      *driveService // Google Drive document storage (drive.go)
@@ -34,6 +35,7 @@ type Server struct {
 type Options struct {
 	DevOTP bool          // return the OTP in the response (development only)
 	SMS    SMSSender     // nil = no SMS provider configured
+	OTP    OTPSender     // sends the one-time code by SMS; nil = cannot send (OTP then works only with DevOTP)
 	Files  storage.Store // uploaded documents; defaults to ./data/uploads on local disk
 	// SecretKey (32 bytes, see SecretKey) encrypts the stored Google refresh token; nil = from APP_SECRET, else a
 	// key for this process only (tests).
@@ -62,7 +64,7 @@ func New(st *store.Store, o Options) *Server {
 	if err != nil {
 		panic(err) // main checks TRUSTED_PROXIES with ParseTrustedProxies first
 	}
-	s := &Server{st: st, devOTP: o.DevOTP, sms: o.SMS, files: o.Files, finalizers: map[string]Finalizer{}, drive: newDriveService(o.SecretKey),
+	s := &Server{st: st, devOTP: o.DevOTP, sms: o.SMS, otp: o.OTP, files: o.Files, finalizers: map[string]Finalizer{}, drive: newDriveService(o.SecretKey),
 		mail: o.Mail, appURL: strings.TrimRight(o.AppURL, "/"), joinGuard: newJoinLimiter(), authGuard: newAuthLimiter(o.DevOTP), trusted: trusted}
 	s.registerFinalizers()
 	s.mdmInit()
@@ -106,6 +108,9 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("PUT /api/shifts/{id}", s.a(s.shiftPut))
 	m.HandleFunc("POST /api/shifts", s.a(s.shiftCreate))
 	m.HandleFunc("POST /api/shifts/{id}/preview", s.a(s.shiftPreview))
+	m.HandleFunc("POST /api/shifts/{id}/maps", s.a(s.shiftMapAdd)) // where the shift applies (shift_maps.go)
+	m.HandleFunc("PUT /api/shifts/{id}/maps/{mapId}", s.a(s.shiftMapSwitch))
+	m.HandleFunc("DELETE /api/shifts/{id}/maps/{mapId}", s.a(s.shiftMapRemove))
 
 	// Employees.
 	m.HandleFunc("GET /api/employees", s.a(s.employeeList))
@@ -146,6 +151,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("GET /api/approvals/settings", s.a(s.approvalSettings))
 	m.HandleFunc("PUT /api/approvals/settings", s.a(s.approvalSettingsPut))
 	m.HandleFunc("GET /api/approvals/approvers", s.a(s.approverNames))
+	m.HandleFunc("PUT /api/approvals/approvers/slot", s.a(s.approverSlotPut)) // pick a name in a cell (approver_slot.go)
 	m.HandleFunc("GET /api/approvals/health", s.a(s.approvalHealth))
 	m.HandleFunc("GET /api/approvals/columns", s.a(s.approvalColumnsGet))
 	m.HandleFunc("POST /api/approvals/{id}/escalate", s.a(s.approvalEscalateNow))
@@ -176,6 +182,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("GET /api/offers/{id}", s.a(s.offerGet))
 	m.HandleFunc("POST /api/offers/{id}/joining", s.a(s.offerJoining))
 	m.HandleFunc("POST /api/offers/{id}/send", s.a(s.offerSend))
+	m.HandleFunc("POST /api/offers/{id}/letter/send", s.a(s.offerLetterSend)) // offer letter by email (any address) or WhatsApp (offer_share.go)
 	m.HandleFunc("POST /api/offers/{id}/{step}", s.a(s.offerStep))
 	m.HandleFunc("POST /api/files", s.a(s.fileUpload))
 	m.HandleFunc("GET /api/files", s.a(s.fileList))
@@ -187,6 +194,8 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("GET /api/nominations/schemes", s.a(s.nomSchemes))
 	m.HandleFunc("POST /api/nominations/schemes", s.a(s.nomSchemeSave))
 	m.HandleFunc("PUT /api/nominations/schemes/{id}", s.a(s.nomSchemeSave))
+	m.HandleFunc("POST /api/nominations/schemes/{id}/blank/{doc}", s.a(s.nomBlankUpload)) // blank form (nom_blank.go)
+	m.HandleFunc("DELETE /api/nominations/schemes/{id}/blank/{doc}", s.a(s.nomBlankRemove))
 	m.HandleFunc("GET /api/me/nominations", s.a(s.myNominations))
 	m.HandleFunc("POST /api/me/nominations/{scheme}", s.a(s.nominationSubmit))
 	m.HandleFunc("GET /api/nominations", s.a(s.nominationQueue))
@@ -234,6 +243,11 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("GET /api/attendance/alerts", s.a(s.attAlertsGet))
 	m.HandleFunc("PUT /api/attendance/alerts", s.a(s.attAlertsPut))
 	m.HandleFunc("POST /api/attendance/alerts/test", s.a(s.attAlertsTest))
+	m.HandleFunc("GET /api/attendance/called", s.a(s.callList)) // called to work on a holiday or leave day (work_call.go)
+	m.HandleFunc("POST /api/attendance/called", s.a(s.callAdd))
+	m.HandleFunc("DELETE /api/attendance/called/{id}", s.a(s.callRemove))
+	m.HandleFunc("GET /api/attendance/dev-allow/{id}", s.a(s.devOwnGet)) // one employee's own deviation allowances (dev_own.go)
+	m.HandleFunc("POST /api/attendance/dev-allow/{id}", s.a(s.devOwnSave))
 	m.HandleFunc("GET /api/bulk/roster/download", s.rosterDownload)
 	m.HandleFunc("GET /api/bulk/att/log", s.a(s.attUploadLog))
 	m.HandleFunc("GET /api/deviations", s.a(s.deviationList))
@@ -434,6 +448,7 @@ func (s *Server) Routes() http.Handler {
 	s.machineRoutes(m)      // punch machines as one pool per cluster: board, plan, to-do list (machines.go)
 	s.portalWriteRoutes(m)  // send employees to the Realtime portal: create, update, mark left (portal_write.go)
 	s.payCompRoutes(m)      // pay components, structures from components, variable payouts (paycomp.go)
+	s.allInRoutes(m)        // the all-inclusive gross from a month (allin.go)
 
 	return logRequests(m)
 }

@@ -269,7 +269,7 @@ func varNoTarget(ctx context.Context, q store.Q, id, name, ym string, c calc.Com
 var reCompCode = regexp.MustCompile(`^[a-z][a-z0-9_]{0,19}$`)
 
 var compMethods = map[string]string{calc.MAmount: "Fixed amount", calc.MPctCTC: "% of CTC", calc.MPctGross: "% of fixed gross", calc.MPctBasic: "% of Basic",
-	calc.MPctOf: "% of another component", calc.MRemainder: "Remainder (balancing figure)"}
+	calc.MPctOf: "% of another component", calc.MRemainder: "Remainder (balancing figure)", calc.MPerEmp: "Amount set on each employee"}
 
 // checkComponent checks one component on its own and tidies it (variable pay is never PF, ESI or bonus wage, as
 // today: spec 14 "Variable is not in PF wage and currently not in ESI wage").
@@ -292,7 +292,7 @@ func checkComponent(c *calc.Component) error {
 		return bad("%s: a deduction cannot be the balancing figure", c.Name)
 	case c.Value < 0 || c.Min < 0 || c.Max < 0:
 		return bad("%s: amounts and percentages cannot be negative", c.Name)
-	case c.Method != calc.MAmount && c.Method != calc.MRemainder && c.Value > 100 && c.Method != calc.MPctOf:
+	case c.Method != calc.MAmount && c.Method != calc.MRemainder && c.Method != calc.MPerEmp && c.Value > 100 && c.Method != calc.MPctOf:
 		return bad("%s: a percentage is at most 100", c.Name)
 	case c.Value > 1e7:
 		return bad("%s: the amount is too large", c.Name)
@@ -306,6 +306,11 @@ func checkComponent(c *calc.Component) error {
 		return bad("%s: the role is Basic, DA, HRA or none", c.Name)
 	case c.Role != "" && (c.Kind != calc.CompFixed || c.Side != calc.SideEarn):
 		return bad("%s: only a fixed earning can be Basic, DA or HRA", c.Name)
+	case c.Method == calc.MPerEmp && (c.Kind != calc.CompFixed || c.Side != calc.SideEarn || c.Role != ""):
+		return bad("%s: an amount set on each employee is a fixed earning with no Basic, DA or HRA role", c.Name)
+	}
+	if c.Method == calc.MPerEmp {
+		c.Value = 0
 	}
 	if c.Method != calc.MPctOf {
 		c.Of = ""
@@ -387,7 +392,13 @@ func checkComps(comps []calc.Component) error {
 	// No loop: every fixed component resolves (a test calculation leaves none unworked).
 	S := calc.DefaultStructure
 	S.Comps, S.Designed = comps, true
-	r := calc.Calc(calc.Input{Type: calc.Permanent, Gross: 100000, Structure: &S})
+	amts := map[string]float64{} // a per-employee amount shows its line only when it is above 0
+	for _, c := range comps {
+		if c.Method == calc.MPerEmp {
+			amts[c.Code] = 1
+		}
+	}
+	r := calc.Calc(calc.Input{Type: calc.Permanent, Gross: 100000, Structure: &S, EmpAmts: amts})
 	if len(r.Comps) < len(comps) {
 		return bad("The components refer to each other in a loop")
 	}
@@ -784,6 +795,7 @@ func (s *Server) payPreview(r *http.Request, c *Ctx) (any, error) {
 		Comps       []calc.Component `json:"comps"`
 		LocationID  string           `json:"locationId"`
 		Month       int              `json:"month"`
+		Reimb       float64          `json:"reimb"` // the Reimbursement (outside the gross), ₹ a month (reimb.go)
 	}
 	if err := decode(r, &b); err != nil {
 		return nil, err
@@ -814,7 +826,10 @@ func (s *Server) payPreview(r *http.Request, c *Ctx) (any, error) {
 		}
 		st = designedRates(st, b.Comps)
 	}
-	in := calc.Input{Type: t, Gross: fixed, Structure: &st, Month: b.Month}
+	if err := checkReimb(st, "", string(t), b.Reimb); err != nil {
+		return nil, err
+	}
+	in := calc.Input{Type: t, Gross: fixed, Structure: &st, Month: b.Month, EmpAmts: reimbAmts(b.Reimb), AllIn: allInPreview(ctx, s.st.DB)}
 	if b.LocationID != "" {
 		in.Lwf = lwfFor(ctx, s.st.DB, b.LocationID, today())
 	}
@@ -829,6 +844,7 @@ func (s *Server) payPreview(r *http.Request, c *Ctx) (any, error) {
 	}
 	res := calc.Calc(in)
 	out["breakup"], out["ctcYear"], out["wage"], out["rules"], out["lwfNote"] = res, calc.Round2(res.CTC*12), wageNote(res), calc.RulesFor(t), lwfNoteText(in.Lwf)
+	out["allIn"] = allInFrom(ctx, s.st.DB)
 	if variable > 0 && !calc.RulesFor(t).Variable {
 		out["warn"] = string(t) + " staff do not earn variable pay, so the variable part is not paid"
 	}
@@ -846,6 +862,10 @@ func (s *Server) varPayList(r *http.Request, c *Ctx) (any, error) {
 	open := openYm(ctx, s.st.DB)
 	if !isYm(ym) {
 		ym = open
+	}
+	if msg := allInVarRefusal(ctx, s.st.DB, ym); msg != "" { // all-inclusive gross: automatic, nothing to enter
+		return map[string]any{"ym": ym, "open": open, "rows": []any{}, "due": 0, "entered": 0, "can": false, "canTarget": c.Level("emp.salary") >= 2,
+			"allIn": allInFrom(ctx, s.st.DB), "allInNote": msg}, nil
 	}
 	scope, err := c.ScopeFilter(ctx, s.st.DB, "")
 	if err != nil {
@@ -957,6 +977,13 @@ func setVarPayout(ctx context.Context, tx store.Q, c *Ctx, id, ym, code string, 
 	}
 	if !calc.RulesFor(calc.EmploymentType(e.Type)).Variable {
 		return "", bad("%s staff do not earn variable pay", e.Type)
+	}
+	// All-inclusive gross (allin.go): variable pay is paid every month by the days paid, the last month too; nothing
+	// is entered for those months (clearing an amount entered before is allowed).
+	if paidIn := date[:7]; amount != nil {
+		if msg := allInVarRefusal(ctx, tx, paidIn); msg != "" {
+			return "", bad("%s", msg)
+		}
 	}
 	if ym != "fnf" {
 		if anchor := varAnchorFor(ctx, tx, id); !calc.VarDue(ym, anchor, comp.Cycle) {
@@ -1203,6 +1230,9 @@ func fnfVariableLines(ctx context.Context, q store.Q, e *emp) []fnfLine {
 	_, st := structureFor(ctx, q, e.ID, *e.LWD)
 	if !st.Designed {
 		return nil
+	}
+	if allInOn(ctx, q, (*e.LWD)[:7]) { // all-inclusive gross: paid with the last month's salary, by the days paid
+		return []fnfLine{{Key: "var:allin", Kind: "info", Label: "Variable pay", Amount: 0, Note: "Paid every month with salary, by the days paid (all-inclusive gross): nothing more in the full and final"}}
 	}
 	gross, _ := grossFor(ctx, q, e.ID, (*e.LWD)[:7])
 	in := calc.Input{Type: calc.EmploymentType(e.Type), Gross: gross, Structure: &st}

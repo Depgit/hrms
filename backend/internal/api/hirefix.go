@@ -17,9 +17,9 @@ import (
 //   were asked), and a job change of an employee (Employee master update or the job edit) when the employee has
 //   none yet. Existing employees without them are not blocked until their job is edited.
 //
-//   #22 Every employee has Shortlisting, Offer and Joining IDs with one number of the candidate series: a hire
-//   keeps the candidate's number; Import employees takes the next number of the series (migration 018 gives one to
-//   everyone else). Shown on the employee file and the status timeline (employee.hire_no).
+//   #22 Every employee has Shortlisting, Offer and Joining IDs: a hire keeps the candidate's number; Import employees
+//   (and everyone else without a candidate, migration 025) takes the Employee code's digits (24 Nov 2026,
+//   store/schema_hirecode.go). Shown on the employee file and the status timeline (employee.hire_no, hire_digits).
 //
 //   #26 The offer letter can be released at joining: by department and by employment type (Form setup › Hiring).
 //   The offer still goes through approval, is released (the answer is due as usual) and HR records Accepted, but the
@@ -153,33 +153,41 @@ func joinRoleSkillEmployee(ctx context.Context, tx store.Q, o store.Row) error {
 
 // ---------- #22 Shortlisting, Offer and Joining IDs of every employee ----------
 
-// importHireNo gives an imported employee the next number of the candidate series, as SI-/OI-/JI- IDs, with a
-// timeline entry.
+// importHireNo gives an imported employee SI-/OI-/JI- IDs from the Employee code (EMP-000004 → SI-000004, owner's
+// rule of 24 Nov 2026), or the next number of the candidate series when that number is taken or the code has none,
+// with a timeline entry (store.HireNoFromCode).
 func importHireNo(ctx context.Context, tx store.Q, c *Ctx, id, doj string) (int, error) {
-	n, err := store.NextSeq(ctx, tx, "candidate_seq")
+	if err := store.AdvisoryLock(ctx, tx, "hire_no"); err != nil { // two imports at once never take one number
+		return 0, err
+	}
+	n, digits, why, err := store.HireNoFromCode(ctx, tx, id)
 	if err != nil {
 		return 0, err
 	}
-	if _, err := tx.C("employee").Update(ctx, bson.D{{Key: "_id", Value: id}}, bson.D{{Key: "$set", Value: bson.D{{Key: "hire_no", Value: int32(n)}}}}); err != nil {
+	if err := store.SetHireNo(ctx, tx, id, n, digits); err != nil {
 		return 0, err
 	}
-	return int(n), store.HireIDsEvent(ctx, tx, id, int(n), doj, "Imported with Import employees", c.Name, c.EmployeeID)
+	return n, store.HireIDsEvent(ctx, tx, id, n, digits, doj, store.HireReason("Imported with Import employees", why), c.Name, c.EmployeeID)
 }
 
-// hireIDsFor is an employee's Shortlisting, Offer and Joining IDs (nil when they have none yet).
+// hireIDsFor is an employee's Shortlisting, Offer and Joining IDs (nil when they have none yet). via is "candidate"
+// (a hire through Onboarding), "code" (from the Employee code) or "import" (a number of the candidate series).
 func hireIDsFor(ctx context.Context, q store.Q, id string) map[string]any {
 	e, _ := onboardingOne(ctx, q, "employee", id)
 	if e == nil {
 		return nil
 	}
-	no, via := toInt(e["hire_no"]), "import"
+	no, digits, via := toInt(e["hire_no"]), str(e["hire_digits"]), "import"
+	if digits != "" {
+		via = "code"
+	}
 	if x, _ := q.C("candidate").FindOne(ctx, bson.D{{Key: "employee_id", Value: id}}); x != nil {
-		no, via = toInt(x["no"]), "candidate"
+		no, digits, via = toInt(x["no"]), "", "candidate"
 	}
 	if no <= 0 {
 		return nil
 	}
-	si, oi, ji := store.HireIDs(no)
+	si, oi, ji := store.HireIDsOf(no, digits)
 	return map[string]any{"no": no, "si": si, "oi": oi, "ji": ji, "via": via}
 }
 
@@ -214,7 +222,9 @@ func letterRuleCheck(ctx context.Context, q store.Q, h hireSettings) error {
 func letterView(ctx context.Context, q store.Q, o store.Row) {
 	at := "offer"
 	if str(o["candidate_id"]) != "" {
-		if o["released_at"] != nil {
+		if o["at_joining"] == true { // an offer at joining: the letter is given at Mark joined (offer_at_joining.go)
+			at = "joining"
+		} else if o["released_at"] != nil {
 			if o["letter_at"] == "joining" {
 				at = "joining"
 			}
@@ -224,7 +234,9 @@ func letterView(ctx context.Context, q store.Q, o store.Row) {
 	}
 	held := at == "joining" && o["letter_released_at"] == nil
 	o["letterAt"], o["letterHeld"], o["letterReleasedAt"] = at, held, o["letter_released_at"]
-	if at == "joining" {
+	if at == "joining" && o["at_joining"] == true {
+		o["letterRule"] = "Offer at joining: approved as usual and never released before joining. When HR marks the candidate joined, the offer is accepted (joining is the acceptance) and the letter is generated and given."
+	} else if at == "joining" {
 		o["letterRule"] = fmt.Sprintf("Offer letter released at joining (%s, %s): approve, release and record Accepted as usual; the letter is generated and given to the candidate when HR marks them joined.", o["department"], o["type"])
 	}
 	if held {
@@ -240,7 +252,11 @@ func releaseLetterAtJoining(ctx context.Context, tx store.Q, c *Ctx, o store.Row
 	if _, err := tx.C("offer").Update(ctx, bson.D{{Key: "_id", Value: o["id"]}}, bson.D{{Key: "$set", Value: bson.D{{Key: "letter_released_at", Value: tx.Now()}}}}); err != nil {
 		return err
 	}
-	if err := lifeEvent(ctx, tx, c, lifeEv{Cand: cand, Action: "Offer letter released at joining", Date: date, Reason: "Held until joining by the offer letter rule (Form setup › Hiring)"}); err != nil {
+	why := "Held until joining by the offer letter rule (Form setup › Hiring)"
+	if o["at_joining"] == true {
+		why = "Offer at joining: the letter is given when they join"
+	}
+	if err := lifeEvent(ctx, tx, c, lifeEv{Cand: cand, Action: "Offer letter released at joining", Date: date, Reason: why}); err != nil {
 		return err
 	}
 	return audit(ctx, tx, c, "Offer letter released at joining for "+str(o["candidate_name"]), "offer", str(o["id"]), map[string]any{"letterAt": "joining"}, map[string]any{"releasedOn": date})

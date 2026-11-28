@@ -84,6 +84,10 @@ func (s *Server) canFiles(ctx context.Context, c *Ctx, kind, owner string, write
 		}
 		return c.MustInScope(ctx, s.st.DB, emp)
 	case "company":
+		// A nomination's blank form (nom_blank.go): HR Admin attaches it; HR, Payroll and the people it applies to see it.
+		if strings.HasPrefix(owner, "nomination/") {
+			return s.canNomBlank(ctx, c, owner, write)
+		}
 		// The payslip logo: everyone sees it on their payslip; payroll setup changes it.
 		if write && c.Level("pay.setup") < 2 {
 			return forbidden("")
@@ -144,6 +148,9 @@ func (s *Server) fileUpload(r *http.Request, c *Ctx) (any, error) {
 	ctx := r.Context()
 	if err := s.canFiles(ctx, c, kind, owner, true); err != nil {
 		return nil, err
+	}
+	if kind == "company" && strings.HasPrefix(owner, "nomination/") {
+		return nil, bad("Attach a blank form from Nominations › Nomination policy")
 	}
 	// A candidate's or joiner's document is one Form setup lists, or the résumé (HIRE-073).
 	if kind == "candidate" || kind == "offer" {

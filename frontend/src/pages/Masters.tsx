@@ -7,7 +7,8 @@ import DriveStorage from './DriveStorage';
 import Integrations from './Integrations';
 import MasterUpdate from './MasterUpdate';
 import PanVerify from './PanVerify';
-import ShiftForm, { rulesSummary } from './ShiftForm';
+import { BulkModal } from './Bulk';
+import ShiftForm, { timingText } from './ShiftForm';
 
 // One field of a master's add form (prototype MCFG[t].f). Location budgets are set in Compensation, Location budgets.
 type FieldDef = { k: string; l: string; kind: 'text' | 'ref' | 'int' | 'bool' | 'time' | 'grades' | 'enum'; ref?: string; options?: string[] };
@@ -22,8 +23,8 @@ const TYPES: Record<string, Cfg> = {
   location: { label: 'Locations', right: 'mas.org', fields: [{ k: 'cluster_id', l: 'Cluster', kind: 'ref', ref: 'cluster' }],
     note: 'Pick the cluster. City, state and region follow automatically, so every location sits in the full hierarchy.' },
   department: { label: 'Departments', right: 'mas.job', fields: [{ k: 'corporate', l: 'Corporate department (follows the corporate approval flow)', kind: 'bool' }] },
-  designation: { label: 'Designations', right: 'mas.job', fields: [{ k: 'department_id', l: 'Department', kind: 'ref', ref: 'department' }, { k: 'grades', l: 'Grades this designation can be offered', kind: 'grades' }],
-    note: 'Designations belong to a department and are mapped to the grades they can be offered. At offer time, picking the designation lists only those grades.' },
+  designation: { label: 'Designations', right: 'mas.job', fields: [{ k: 'department_id', l: 'Department', kind: 'ref', ref: 'department' }],
+    note: 'Designations belong to a department. Grades are a separate list: any grade can go with any designation.' },
   grade: { label: 'Grades', right: 'mas.job', fields: [] },
   shift: { label: 'Shifts', right: 'mas.job', fields: [{ k: 'code', l: 'Code', kind: 'text' }, { k: 'start_time', l: 'Start', kind: 'time' }, { k: 'end_time', l: 'End', kind: 'time' }],
     note: 'A shift can run at all locations or only at selected ones. Forms and rosters show only shifts valid for the location. Each shift can set its own attendance rules from a date; a rule left empty follows the employee\'s work policy.' },
@@ -115,7 +116,7 @@ function MasterList({ t }: { t: string }) {
   const { data, error, reload } = useLoad(() => api<any[]>(`/masters/${t}`), [t]);
   // Lists the details column and the add form need (names up the hierarchy, counts below it).
   const need = [...new Set([...cfg.fields.filter((f) => f.ref).map((f) => f.ref!),
-    ...({ location: ['state'], cluster: ['city', 'location'], city: ['state', 'cluster'], department: ['designation'], shift: ['location'], designation: ['grade'] } as Record<string, string[]>)[t] ?? []])];
+    ...({ location: ['state'], cluster: ['city', 'location'], city: ['state', 'cluster'], department: ['designation'], shift: ['location', 'department'] } as Record<string, string[]>)[t] ?? []])];
   const refs = useLoad(async () => {
     const out: Record<string, any[]> = {};
     for (const k of need) out[k] = await api(`/masters/${k}`);
@@ -134,6 +135,7 @@ function MasterList({ t }: { t: string }) {
   const [retire, setRetire] = useState<{ x: any; since: string; reason: string; n?: number } | null>(null);
   const [ed, setEd] = useState<EditState | null>(null);
   const [shForm, setShForm] = useState<string | null>(null); // Set shift: a shift id, or 'new'
+  const [shBulk, setShBulk] = useState(false); // Bulk upload of the shifts' Department + Location rows, on this page
   const R = refs.data || {};
   const act = (k: string) => (R[k] || []).filter((x) => x.status === 'Active');
   const mreasons = (reasons.data || []).filter((r) => r.used_for === 'Master data').map((r) => r.name as string);
@@ -187,15 +189,14 @@ function MasterList({ t }: { t: string }) {
     try { await api(`/masters/${t}/${x.id}/reactivate`, { method: 'POST' }); toast('Reactivated'); reload(); } catch (e: any) { fail(e); }
   };
 
-  const locName = (id: string) => R.location?.find((l) => l.id === id)?.name ?? id;
   const region = (state: string) => R.state?.find((s) => s.name === state)?.region ?? '—';
   const detail = (x: any): string => {
     if (t === 'location') return `${x.cluster} › ${x.city} › ${x.state} › ${region(x.state)}`;
     if (t === 'cluster') { const n = (R.location || []).filter((l) => l.cluster_id === x.id && l.status === 'Active').length; return `${x.city} › ${R.city?.find((c) => c.id === x.city_id)?.state ?? '—'} · ${n} active propert${n === 1 ? 'y' : 'ies'}`; }
     if (t === 'city') return `${x.state} › ${region(x.state)} · ${(R.cluster || []).filter((c) => c.city_id === x.id && c.status === 'Active').length} clusters · budget ${x.headcount_budget || 0}`;
-    if (t === 'designation') return `Department: ${x.department} · Grades: ${x.grades?.join(', ') || 'none mapped'}`;
+    if (t === 'designation') return `Department: ${x.department}`;
     if (t === 'department') return `${(R.designation || []).filter((d) => d.department_id === x.id && d.status === 'Active').length} active designations`;
-    if (t === 'shift') return `${x.start_time}–${x.end_time}${x.break_minutes ? ` · ${x.break_minutes} min break` : ''} · ${!x.location_ids ? 'All locations' : `${x.location_ids.length} location${x.location_ids.length > 1 ? 's' : ''}: ${x.location_ids.map(locName).join(', ')}`}`;
+    if (t === 'shift') return `${timingText(x.start_time, x.end_time, x.start2_time, x.end2_time)}${x.break_minutes ? ` · ${x.break_minutes} min break` : ''} · Applies to: ${(x.applies || []).join('; ') || 'nobody (no row switched on)'}`;
     if (t === 'state') return `Region: ${x.region}`;
     if (t === 'change_reason') return x.used_for ? `Used for: ${x.used_for}` : '';
     return '';
@@ -241,18 +242,16 @@ function MasterList({ t }: { t: string }) {
   const rows = t === 'change_reason' && data ? [...data].sort((a, b) => TYPES.change_reason.fields[0].options!.indexOf(a.used_for) - TYPES.change_reason.fields[0].options!.indexOf(b.used_for)) : data;
 
   if (t === 'shift' && shForm) {
-    return <ShiftForm id={shForm === 'new' ? null : shForm} locs={act('location')} edit={edit} onBack={(changed) => { setShForm(null); if (changed) reload(); }} />;
+    return <ShiftForm id={shForm === 'new' ? null : shForm} locs={act('location')} depts={act('department')} edit={edit} onBack={(changed) => { setShForm(null); if (changed) reload(); }} />;
   }
-  const shiftRules = (x: any) => {
-    const l = rulesSummary(x.rules);
-    return !l.length ? <span className="mute">Policy rules</span> : <span title={l.join(' · ')}>{l.slice(0, 3).join(' · ')}{l.length > 3 ? ` · +${l.length - 3} more` : ''}</span>;
-  };
 
   return (
     <>
       {cfg.note && <div className="note" style={{ marginBottom: 14 }}>{cfg.note}</div>}
       {edit && t === 'shift' && <div className="row" style={{ marginBottom: 14 }}><button className="btn primary" onClick={() => setShForm('new')}>Add shift</button>
-        <span className="mute" style={{ fontSize: 12 }}>Opens Set shift: timings, punch rules and attendance rules.</span></div>}
+        <button className="btn" onClick={() => setShBulk(true)}>Bulk upload</button>
+        <span className="mute" style={{ fontSize: 12 }}>Add shift opens Set shift: timings and where it applies. Bulk upload changes where shifts apply (Department + Location rows). The work policy decides the attendance rules.</span></div>}
+      {shBulk && <BulkModal tpl="shiftmap" title="Bulk upload: shift mapping" onClose={() => setShBulk(false)} onApplied={reload} />}
       {edit && t !== 'shift' && t !== 'employment_type' && <div className="card" style={{ marginBottom: 14 }}>
         <h3>Add to {cfg.label.toLowerCase()}</h3>
         <div className="form">
@@ -275,7 +274,7 @@ function MasterList({ t }: { t: string }) {
       </div>}
       <div className="card">
         {!data ? <Loading error={error} /> : <div className="tw"><table>
-          <thead><tr><th>Name</th>{t === 'shift' && <th>Code</th>}<th>Details</th>{t === 'location' && <th>CMS property</th>}{t === 'shift' && <><th>Effective from</th><th>Rules</th></>}{t === 'department' && <th>Approval flow</th>}<th>Added</th><th>Status</th>{edit && <th>Active</th>}{btnCol && <th></th>}</tr></thead>
+          <thead><tr><th>Name</th>{t === 'shift' && <th>Code</th>}<th>Details</th>{t === 'location' && <th>CMS property</th>}{t === 'shift' && <th>Effective from</th>}{t === 'department' && <th>Approval flow</th>}<th>Added</th><th>Status</th>{edit && <th>Active</th>}{btnCol && <th></th>}</tr></thead>
           <tbody>{rows!.map((x) => <tr key={x.id}>
             <td><b>{x.name}</b></td>
             {t === 'shift' && <td className="mono">{x.code}</td>}
@@ -284,9 +283,8 @@ function MasterList({ t }: { t: string }) {
               ? <span title={x.cmsLocked || ''}><span className="mono">{x.property_id}</span> <Pill k="info">Linked</Pill>
                 {x.cmsLocked && <div className="mute" style={{ fontSize: 11.5 }}>Name and status from the CMS</div>}</span>
               : edit && unlinked.length > 0 ? <button className="btn sm" onClick={() => setLink({ x, pid: '', err: '' })}>Link</button> : <span className="mute">—</span>}</td>}
-            {t === 'shift' && <><td className="mute" style={{ whiteSpace: 'nowrap' }}>{!x.effective_from || x.effective_from === '2000-01-01' ? 'From the start' : fmtD(x.effective_from)}
-              {x.next_from && <div style={{ fontSize: 11.5 }}><Pill k="warn">Next from {fmtD(x.next_from)}</Pill></div>}</td>
-              <td className="ink2" style={{ fontSize: 12.5, maxWidth: 280 }}>{shiftRules(x)}</td></>}
+            {t === 'shift' && <td className="mute" style={{ whiteSpace: 'nowrap' }}>{!x.effective_from || x.effective_from === '2000-01-01' ? 'From the start' : fmtD(x.effective_from)}
+              {x.next_from && <div style={{ fontSize: 11.5 }}><Pill k="warn">Next from {fmtD(x.next_from)}</Pill></div>}</td>}
             {t === 'department' && <td>{edit
               ? <select value={x.corporate ? 'Yes' : 'No'} onChange={(e) => patch(x.id, { corporate: e.target.value === 'Yes' })}><option value="No">Operations flow</option><option value="Yes">Corporate flow</option></select>
               : x.corporate ? 'Corporate flow' : 'Operations flow'}</td>}

@@ -442,7 +442,7 @@ func TestLeaveBlockedByDisciplineScore(t *testing.T) {
 	}
 }
 
-// ---------- 4, 6-10. No overtime or comp-off, no removed deviations, no break, night allowance kept ----------
+// ---------- 4, 6-10. No overtime or comp-off, no removed deviations, no break; no night allowance (24 Nov 2026) ----------
 
 func TestNoOvertimeNightAllowanceKept(t *testing.T) {
 	c, _, st := setupFull(t)
@@ -473,8 +473,9 @@ func TestNoOvertimeNightAllowanceKept(t *testing.T) {
 	if _, ok := row["otHours"]; ok {
 		t.Fatalf("no overtime hours: %v", row)
 	}
-	if night == nil || num(night["amount"]) < 120 || num(night["amount"]) != math.Round(num(night["amount"])/120)*120 {
-		t.Fatalf("night shift allowance %v", night)
+	// The night shift allowance was removed (owner, 24 Nov 2026): a policy that still stores one pays none.
+	if night != nil {
+		t.Fatalf("no night shift allowance: %v", night)
 	}
 	n, _ := st.DB.C("compoff_credit").Count(context.Background(), bson.M{"employee_id": "EMP-1020"})
 	if n != 0 {

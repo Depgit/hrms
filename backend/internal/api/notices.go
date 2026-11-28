@@ -159,7 +159,7 @@ func refResolved(ctx context.Context, q store.Q, ref, to, kind string) bool {
 	}
 	leaveOn := func(day string) check { // a leave request covering the day, pending or approved
 		return check{"approval_request", bson.M{"wf": "leave", "employee_id": emp, "status": bson.M{"$in": bson.A{"Pending", "Approved"}},
-			"payload.from": bson.M{"$lte": day}, "payload.to": bson.M{"$gte": day}}}
+			"payload.from": bson.M{"$lte": day}, "payload.to": bson.M{"$gte": day}, "payload.short": bson.M{"$ne": true}}}
 	}
 	var checks []check
 	switch {

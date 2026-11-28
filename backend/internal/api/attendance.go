@@ -30,6 +30,7 @@ func hoursText(rec *attend.Rec) string {
 }
 
 func summaryKey(st string) string {
+	st = attend.BaseStatus(st) // a day an action beyond a deviation allowance settled: "Half day until regularized" is a half day
 	switch {
 	case st == "Present", st == "Late", st == "Half day":
 		return st
@@ -110,7 +111,7 @@ func (s *Server) attendanceList(r *http.Request, c *Ctx) (any, error) {
 		}
 		out := map[string]any{"employee": map[string]any{"id": e.ID, "name": e.Name, "policy": p.Name, "via": via, "grace": p.S.Grace}, "days": days, "counts": counts}
 		if shift != nil {
-			out["shift"] = map[string]string{"code": shift.Code, "start": attend.HHMM(shift.Start), "end": attend.HHMM(shift.End)}
+			out["shift"] = map[string]string{"code": shift.Code, "start": attend.HHMM(shift.Start), "end": attend.HHMM(shift.End), "timing": shift.Timing()}
 		}
 		return out, nil
 	}
@@ -136,7 +137,7 @@ func (s *Server) attendanceList(r *http.Request, c *Ctx) (any, error) {
 			if d < e.DOJ || (e.LWD != nil && d > *e.LWD && e.Status != "Active") {
 				continue
 			}
-			if l := m.leaveOn(e, d, false); l != nil {
+			if l := m.leaveOn(e, d, false); l != nil && !m.calledWorked(e, p, d) {
 				cnt["Leave"]++
 				cnt["On leave"]++
 				continue
@@ -184,8 +185,8 @@ func (s *Server) attendanceIssues(r *http.Request, c *Ctx) (any, error) {
 				continue
 			}
 			st, tone := m.status(e, p, d)
-			if !strings.Contains(st, "Missing") && st != "No punch" && !strings.HasPrefix(st, "Absent") {
-				continue // Absent (short hours) needs a correction too
+			if !strings.Contains(st, "Missing") && st != "No punch" && !strings.HasPrefix(st, "Absent") && !attend.UntilReg(st) {
+				continue // Absent (short hours) needs a correction too, and a day beyond a deviation allowance with an action
 			}
 			row := map[string]any{"id": e.ID, "name": e.Name, "date": d, "status": st, "tone": tone, "planned": m.planned(e, p, d).Code}
 			if rec := m.rec(e, p, d); rec != nil {
@@ -256,7 +257,10 @@ func attDayRow(m *monthData, e *emp, p *workPolicy, d string, counts map[string]
 	if cat := m.attCategory(e, p, d); cat != "" {
 		row["cat"] = cat // the summary's category (prototype attDay)
 	}
-	if l := m.leaveOn(e, d, false); l != nil {
+	if m.calledWorked(e, p, d) { // called to work on a holiday or leave day and worked (work_call.go)
+		row["status"], row["tone"], row["called"] = "Present", "ok", true
+		counts["Present"]++
+	} else if l := m.leaveOn(e, d, false); l != nil {
 		row["status"], row["tone"] = l.Type, "info"
 		counts["On leave"]++
 	} else if d > today() {

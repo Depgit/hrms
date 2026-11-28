@@ -49,12 +49,10 @@ type Settings struct {
 	Shift struct {
 		// Rest and Change are no longer used: rest is att.minRest and the shift-change notice is rs.lead
 		// (Shifts and rest card). They stay readable in stored settings.
-		Rest       float64 `json:"rest"`
-		Change     int     `json:"change"`
-		NightFrom  string  `json:"nightFrom"`
-		NightTo    string  `json:"nightTo"`
-		NightAllow float64 `json:"nightAllow"`
-		Women      bool    `json:"women"`
+		// The Night shift card (nightFrom, nightTo, nightAllow, women) was removed with the night shift allowance (owner,
+		// 24 Nov 2026): stored policies that still carry the keys read without them.
+		Rest   float64 `json:"rest"`
+		Change int     `json:"change"`
 	} `json:"shift"`
 	Hol struct {
 		Prob  bool   `json:"prob"`
@@ -77,6 +75,10 @@ type Settings struct {
 		OD      bool    `json:"od"`
 		WFH     bool    `json:"wfh"`
 		WFHDays int     `json:"wfhDays"`
+		// The punch window (owner, 24 Nov 2026; was on each shift): a punch earlier than the shift start minus EarlyInMax,
+		// or later than its end plus LateOutMax, is not this day's. Decimal hours, 0 to 12; 0 = no limit.
+		EarlyInMax float64 `json:"earlyInMax"`
+		LateOutMax float64 `json:"lateOutMax"`
 	} `json:"att"`
 	RG struct {
 		Reason bool `json:"reason"`
@@ -111,7 +113,8 @@ type Settings struct {
 	RS struct {
 		Lead       int    `json:"lead"`
 		Reason     bool   `json:"reason"`
-		Past       string `json:"past"` // lock | free
+		Past       string `json:"past"`     // lock | free
+		BulkPast   string `json:"bulkPast"` // bulk upload of past dates: lock (always refused) | same (follows Past)
 		Alert      int    `json:"alert"`
 		DevTol     int    `json:"devTol"`
 		Pts        int    `json:"pts"`
@@ -129,6 +132,7 @@ type Settings struct {
 		On bool `json:"on"`
 	} `json:"claims"`
 	Blackouts []Blackout `json:"blackouts"`
+	Dev       DevRules   `json:"dev"` // deviation allowances (dev.go); every rule off until the admin sets it
 }
 
 // Defaults are the prototype's mkPol and POLD values.
@@ -140,7 +144,7 @@ func Defaults() Settings {
 	s.RegCount = "separate"
 	s.WO.Min, s.WO.Consec = 1, 6
 	s.Hrs.Week, s.Hrs.Spread, s.Hrs.Brk = 48, 10.5, 30
-	s.Shift.Rest, s.Shift.Change, s.Shift.NightFrom, s.Shift.NightTo, s.Shift.Women = 11, 2, "22:00", "06:00", true
+	s.Shift.Rest, s.Shift.Change = 11, 2
 	s.Hol.Prob, s.Hol.OnOff = true, "once"
 	a := &s.Att
 	a.Mode, a.Geo, a.LateN, a.LateAct, a.Early, a.Absent, a.Missing, a.Night, a.AutoOut = "any", 100, 3, "half", 10, "lop", "half", "start", "none"
@@ -153,6 +157,7 @@ func Defaults() Settings {
 	r := &s.RS
 	r.Lead, r.Reason, r.Past, r.Alert, r.DevTol, r.Pts, r.DevWin, r.MgrAlert = 2, true, "lock", 30, 60, 5, 3, 15
 	r.EarlyIn, r.EarlyCount, r.DevStart = 30, "no", true
+	r.BulkPast = "lock" // owner, 27 Nov 2026: the roster upload never changes a past date unless a policy opens it
 	s.Claims.On = true
 	s.Blackouts = []Blackout{}
 	return s

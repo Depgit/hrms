@@ -55,7 +55,7 @@ const HINTS: Record<string, string> = {
   uanAvail: 'Your UAN is your 12-digit PF number. Choose Yes if you had PF at an earlier job, so it can be moved here.',
   esiIp: 'On your old ESIC card or e-Pehchan card. Leave it empty if you never had ESIC.',
   tax: 'Not sure? Choose New regime: it is the default. HR can explain the difference.',
-  pfChoice: 'Yes: 12% of your Basic is deducted for PF and the company adds its share; your salary is split into Basic, HRA and special allowance. No: no PF from you or the company, and your whole fixed salary is paid as Basic.',
+  pfChoice: 'Yes: 12% of your Basic is deducted for PF and the company adds its share; your salary is split into Basic, HRA and special allowance. No: no PF from you or the company, and your whole fixed salary is paid as Basic. If HR recorded your answer at the offer it is filled in; change it if you wish.',
   spouse: 'The company medical insurance covers you, your spouse and up to 2 children.',
   child1: 'Optional. The medical insurance covers up to 2 children.',
 };

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,16 +25,26 @@ import (
 // "Send to portal" and there is no preview. This file holds what both use: the details sent, the mapping, the
 // employee's portal state, the waiting list and settling an unclear reply.
 //
-//   - Details sent: Employee code and card number (the Attendance code; for a new person the next free number),
+//   - Details sent: Employee code and card number (the Attendance code; for a new person the number of their ID,
+//     6 digits: JI-000006 → 000006, EMP-000123 → 000123, owner 25 Nov 2026; an ID without digits: the next free number),
 //     name, father's name, dates of birth and joining, gender, phone, email, and the portal's department,
 //     designation, branch and shift as HR mapped them once (portal_map; a property's branch defaults to the portal
-//     branch of the punch machine mapped to it). A value with no mapping holds the write with a clear message.
+//     branch of the punch machine mapped to it), and the portal's office time policy and first weekly off as HR
+//     mapped the employee's work policy (25 Nov 2026). A value with no mapping holds the write with a clear message.
+//     The card number is the code padded to 8 digits; the portal's company is left as its form has it (one choice).
 //   - Every write opens the portal's form afresh, stops on any problem before the post, and posts once, never
 //     retried by itself. The portal's own message is shown and kept.
 //   - After a create the code becomes the employee's Attendance code (punches match from then on) and the
 //     machine-pool enrol to-do is ticked when the branch sent is in the cluster the person is to be enrolled on. A
 //     mark-left ticks the remove to-do. Saving on the portal is not the same as the person's face or finger on the
 //     machine: the portal's own device step ("Upload Name in Device") is never pressed by the HRMS.
+//   - Punch machine (owner, 25 Nov 2026): a create picks, in the form's "Select Devices" list, the machine the
+//     machine pool plans for the person (ptDevice: their property's machine first, then the next one of the cluster
+//     with space), by serial number. No machine (no cluster or no machine mapped, cluster full, not in the portal's
+//     list) is a note, not a hold: the create goes with the form's own choice and HR adds them to a machine on the
+//     portal. The machine chosen and the notes are kept in portal_send (device, notes) and the audit. Never on an
+//     update or a mark left.
+//   - Sending is on since 25 Nov 2026 (owner's approval; realtime.Spec.Send).
 //   - Rights: att.portal (View sees statuses and the list, Edit maps, retries and sends the waiting backlog). Every
 //     write is audited with the exact fields sent and the portal's reply, and logged in portal_send.
 //
@@ -42,11 +53,15 @@ import (
 const ptCardPad = 8
 
 // ptKinds are the mapped lists.
-var ptKinds = []string{"dept", "desig", "branch", "shift"}
+// policy and wo (25 Nov 2026) are both keyed by the employee's work policy: the portal's Office Time Policy and
+// First Weekly Off.
+var ptKinds = []string{"dept", "desig", "branch", "shift", "policy", "wo"}
 
-var ptKindRole = map[string]string{"dept": realtime.FieldDept, "desig": realtime.FieldDesig, "branch": realtime.FieldBranch, "shift": realtime.FieldShift}
+var ptKindRole = map[string]string{"dept": realtime.FieldDept, "desig": realtime.FieldDesig, "branch": realtime.FieldBranch, "shift": realtime.FieldShift,
+	"policy": realtime.FieldPolicy, "wo": realtime.FieldWeeklyOff}
 
-var ptKindLabel = map[string]string{"dept": "department", "desig": "designation", "branch": "property (branch)", "shift": "shift"}
+var ptKindLabel = map[string]string{"dept": "department", "desig": "designation", "branch": "property (branch)", "shift": "shift",
+	"policy": "work policy (office time policy)", "wo": "work policy (weekly off)"}
 
 // ptClient opens a portal session. Tests use the fake portal through rtEnv.
 var ptClient = func(cfg realtime.Config) (*realtime.Client, error) { return realtime.New(cfg) }
@@ -147,6 +162,7 @@ func (m ptMaps) branch(loc string) string {
 type ptEmp struct {
 	ID, Name, Status, LWD, DOJ, Code, LocID, Loc, DeptID, Dept, DesigID, Desig, Shift string
 	Father, DOB, Gender, Phone, Email                                                 string
+	PolicyID, Policy                                                                  string // the work policy in effect ("" when none applies)
 	Sync                                                                              map[string]any
 }
 
@@ -207,7 +223,38 @@ func ptLoad(ctx context.Context, q store.Q, filter bson.M) ([]*ptEmp, error) {
 		}
 		out = append(out, x)
 	}
+	if err := ptPolicies(ctx, q, out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// ptPolicies sets each employee's work policy in effect (the same resolution as attendance: timeSet.policyFor).
+func ptPolicies(ctx context.Context, q store.Q, list []*ptEmp) error {
+	ts, err := loadTimeSet(ctx, q)
+	if err != nil {
+		return err
+	}
+	ids := make([]string, 0, len(list))
+	for _, x := range list {
+		ids = append(ids, x.ID)
+	}
+	es, err := loadEmps(ctx, q, bson.M{"_id": bson.M{"$in": ids}})
+	if err != nil {
+		return err
+	}
+	by := map[string]*emp{}
+	for _, e := range es {
+		by[e.ID] = e
+	}
+	for _, x := range list {
+		if e := by[x.ID]; e != nil {
+			if p, _ := ts.policyFor(e); p != nil && p.ID != "" {
+				x.PolicyID, x.Policy = p.ID, p.Name
+			}
+		}
+	}
+	return nil
 }
 
 func rmPhone(s string) string {
@@ -251,6 +298,14 @@ func ptValues(x *ptEmp, m ptMaps, code string, pad int) (map[string]string, []st
 			ref, name, val = x.LocID, x.Loc, m.branch(x.LocID)
 		case "shift":
 			ref, name, val = x.Shift, x.Shift, m["shift"][x.Shift]
+		case "policy", "wo":
+			ref, name, val = x.PolicyID, x.Policy, m[k][x.PolicyID]
+			if ref == "" {
+				if k == "policy" {
+					block = append(block, "No work policy applies to them: the portal needs their office time policy and weekly off (Work policies › Applies to)")
+				}
+				continue
+			}
 		}
 		if ref == "" {
 			continue
@@ -406,6 +461,40 @@ func nonEmptyStr(a, b string) string {
 	return b
 }
 
+// ptCodeDigits is the width of the employee code sent to the portal: the ID's number, zero-padded (25 Nov 2026).
+const ptCodeDigits = 6
+
+// ptIDCode is the employee code the portal gets for an HRMS id: its digits, zero-padded to 6 (JI-000006 → 000006,
+// EMP-000123 → 000123, EMP-1050 → 001050; more digits are kept as they are); "" when the id has no digits.
+func ptIDCode(id string) string {
+	var b strings.Builder
+	for _, r := range id {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	d := b.String()
+	if d == "" || len(d) >= ptCodeDigits {
+		return d
+	}
+	return strings.Repeat("0", ptCodeDigits-len(d)) + d
+}
+
+// ptCodeHeld is the name and id of another employee whose create is being sent with this code (portal_sync.code,
+// leading zeros ignored); "" when none.
+func ptCodeHeld(ctx context.Context, q store.Q, code, self string) (string, error) {
+	n := rtNorm(code)
+	if n == "" {
+		return "", nil
+	}
+	o, err := q.C("employee").FindOne(ctx, bson.M{"_id": bson.M{"$ne": self}, "portal_sync.code": bson.M{"$regex": "^0*" + regexp.QuoteMeta(n) + "$"}},
+		options.FindOne().SetProjection(bson.M{"_id": 1, "name": 1}))
+	if err != nil || o == nil {
+		return "", err
+	}
+	return str(o["name"]) + " (" + str(o["id"]) + ")", nil
+}
+
 // ptNextCode is the next free number: one more than the highest numeric code among the HRMS's Attendance codes, the
 // codes of the portal's last fetched employee list and the codes sent, and at least code_start.
 func ptNextCode(ctx context.Context, q store.Q, set bson.M) (string, error) {
@@ -468,6 +557,8 @@ func (s *Server) portalWriteRoutes(m *http.ServeMux) {
 	m.HandleFunc("PUT /api/attendance/portal/settings", s.a(s.portalSettingsPut))
 	m.HandleFunc("GET /api/employees/{id}/portal", s.a(s.portalEmployee))
 	m.HandleFunc("POST /api/employees/{id}/portal/retry", s.a(s.portalRetry))
+	m.HandleFunc("POST /api/employees/{id}/portal/create", s.a(s.portalCreate))
+	m.HandleFunc("POST /api/employees/{id}/portal/removed", s.a(s.portalRemoved))
 	m.HandleFunc("POST /api/attendance/portal/backlog", s.a(s.portalBacklog))
 	m.HandleFunc("POST /api/employees/{id}/portal/resolve", s.a(s.portalResolve))
 }
@@ -492,7 +583,7 @@ func ptReady() (realtime.Config, string) {
 	case !ok:
 		return cfg, "Add the portal account (REALTIME_URL, REALTIME_USER, REALTIME_PASS) to the server first"
 	case !realtime.Confirmed():
-		return cfg, "Sending is not switched on yet: the portal's employee form has to be confirmed first (README, Sending employees to the portal)"
+		return cfg, "Sending is switched off (realtime.Spec.Send; README, Sending employees to the portal)"
 	}
 	return cfg, ""
 }
@@ -526,7 +617,7 @@ func (s *Server) portalEmployee(r *http.Request, c *Ctx) (any, error) {
 	}
 	out["auto"] = ptAutoView(x, st, str(set["auto_since"]))
 	sends, err := s.st.DB.C(store.PortalSendColl).Find(ctx, bson.M{"employee_id": x.ID}, options.Find().SetSort(bson.D{{Key: "at", Value: -1}}).SetLimit(5).
-		SetProjection(bson.M{"action": 1, "code": 1, "ok": 1, "unclear": 1, "message": 1, "by": 1, "at": 1}))
+		SetProjection(bson.M{"action": 1, "code": 1, "ok": 1, "unclear": 1, "message": 1, "by": 1, "at": 1, "device": 1, "notes": 1}))
 	if err != nil {
 		return nil, err
 	}
@@ -737,11 +828,12 @@ func (s *Server) portalMapGet(r *http.Request, c *Ctx) (any, error) {
 			bson.M{"$group": bson.M{"_id": "$" + field, "n": bson.M{"$sum": 1}}}})
 		out := map[string]int{}
 		for _, r := range rows {
-			out[str(r["_id"])] = timectxInt(r["n"])
+			out[str(r["id"])] = timectxInt(r["n"]) // Aggregate returns the group key as "id"
 		}
 		return out, err
 	}
 	kinds := map[string]any{}
+	var polUsed map[string]int
 	for _, k := range ptKinds {
 		var rows []store.Row
 		var used map[string]int
@@ -768,6 +860,14 @@ func (s *Server) portalMapGet(r *http.Request, c *Ctx) (any, error) {
 			}
 			if err == nil {
 				used, err = count("shift_code")
+			}
+		case "policy", "wo":
+			rows, err = q.C("work_policy").Find(ctx, bson.M{}, options.Find().SetProjection(bson.M{"name": 1}).SetSort(bson.D{{Key: "sort", Value: 1}, {Key: "name", Value: 1}}))
+			if err == nil {
+				if polUsed == nil {
+					polUsed, err = ptPolicyCounts(ctx, q)
+				}
+				used = polUsed
 			}
 		}
 		if err != nil {
@@ -801,6 +901,18 @@ func (s *Server) portalMapGet(r *http.Request, c *Ctx) (any, error) {
 	}
 	return map[string]any{"kinds": kinds, "portal": portal, "listsAt": lists["at"], "codeStart": set["code_start"], "cardPad": set["card_pad"],
 		"canEdit": c.Level("att.portal") >= 2}, nil
+}
+
+// ptPolicyCounts is how many employees not inactive each work policy applies to.
+func ptPolicyCounts(ctx context.Context, q store.Q) (map[string]int, error) {
+	list, err := ptLoad(ctx, q, bson.M{"status": bson.M{"$ne": "Inactive"}})
+	out := map[string]int{}
+	for _, x := range list {
+		if x.PolicyID != "" {
+			out[x.PolicyID]++
+		}
+	}
+	return out, err
 }
 
 func ptListTexts(lists map[string]any, kind string) []string {
@@ -866,9 +978,13 @@ func (s *Server) portalReadLists(r *http.Request, c *Ctx) (any, error) {
 	if err := c.Need("att.portal", 2); err != nil {
 		return nil, err
 	}
-	cfg, why := ptReady()
-	if why != "" {
-		return nil, bad("%s", why)
+	// Reading the lists is a GET: it works while sending is still off, so HR can map first.
+	cfg, ok := rtEnv()
+	if !ok {
+		return nil, bad("Add the portal account (REALTIME_URL, REALTIME_USER, REALTIME_PASS) to the server first")
+	}
+	if !realtime.FormKnown() {
+		return nil, bad("The portal's employee form is not set (internal/realtime Spec)")
 	}
 	ctx := r.Context()
 	cl, err := ptClient(cfg)

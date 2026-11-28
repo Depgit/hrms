@@ -1,9 +1,10 @@
+import { useState } from 'react';
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { useAuth, type Me } from './auth';
 import { BusyBar, Toaster, useLoad } from './components/ui';
 import { Icon } from './components/icons';
-import { toggleTheme } from './components/theme';
-import { api } from './api';
+import { ThemeToggle } from './components/ThemeToggle';
+import { api, session } from './api';
 import Login from './pages/Login';
 import Join from './pages/Join';
 import Dashboard from './pages/Dashboard';
@@ -72,6 +73,7 @@ const PAGES: Page[] = [
 export default function App() {
   const { me, loading, can, switchRole, signOut } = useAuth();
   const loc = useLocation();
+  const [team, setTeam] = useState(session.team); // Line Manager view: direct employees or everyone under me
   // The Approvals badge. My view follows its own requests on the Dashboard; it shows Approvals only while a request
   // waits on the person by name (a Receiving Manager with no role view, ESS-166).
   const pending = useLoad(() => (me ? api<any[]>('/approvals?tab=mine').catch(() => []) : Promise.resolve([])), [me?.ctx.role, loc.pathname]);
@@ -107,11 +109,13 @@ export default function App() {
             <button className={role === 'Employee' ? 'on' : ''} onClick={() => switchRole('Employee')}>My view</button>
             {views.map((r) => <button key={r} className={r === role ? 'on' : ''} onClick={() => switchRole(r)}>{r} view</button>)}
           </span>}
+          {role === 'Line Manager' && <select aria-label="Team" value={team} onChange={(e) => { session.team = e.target.value; setTeam(e.target.value); }} style={{ width: 'auto' }}>
+            <option value="">All employees under me</option><option value="direct">Direct employees</option></select>}
           <span style={{ fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 8 }}><b>{me.employee.name}</b> · {me.ctx.employeeId} <button className="btn sm" onClick={signOut}>Sign out</button></span>
           <NoticeBell />
-          <button className="btn sm" onClick={toggleTheme}>Theme</button>
+          <ThemeToggle />
         </header>
-        <Routes>
+        <Routes key={role + '|' + team}>
           {visible.map((p) => <Route key={p.path} path={p.path === '/' ? '/' : p.path + '/*'} element={p.el} />)}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

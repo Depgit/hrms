@@ -25,14 +25,15 @@ func TestFtDayOffAndGrace(t *testing.T) {
 	}
 }
 
-// TIME-231: the rest gap reads "Consider shift in": a shift recorded the day after it starts runs a day earlier.
+// The rest gap runs from the end of the shift's last part ("Consider shift in" was removed from shifts, 24 Nov 2026).
 func TestFtRestGapShiftIn(t *testing.T) {
 	g := &Shift{Code: "G", Start: 9 * 60, End: 18 * 60}
 	nxt := &Shift{Code: "NXT", Start: 22 * 60, End: 6 * 60}
-	if m, _ := RestBetweenRuled(g, nil, nxt, &Rules{ShiftIn: "next"}); m != 4*60 {
-		t.Errorf("rest %d min, want 240", m)
-	}
 	if m, _ := RestBetween(g, nxt); m != 28*60 {
 		t.Errorf("plain rest %d min, want 1680", m)
+	}
+	sp := &Shift{Code: "SP", Start: 6 * 60, End: 10 * 60, Start2: 15 * 60, End2: 19 * 60}
+	if m, _ := RestBetween(sp, g); m != 14*60 {
+		t.Errorf("rest after a split shift %d min, want 840 (19:00 to 09:00)", m)
 	}
 }

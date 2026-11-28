@@ -24,7 +24,7 @@ const (
 // costTotalOf is a pay row's total cost to the company, as the Cost and budget page counts it (accommodation apart).
 func costTotalOf(o *PayRowOut) float64 {
 	l := costLineOf(o)
-	return l.Salary + l.contrib()
+	return l.Salary + l.Reimb + l.contrib()
 }
 
 // locMonthlyCost is the projected total monthly cost per property of the active employees matching filter (nil:
@@ -61,7 +61,7 @@ func offerMonthlyCost(ctx context.Context, q store.Q, j offerJob) float64 {
 	if x, _ := q.C("salary_structure").FindOne(ctx, bson.M{"is_default": true}); x != nil {
 		_ = payengineJSON(x["rates"], &st)
 	}
-	in := calc.Input{Type: calc.EmploymentType(j.Type), Gross: j.Gross, Structure: &st}
+	in := calc.Input{Type: calc.EmploymentType(j.Type), Gross: j.Gross, Structure: &st, EmpAmts: reimbAmts(j.Reimb), AllIn: offerAllIn(ctx, q, j)}
 	if j.LocID != "" {
 		in.Lwf = lwfFor(ctx, q, j.LocID, today())
 	}

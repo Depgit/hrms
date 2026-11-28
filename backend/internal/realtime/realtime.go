@@ -11,8 +11,9 @@
 // of the portal — including the ones that change data or control doors ("Update software Database", "Transfer
 // Data In ERP", "Open & Close Gate") — is refused before a request is sent, and so are redirects to them.
 //
-// The one exception is the employee form (empwrite.go, 17 Nov 2026): its pages (Spec) are opened and posted only
-// when HR confirms a "Send to portal" in the HRMS, to create an employee, update their details or mark them left.
+// The one exception is the employee form (empwrite.go, 17 Nov 2026; Employee.aspx since 25 Nov): its pages (Spec)
+// are opened (GET) for previews and the mapping lists, and posted only by the HRMS's automatic writes (create,
+// update, mark left) once sending is switched on (Spec.Send).
 //
 // Credentials come from the environment only (REALTIME_URL, REALTIME_USER, REALTIME_PASS); they are never stored
 // in the database or logged.

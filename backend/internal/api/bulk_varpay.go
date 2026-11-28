@@ -149,6 +149,9 @@ func varPayRead(ctx context.Context, tx store.Q, r bulkRow, e store.Row, res *bu
 	if note != "" && strings.ContainsAny(note[:1], "=+-@") {
 		res.Errors = append(res.Errors, payNoteCol+" cannot start with = + - or @")
 	}
+	if msg := allInVarRefusal(ctx, tx, ym); okM && msg != "" { // all-inclusive gross (allin.go): variable pay is automatic
+		res.Errors = append(res.Errors, msg)
+	}
 	if len(res.Errors) > 0 {
 		return p, false
 	}

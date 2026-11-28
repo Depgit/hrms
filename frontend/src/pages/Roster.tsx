@@ -4,6 +4,7 @@ import { useAuth } from '../auth';
 import { Field, Loading, Modal, Pill, download, toast, useLoad } from '../components/ui';
 import { scopeEmps, ymLabel, type ScopeEmp } from './Attendance';
 import { letterFile } from './MyTime';
+import { CellPicker, DevOwnModal } from './RosterCell';
 
 type T = 'grid' | 'dev' | 'disc' | 'bulk' | 'cons';
 type K = 'ok' | 'warn' | 'bad' | 'info' | 'n';
@@ -65,7 +66,7 @@ export default function Roster() {
     {tab === 'cons' && <Consequences onChange={cons.reload} />}
     {(tab === 'grid' || (tab === 'bulk' && bulkOn)) && (!sc ? <Loading error={dir.error} />
       : tab === 'grid' ? <Grid sc={sc} filters={filters} week={week} setWeek={setWeek} />
-      : <Bulk sc={sc} filters={filters} week={week} />)}
+      : <Bulk sc={sc} dir={dir.data ?? []} week={week} />)}
   </>;
 }
 
@@ -80,8 +81,23 @@ const devTag = (v?: any) => {
   return <i className="dv" title={tip}>{v.status === 'Not OK' ? '✕' : '→'}{t}</i>;
 };
 
+/** What a roster cell shows: an active call to work shows its shift with a mark (the day stays a holiday or leave). */
+const shownCode = (c: any) => (c.call?.active ? c.call.shift : c.code);
+const cellTip = (c: any) => {
+  const k = c.call;
+  const call = k && (k.active
+    ? `Called to work (${k.kind === 'holiday' ? 'holiday' : k.leave}): ${k.shift}${k.time ? ' ' + k.time : ''}. ${k.reason}. By ${k.by}, ${k.at}`
+    : 'A call to work on this date does nothing now: the day is no longer a holiday or leave day');
+  return [call, c.time && !k?.active && `${c.code === 'OT' ? 'Other time' : c.code} ${c.time}`, c.leave && c.code !== 'L' && `${c.leave} (approved leave)`, c.tip,
+    c.pending && `${c.pending} waiting for approval`].filter(Boolean).join('. ');
+};
+
 function Grid({ sc, filters, week, setWeek }: { sc: ReturnType<typeof rosScope>; filters: any; week: string; setWeek: (w: string) => void }) {
+  const { can, me } = useAuth();
   const canE = useRosEdit(), canPub = useRosEdit('ros.publish');
+  const canCall = me?.ctx.role !== 'Employee' && can('att.records', 2);
+  const [pick, setPick] = useState<{ row: any; i: number } | null>(null);
+  const [devFor, setDevFor] = useState('');
   const [why, setWhy] = useState(ROSR[0]);
   const [min, setMin] = useState(2);
   const [pat, setPat] = useState('fixed');
@@ -92,15 +108,8 @@ function Grid({ sc, filters, week, setWeek }: { sc: ReturnType<typeof rosScope>;
   const pub = !!rs?.published;
   const lead = rs?.rules.lead ?? 2;
   const shifts = ((rs?.codes ?? []) as string[]).filter((c) => c !== 'WO' && c !== 'PH');
-  const cover = days.map((_: string, i: number) => rows.filter((r: any) => !['WO', 'L', 'PH'].includes(r.cells[i].code)).length);
-  const cycle = async (row: any, i: number) => {
-    const d = days[i], cur = row.cells[i].code;
-    if (cur === 'L') { toast('This day is approved leave. Change it by cancelling the leave'); return; }
-    const next = row.codes[(row.codes.indexOf(cur) + 1) % row.codes.length];
-    setBusy(row.id + d);
-    try { const r = await api('/roster/cell', { body: { employeeId: row.id, date: d, code: next, why } }); if (r.warning) toast('Warning: ' + r.warning); reload(); }
-    catch (x: any) { toast(x.message); } finally { setBusy(''); }
-  };
+  // On duty: a shift or other time, or called to work (an active call on a holiday or leave day).
+  const cover = days.map((_: string, i: number) => rows.filter((r: any) => !['WO', 'L', 'PH'].includes(shownCode(r.cells[i]))).length);
   const publish = async () => {
     try {
       const r = await Promise.all((rs?.locations ?? []).filter((l: any) => !l.published).map((l: any) => api('/roster/publish', { body: { location: l.id, department: sc.sel.dept, week: rs.week } })));
@@ -127,14 +136,19 @@ function Grid({ sc, filters, week, setWeek }: { sc: ReturnType<typeof rosScope>;
       <span className="mute">{rows.length} employees {pub ? <Pill k="ok">Published</Pill> : <Pill k="warn">Draft</Pill>}</span></div>
       {canPub && <button className="btn primary" disabled={pub || !rs?.locations?.length} onClick={publish}>Publish roster</button>}</div>
       {!rs && !error ? <Loading /> : <div className="tw"><table className="roster"><thead><tr><th style={{ textAlign: 'left' }}>Employee</th>{days.map((d: string) => <th key={d}>{dlab(d)}</th>)}<th style={{ textAlign: 'left' }}>Checks</th></tr></thead>
-        <tbody>{rows.map((row: any) => <tr key={row.id}><td className="nm"><b>{row.name}</b><div className="mute" style={{ fontSize: 11 }}>{row.id} · {row.policy}</div></td>
-          {row.cells.map((c: any, i: number) => <td key={i}><button className={`cell ${c.code}${c.changed ? (c.late ? ' chgL' : ' chg') : ''}`} title={[c.tip, c.pending && `${c.pending} waiting for approval`].filter(Boolean).join('. ')}
-            disabled={!canE || busy === row.id + days[i]} onClick={() => cycle(row, i)}>{c.code}{devTag(c.dev)}</button></td>)}
+        <tbody>{rows.map((row: any) => <tr key={row.id}><td className="nm"><button className="linkb" title="Deviation allowances of this employee" onClick={() => setDevFor(row.id)}><b>{row.name}</b></button>
+          <div className="mute" style={{ fontSize: 11 }}>{row.id} · {row.policy}{row.devOwn ? ' · own deviation rules' : ''}</div></td>
+          {row.cells.map((c: any, i: number) => <td key={i}><button className={`cell ${shownCode(c)}${c.call?.active ? ' called' : ''}${c.changed ? (c.late ? ' chgL' : ' chg') : ''}`} title={cellTip(c)}
+            disabled={(!canE && !canCall) || busy === row.id + days[i]} onClick={() => setPick({ row, i })}>{shownCode(c)}{c.call?.active && <i className="cw">*</i>}{devTag(c.dev)}</button></td>)}
           <td style={{ textAlign: 'left' }}>{row.warnings.length ? row.warnings.map((w: string) => <Pill key={w} k="warn">{w}</Pill>) : <Pill k="ok">OK</Pill>}</td></tr>)}
           {!rows.length && <tr><td colSpan={9} className="mute" style={{ textAlign: 'left' }}>No active employees in this city and department for your scope.</td></tr>}</tbody>
         <tfoot><tr><td className="nm mute">On duty</td>{cover.map((n: number, i: number) => <td key={i}><span className={`pill ${n < min ? 'bad' : 'ok'}`}>{n}</span></td>)}<td /></tr>
-          {shifts.map((code) => <tr key={code}><td className="nm mute">{code} shift</td>{days.map((_: string, i: number) => <td key={i} className="mono mute">{rows.filter((r: any) => r.cells[i].code === code).length}</td>)}<td /></tr>)}</tfoot></table></div>}
-      <p className="mute" style={{ fontSize: 12, margin: '12px 0 0' }}>WO is weekly off and PH is public holiday (optional holidays are not auto-filled, since each employee picks theirs), both filled from each employee's work policy and its city holiday calendar. L is leave. Only shifts mapped to the employee's location can be assigned.</p></div>
+          {shifts.map((code) => <tr key={code}><td className="nm mute">{code} shift{rs?.timings?.[code] ? <div className="mono" style={{ fontSize: 11 }}>{rs.timings[code]}</div> : null}</td>{days.map((_: string, i: number) => <td key={i} className="mono mute">{rows.filter((r: any) => shownCode(r.cells[i]) === code).length}</td>)}<td /></tr>)}
+          {rows.some((r: any) => r.cells.some((c: any) => c.code === 'OT')) && <tr><td className="nm mute">Other time</td>{days.map((_: string, i: number) => <td key={i} className="mono mute">{rows.filter((r: any) => r.cells[i].code === 'OT').length}</td>)}<td /></tr>}</tfoot></table></div>}
+      <p className="mute" style={{ fontSize: 12, margin: '12px 0 0' }}>WO is weekly off and PH is public holiday (optional holidays are not auto-filled, since each employee picks theirs), both filled from each employee's work policy and its city holiday calendar. L is leave. OT is other time for that day only. A shift with * is a call to work on a holiday or leave day. Click a cell to change it; click a name for that employee's deviation allowances. Only shifts mapped to the employee's department and location can be assigned.</p></div>
+    {pick && <CellPicker row={pick.row} cell={pick.row.cells[pick.i]} date={days[pick.i]} timings={rs?.timings ?? {}} why={why} canRoster={canE} canCall={canCall}
+      onClose={(changed) => { setPick(null); if (changed) reload(); }} />}
+    {devFor && <DevOwnModal id={devFor} onClose={() => { setDevFor(''); reload(); }} />}
   </>;
 }
 
@@ -225,20 +239,45 @@ function Discipline() {
 
 // ---------- Bulk upload: download the roster for a period, change it offline, upload it back ----------
 
-function Bulk({ sc, filters, week }: { sc: ReturnType<typeof rosScope>; filters: any; week: string }) {
+/** A drop-down of check boxes with "All" on top (none ticked = All). */
+function MultiPick({ all, items, value, set }: { all: string; items: string[]; value: string[]; set: (v: string[]) => void }) {
+  const label = !value.length ? all : value.length === 1 ? value[0] : `${value.length} selected`;
+  const flip = (x: string) => set(value.includes(x) ? value.filter((y) => y !== x) : [...value, x]);
+  return <details className="multipick" style={{ position: 'relative' }}>
+    <summary className="btn" style={{ minWidth: 170, justifyContent: 'space-between', listStyle: 'none' }}>{label} ▾</summary>
+    <div className="card" style={{ position: 'absolute', zIndex: 20, marginTop: 4, padding: 8, maxHeight: 320, overflow: 'auto', minWidth: 220 }}>
+      <label style={{ display: 'block', padding: '3px 0', fontWeight: 600 }}><input type="checkbox" checked={!value.length} onChange={() => set([])} /> {all}</label>
+      {items.map((x) => <label key={x} style={{ display: 'block', padding: '3px 0' }}><input type="checkbox" checked={value.includes(x)} onChange={() => flip(x)} /> {x}</label>)}
+    </div>
+  </details>;
+}
+
+function Bulk({ sc, dir, week }: { sc: ReturnType<typeof rosScope>; dir: ScopeEmp[]; week: string }) {
   const canE = useRosEdit();
   const [from, setFrom] = useState(week);
-  const [n, setN] = useState('14');
+  const [to, setTo] = useState(addDays(week, 13));
+  // The upload's own choice: one city, a property or all, any number of departments (none ticked = all).
+  const [city, setCity] = useState(sc.sel.city);
+  const [loc, setLoc] = useState('');
+  const [depts, setDepts] = useState<string[]>(sc.sel.dept ? [sc.sel.dept] : []);
+  const inCity = dir.filter((e) => e.city_id === city);
+  const deptList = [...new Set(inCity.map((e) => e.department))].sort();
+  const dSel = depts.filter((d) => deptList.includes(d));
+  const locs = uniq(inCity.filter((e) => !dSel.length || dSel.includes(e.department)), (e) => e.location_id).map((e) => ({ id: e.location_id, name: e.location })).sort((a, b) => (a.name < b.name ? -1 : 1));
+  const lSel = locs.some((l) => l.id === loc) ? loc : '';
+  const emps = inCity.filter((e) => (!dSel.length || dSel.includes(e.department)) && (!lSel || e.location_id === lSel));
+  const n = to >= from ? Math.round((Date.parse(to) - Date.parse(from)) / 864e5) + 1 : 0;
   const [file, setFile] = useState<File | null>(null);
   const [lines, setLines] = useState(0);
   const [res, setRes] = useState<any>(null);
   const [busy, setBusy] = useState(false);
-  const ds = Array.from({ length: +n }, (_, i) => addDays(from, i));
   /** rbDownload: one column per date with the current codes, drop-downs and a reason column, built by the server. */
   const dl = async () => {
-    if (!sc.emps.length) { toast('No employees match the city, property and department chosen'); return; }
+    if (n < 1 || n > 62) { toast('Choose a To date on or after the From date, up to 62 days'); return; }
+    if (!emps.length) { toast('No employees match the city, property and department chosen'); return; }
     setBusy(true);
-    try { await download(`/bulk/roster/download?${rosQ(sc.sel)}&from=${from}&days=${n}`, `roster-${from}-${ds.length}days.xlsx`); }
+    const dq = dSel.length ? dSel.map((d) => `&department=${encodeURIComponent(d)}`).join('') : '&department=*';
+    try { await download(`/bulk/roster/download?city=${city}&location=${lSel}${dq}&from=${from}&to=${to}`, `roster-${from}-to-${to}.xlsx`); }
     catch (x: any) { toast(x.message); } finally { setBusy(false); }
   };
   const run = async (action: 'check' | 'apply') => {
@@ -256,11 +295,14 @@ function Bulk({ sc, filters, week }: { sc: ReturnType<typeof rosScope>; filters:
   const G = [...by.values()], ok = G.filter((x) => !x.err.length && x.ch.length), late = ok.reduce((a, x) => a + x.ch.filter((c) => /late change/.test(c.note || '')).length, 0);
   const nch = ok.reduce((a, x) => a + x.ch.length, 0);
   return <>
-    <div className="note" style={{ marginBottom: 14 }}>Download the roster for a city, property and department as an Excel file with drop-downs, change the cells you need, and upload it back. Every change follows the same rules as the roster screen: shifts must be mapped to the property, late changes need a reason, past dates are locked.</div>
-    <div className="card" style={{ marginBottom: 14 }}><h3>1. Choose what to download</h3><div className="row" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>{filters}
-      <Field label="From"><input type="date" value={from} onChange={(e) => e.target.value && setFrom(e.target.value)} /></Field>
-      <Field label="Days"><select value={n} onChange={(e) => setN(e.target.value)}><option value="7">7 days</option><option value="14">14 days</option><option value="31">31 days</option></select></Field></div>
-      <p className="mute" style={{ fontSize: 12.5, margin: '10px 0 0' }}>{sc.emps.length} employees, {fmtD(ds[0])} to {fmtD(ds[ds.length - 1])}</p>
+    <div className="note" style={{ marginBottom: 14 }}>Download the roster for a city, property and one, several or all departments as an Excel file with drop-downs, change the cells you need, and upload it back. Every change follows the same rules as the roster screen: shifts must be mapped to the department and property, late changes need a reason. Past dates are not changed by the upload (Work policies › Roster discipline › Past dates in the roster bulk upload).</div>
+    <div className="card" style={{ marginBottom: 14 }}><h3>1. Choose what to download</h3><div className="row" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
+      <Field label="City"><select value={city} onChange={(e) => { setCity(e.target.value); setLoc(''); }}>{sc.cities.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>
+      <Field label="Property"><select value={lSel} onChange={(e) => setLoc(e.target.value)}><option value="">All properties</option>{locs.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</select></Field>
+      <Field label="Department"><MultiPick all="All departments" items={deptList} value={dSel} set={(v) => { setDepts(v); setLoc(''); }} /></Field>
+      <Field label="From"><input type="date" value={from} onChange={(e) => { const v = e.target.value; if (!v) return; setFrom(v); if (to < v) setTo(v); }} /></Field>
+      <Field label="To"><input type="date" value={to} min={from} onChange={(e) => e.target.value && setTo(e.target.value)} /></Field></div>
+      <p className="mute" style={{ fontSize: 12.5, margin: '10px 0 0' }}>{n >= 1 && n <= 62 ? <>{emps.length} employees, {fmtD(from)} to {fmtD(to)} ({n} day{n === 1 ? '' : 's'})</> : 'Choose a To date on or after the From date, up to 62 days.'}</p>
       <div className="row" style={{ marginTop: 12 }}><button className="btn primary" disabled={busy} onClick={dl}>Download roster template (Excel)</button></div></div>
     {canE ? <div className="card"><h3>2. Upload the filled file</h3><div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
       <label className="btn">Choose Excel or CSV file<input type="file" accept=".xlsx,.csv,text/csv" hidden onChange={(e) => { pick(e.target.files?.[0]); e.target.value = ''; }} /></label>

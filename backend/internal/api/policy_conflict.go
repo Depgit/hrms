@@ -15,7 +15,8 @@ package api
 //
 // Not conflicts: an employee-level mapping (it is itself the explicit choice for that person); people on the
 // default policy (no mapping matches them); and people whose mapping is the same one moving from another policy
-// (a location, department and so on belongs to one policy at a time): those are listed as moves.
+// (a location, department and so on belongs to one policy at a time; since 24 Nov 2026 only Edit › move to another
+// policy moves one, policy_maps.go: mapping it again elsewhere is refused): those are listed as moves.
 
 import (
 	"context"
@@ -73,6 +74,11 @@ func (n *refNames) name(level, ref string) string {
 	switch level {
 	case "employee", "location", "cluster", "city", "state":
 	default:
+		if pl, ok := comboPlace[level]; ok { // a department at a place: "People Ops at Gurgaon office"
+			if d, p, ok := splitCombo(ref); ok {
+				return d + " at " + n.name(pl, p)
+			}
+		}
 		return ref
 	}
 	k := level + "|" + ref
@@ -103,6 +109,11 @@ func (n *refNames) label(m polMap) string {
 		return "a mapping for " + nm
 	case "type":
 		return nm + " employment type"
+	}
+	if pl, ok := comboPlace[m.Level]; ok { // "the People Ops department at location Gurgaon office"
+		if d, p, ok := splitCombo(m.Ref); ok {
+			return "the " + d + " department at " + strings.ToLower(levelNames[pl]) + " " + n.name(pl, p)
+		}
 	}
 	return strings.ToLower(levelNames[m.Level]) + " " + nm
 }
@@ -266,6 +277,9 @@ func (s *Server) policyMapsPreview(r *http.Request, c *Ctx) (any, error) {
 	ctx := r.Context()
 	ts, err := loadTimeSet(ctx, s.st.DB)
 	if err != nil {
+		return nil, err
+	}
+	if err := ts.mapDupCheck(r.PathValue("id"), b.Maps); err != nil { // already applied elsewhere: refused before any question
 		return nil, err
 	}
 	return policyConflicts(ctx, s.st.DB, ts, r.PathValue("id"), b.Maps)
@@ -488,6 +502,9 @@ func (s *Server) accessPolicyRoutes(m *http.ServeMux) {
 	m.HandleFunc("GET /api/access/person/{id}/effective.xlsx", s.sheet(s.accessEffectiveSheet))
 	// Policy conflict check, overlap report and each employee's effective policy (policy_conflict.go).
 	m.HandleFunc("POST /api/policies/{id}/maps/preview", s.a(s.policyMapsPreview))
+	// Edit one mapping: its value and/or the policy it is on (policy_maps.go).
+	m.HandleFunc("POST /api/policies/{id}/maps/{mapId}/preview", s.a(s.policyMapEditPreview))
+	m.HandleFunc("PUT /api/policies/{id}/maps/{mapId}", s.a(s.policyMapEdit))
 	m.HandleFunc("GET /api/policies/overlaps", s.a(s.policyOverlaps))
 	m.HandleFunc("GET /api/policies/overlaps.xlsx", s.sheet(s.policyOverlapsSheet))
 	m.HandleFunc("GET /api/employees/{id}/policy", s.a(s.employeePolicy))

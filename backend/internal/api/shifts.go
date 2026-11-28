@@ -18,20 +18,23 @@ import (
 	"github.com/saltstayz/hrms/internal/store"
 )
 
-// Set shift (Masters › Shifts): a shift's timings and attendance rules, kept as versions by effective date.
-// The engine uses the version in effect on each date; the shift row mirrors the version in effect today (a
-// future version moves onto it when its date arrives, in the maintenance sweep). Every rule is optional and
-// falls back to the employee's work policy. Rights: the shift master's (mas.job 2 to change, 1 to read).
+// Set shift (Masters › Shifts): a shift's timings, kept as versions by effective date, and where it applies (its
+// Department + Location rows, shift_maps.go). The engine uses the version in effect on each date; the shift row mirrors
+// the version in effect today (a future version moves onto it when its date arrives, in the maintenance sweep). The
+// shift's punch rules and attendance rules were removed (owner, 24 Nov 2026): the work policy decides them. Rights: the
+// shift master's (mas.job 2 to change, 1 to read).
 
 type shiftBody struct {
 	Code          string       `json:"code"`
 	EffectiveFrom string       `json:"effectiveFrom"`
 	StartTime     string       `json:"startTime"`
 	EndTime       string       `json:"endTime"`
+	Start2Time    string       `json:"start2Time"` // a split shift's second part (owner, 24 Nov 2026); both empty for one part
+	End2Time      string       `json:"end2Time"`
 	BreakMinutes  int          `json:"breakMinutes"`
 	Name          string       `json:"name"`
-	LocationIDs   []string     `json:"locationIds"` // null = all locations
-	Rules         attend.Rules `json:"rules"`
+	Maps          []shiftMapIn `json:"maps,omitempty"` // Add shift only: where it applies (shift_maps.go); later rows change on their own
+	Rules         attend.Rules `json:"rules"`          // only nextDay: the removed rules are unknown fields, refused
 	Note          string       `json:"note"`
 	// Preview only.
 	EmployeeID string `json:"employeeId,omitempty"`
@@ -42,8 +45,9 @@ type shiftBody struct {
 var reShiftCode = regexp.MustCompile(`^[A-Z0-9][A-Z0-9-]{0,9}$`)
 
 // rosterCodes are the roster's own cell codes (spec 11.1): a shift with one of them could not be told apart on the
-// roster or the upload (TIME-010, TIME-011, TIME-012, TIME-042).
-var rosterCodes = map[string]bool{"WO": true, "PH": true, "L": true, "LOP": true}
+// roster or the upload (TIME-010, TIME-011, TIME-012, TIME-042). OT is a cell with other time for the day
+// (roster_day.go; no shift had that code when it was added, 24 Nov 2026).
+var rosterCodes = map[string]bool{"WO": true, "PH": true, "L": true, "LOP": true, otherCode: true}
 
 // shiftCodeProblem is why a new shift's code cannot be used, or "".
 func shiftCodeProblem(code string) string {
@@ -51,7 +55,7 @@ func shiftCodeProblem(code string) string {
 		return "Code: letters and digits, up to 10, for example N2"
 	}
 	if rosterCodes[strings.ToUpper(code)] {
-		return "Code " + strings.ToUpper(code) + " is a roster code (week off, holiday, leave). Choose another"
+		return "Code " + strings.ToUpper(code) + " is a roster code (week off, holiday, leave, other time). Choose another"
 	}
 	return ""
 }
@@ -83,34 +87,41 @@ func shiftPolicy(ctx context.Context, q store.Q, ts *timeSet, code string) (*wor
 	return best, n[best], nil
 }
 
-// policyDefaults are the values each rule falls back to, for the form ("Policy: 4:00").
-func policyDefaults(p *workPolicy, n int, sh attend.Shift) map[string]any {
-	s := p.S
-	hm := attend.HoursText
-	start := "In punch"
-	if s.RS.EarlyCount != "yes" && s.RS.EarlyIn > 0 {
-		start = fmt.Sprintf("In punch; up to %d min early counts from the shift start", s.RS.EarlyIn)
-	}
-	single := map[string]string{"half": "Present half day", "absent": "Absent full day", "present": "Present full day"}[s.Att.Missing]
-	auto := "No (missing out punch)"
-	if s.Att.AutoOut == "end" {
-		auto = "Yes"
-	}
-	return map[string]any{
-		"policy": p.Name, "employees": n,
-		"text": map[string]string{
-			"startFrom": start, "endFrom": "Out punch", "addMissingOut": auto, "forcedOut": "Shift end (" + attend.HHMM(sh.End) + ")",
-			"earlyInMax": "No limit", "lateOutMax": "No limit", "officeHours": hm(s.FullH), "shiftIn": "Current day", "singlePunch": single,
-			"maxHours": "No cap", "basedOn": "Hours", "absentBelow": hm(s.HalfH), "halfBelow": hm(s.FullH), "fullAbove": hm(s.FullH),
-			"weeklyAdj": "Off", "monthlyAdj": "Off", "shortfall": "None",
-		},
-		"value": map[string]any{"addMissingOut": s.Att.AutoOut == "end", "singlePunch": s.Att.Missing, "shiftIn": "current", "basedOn": "hours", "endFrom": "punch",
-			"fullH": s.FullH, "halfH": s.HalfH},
-	}
+// policyDefaults names the work policy that decides the shift's attendance rules on screen (the one most of its active
+// employees follow) and how many follow it. The shift's own rules were removed (owner, 24 Nov 2026).
+func policyDefaults(p *workPolicy, n int) map[string]any {
+	return map[string]any{"policy": p.Name, "employees": n}
 }
 
-// validateShift checks a Set shift body. def is the policy the empty rules fall back to (for the threshold order).
-func validateShift(b *shiftBody, def *workPolicy, create bool) error {
+// splitProblem checks a split shift's second part against the first (start st, end en, minutes): both times or
+// neither, the second part after the first ends, each part ending after it starts, all on the same day. A split
+// shift that ends the next day is refused (owner's choice left to the build, 24 Nov 2026): its parts would need a
+// date each. It returns the field and the message, or "" for none.
+func splitProblem(st, en int, start2, end2 string, nextDay bool) (string, string) {
+	if start2 == "" && end2 == "" {
+		return "", ""
+	}
+	if start2 == "" || !reTime.MatchString(start2) {
+		return "start2Time", "Second part start must be HH:MM, for example 15:00. Leave both second part times empty for a shift in one part"
+	}
+	if end2 == "" || !reTime.MatchString(end2) {
+		return "end2Time", "Second part end must be HH:MM, for example 19:00. Leave both second part times empty for a shift in one part"
+	}
+	s2, _ := attend.Min(start2)
+	e2, _ := attend.Min(end2)
+	switch {
+	case nextDay || en <= st:
+		return "end2Time", "A split shift must start and end on the same day: the first part must end after it starts, and Shift ending next day must be No"
+	case s2 <= en:
+		return "start2Time", fmt.Sprintf("The second part must start after the first part ends (%s)", attend.HHMM(en))
+	case e2 <= s2:
+		return "end2Time", "The second part must end after it starts, on the same day (a split shift cannot run past midnight)"
+	}
+	return "", ""
+}
+
+// validateShift checks a Set shift body: its timings (the rules hold only whether it ends the next day).
+func validateShift(b *shiftBody, create bool) error {
 	b.Name, b.Code, b.Note = strings.TrimSpace(b.Name), strings.ToUpper(strings.TrimSpace(b.Code)), strings.TrimSpace(b.Note)
 	if b.Name == "" {
 		return fieldErr("name", "Enter the shift name")
@@ -138,108 +149,28 @@ func validateShift(b *shiftBody, def *workPolicy, create bool) error {
 	if st == en {
 		return fieldErr("endTime", "Start and end time cannot be the same")
 	}
+	b.Start2Time, b.End2Time = strings.TrimSpace(b.Start2Time), strings.TrimSpace(b.End2Time)
+	if k, msg := splitProblem(st, en, b.Start2Time, b.End2Time, b.Rules.EndsNextDay()); k != "" {
+		return fieldErr(k, "%s", msg)
+	}
 	length := en - st
 	if length <= 0 {
 		length += 1440
 	}
+	if b.Start2Time != "" { // the working length: both parts, without the gap
+		s2, _ := attend.Min(b.Start2Time)
+		e2, _ := attend.Min(b.End2Time)
+		length += e2 - s2
+	}
 	if b.BreakMinutes < 0 || b.BreakMinutes >= length {
 		return fieldErr("breakMinutes", "Break minutes must be 0 or more and shorter than the shift")
 	}
-	for _, id := range b.LocationIDs {
-		if !reUUID.MatchString(id) {
-			return fieldErr("locationIds", "Locations must be location ids")
-		}
-	}
-	if b.LocationIDs != nil && len(b.LocationIDs) == 0 {
-		return fieldErr("locationIds", "Pick at least one location, or choose all locations")
-	}
-	r := &b.Rules
-	r.Normalize()
-	if r.NextDay != nil {
+	if r := b.Rules; r.NextDay != nil {
 		if *r.NextDay && en > st {
 			return fieldErr("nextDay", "Shift ending next day is Yes, so the end time must be at or before the start time (for example 22:00 to 06:00)")
 		}
 		if !*r.NextDay && en <= st {
 			return fieldErr("nextDay", "Shift ending next day is No, so the end time must be after the start time. Choose Yes for a shift that ends the next day")
-		}
-	}
-	enums := []struct {
-		key, v, label string
-		ok            []string
-	}{{"startFrom", r.StartFrom, "Consider shift start from", []string{"shift", "punch"}}, {"endFrom", r.EndFrom, "Consider shift end from", []string{"shift", "punch"}},
-		{"shiftIn", r.ShiftIn, "Consider shift in", []string{"current", "previous", "next"}}, {"singlePunch", r.SinglePunch, "Mark single punch as", []string{"absent", "half", "present"}},
-		{"basedOn", r.BasedOn, "Attendance based on", []string{"hours", "shift", "punch"}}}
-	for _, x := range enums {
-		if x.v != "" && !containsStr(x.ok, x.v) {
-			return fieldErr(x.key, "%s must be one of: %s", x.label, strings.Join(x.ok, ", "))
-		}
-	}
-	if r.ForcedOut != "" && !reTime.MatchString(r.ForcedOut) {
-		return fieldErr("forcedOut", "Forced time out must be a time of day, HH:MM")
-	}
-	durs := []struct {
-		key, v, label string
-		max           int
-	}{{"earlyInMax", r.EarlyInMax, "Maximum early in punch allowed", 12 * 60}, {"lateOutMax", r.LateOutMax, "Maximum late out punch allowed", 12 * 60},
-		{"officeHours", r.OfficeHours, "Office hour time", 24 * 60}, {"maxHours", r.MaxHours, "Max Hrs:mins", 24 * 60}, {"absentBelow", r.AbsentBelow, "Absent rule", 24 * 60},
-		{"halfBelow", r.HalfBelow, "Half day rule", 24 * 60}, {"fullAbove", r.FullAbove, "Full day rule", 24 * 60}}
-	for _, x := range durs {
-		if x.v == "" {
-			continue
-		}
-		m, ok := attend.Dur(x.v)
-		if !ok || len(x.v) > 5 {
-			return fieldErr(x.key, "%s must be hours and minutes, HH:MM, for example 4:30", x.label)
-		}
-		if m > x.max {
-			return fieldErr(x.key, "%s can be at most %s", x.label, attend.DurText(x.max))
-		}
-		if (x.key == "officeHours" || x.key == "maxHours") && m == 0 {
-			return fieldErr(x.key, "%s must be more than 0:00", x.label)
-		}
-	}
-	for _, a := range []struct {
-		key, label string
-		v          *attend.Adj
-	}{{"weeklyAdj", "Weekly adjustment", r.WeeklyAdj}, {"monthlyAdj", "Monthly adjustment", r.MonthlyAdj}} {
-		if a.v == nil {
-			continue
-		}
-		if a.v.Hours = strings.TrimSpace(a.v.Hours); a.v.Hours == "" {
-			return fieldErr(a.key, "%s is ticked: enter the hours it can cover, HHH:MM, for example 4:00", a.label)
-		}
-		if _, ok := attend.Dur(a.v.Hours); !ok {
-			return fieldErr(a.key, "%s must be hours and minutes, HHH:MM, for example 12:00", a.label)
-		}
-	}
-	// Absent ≤ half day ≤ full day, with the policy's values where the shift leaves a rule empty.
-	type th struct {
-		key, label string
-		h          float64
-		own        bool
-	}
-	val := func(key, label, v string, fallback float64) th {
-		if m, ok := attend.Dur(v); ok {
-			return th{key, label, float64(m) / 60, true}
-		}
-		return th{key, label, fallback, false}
-	}
-	ab := val("absentBelow", "Absent rule", r.AbsentBelow, def.S.HalfH)
-	hf := val("halfBelow", "Half day rule", r.HalfBelow, def.S.FullH)
-	fu := val("fullAbove", "Full day rule", r.FullAbove, def.S.FullH)
-	show := func(t th) string {
-		if t.own {
-			return attend.HoursText(t.h)
-		}
-		return attend.HoursText(t.h) + " from the work policy"
-	}
-	for _, pair := range [][2]th{{ab, hf}, {hf, fu}} {
-		if pair[0].h > pair[1].h+1e-9 {
-			k := pair[0].key
-			if !pair[0].own {
-				k = pair[1].key
-			}
-			return fieldErr(k, "%s (%s) must not be above the %s (%s). Absent ≤ half day ≤ full day", pair[0].label, show(pair[0]), strings.ToLower(pair[1].label[:1])+pair[1].label[1:], show(pair[1]))
 		}
 	}
 	return nil
@@ -273,8 +204,8 @@ func ensureBaseVersion(ctx context.Context, q store.Q, shiftID string) error {
 		return err
 	}
 	_, err = q.C("shift_version").Upsert(ctx, bson.D{{Key: "shift_id", Value: shiftID}, {Key: "effective_from", Value: "2000-01-01"}}, nil,
-		bson.M{"start_time": sh["start_time"], "end_time": sh["end_time"], "break_minutes": sh["break_minutes"], "rules": sh["rules"],
-			"created_by": "System", "note": "Shift as it stood before shift versions"})
+		bson.M{"start_time": sh["start_time"], "end_time": sh["end_time"], "start2_time": sh["start2_time"], "end2_time": sh["end2_time"],
+			"break_minutes": sh["break_minutes"], "rules": sh["rules"], "created_by": "System", "note": "Shift as it stood before shift versions"})
 	return err
 }
 
@@ -291,6 +222,7 @@ func ApplyShiftVersions(ctx context.Context, q store.Q, shiftID string) (int64, 
 		bson.D{{Key: "$sort", Value: bson.D{{Key: "shift_id", Value: 1}, {Key: "effective_from", Value: -1}}}},
 		bson.D{{Key: "$group", Value: bson.D{{Key: "_id", Value: "$shift_id"}, {Key: "start_time", Value: bson.D{{Key: "$first", Value: "$start_time"}}},
 			{Key: "end_time", Value: bson.D{{Key: "$first", Value: "$end_time"}}}, {Key: "break_minutes", Value: bson.D{{Key: "$first", Value: "$break_minutes"}}},
+			{Key: "start2_time", Value: bson.D{{Key: "$first", Value: "$start2_time"}}}, {Key: "end2_time", Value: bson.D{{Key: "$first", Value: "$end2_time"}}},
 			{Key: "rules", Value: bson.D{{Key: "$first", Value: "$rules"}}}}}},
 	})
 	if err != nil {
@@ -300,7 +232,7 @@ func ApplyShiftVersions(ctx context.Context, q store.Q, shiftID string) (int64, 
 	for _, v := range vers {
 		ids = append(ids, str(v["id"]))
 	}
-	shifts, err := timectxByID(ctx, q, "shift", ids, "start_time", "end_time", "break_minutes", "rules")
+	shifts, err := timectxByID(ctx, q, "shift", ids, "start_time", "end_time", "start2_time", "end2_time", "break_minutes", "rules")
 	if err != nil {
 		return 0, err
 	}
@@ -310,12 +242,13 @@ func ApplyShiftVersions(ctx context.Context, q store.Q, shiftID string) (int64, 
 		if sh == nil {
 			continue
 		}
-		if sh["start_time"] == v["start_time"] && sh["end_time"] == v["end_time"] && timectxInt(sh["break_minutes"]) == timectxInt(v["break_minutes"]) &&
-			reflect.DeepEqual(sh["rules"], v["rules"]) {
+		if sh["start_time"] == v["start_time"] && sh["end_time"] == v["end_time"] && sh["start2_time"] == v["start2_time"] && sh["end2_time"] == v["end2_time"] &&
+			timectxInt(sh["break_minutes"]) == timectxInt(v["break_minutes"]) && reflect.DeepEqual(sh["rules"], v["rules"]) {
 			continue
 		}
 		m, err := q.C("shift").Update(ctx, bson.D{{Key: "_id", Value: sh["id"]}},
-			bson.M{"$set": bson.M{"start_time": v["start_time"], "end_time": v["end_time"], "break_minutes": v["break_minutes"], "rules": v["rules"]}})
+			bson.M{"$set": bson.M{"start_time": v["start_time"], "end_time": v["end_time"], "start2_time": v["start2_time"], "end2_time": v["end2_time"],
+				"break_minutes": v["break_minutes"], "rules": v["rules"]}})
 		if err != nil {
 			return n, err
 		}
@@ -334,7 +267,8 @@ func shiftView(ctx context.Context, q store.Q, id string) (map[string]any, error
 		return nil, notFound("Shift not found")
 	}
 	row := store.Row{"id": sh["id"], "code": sh["code"], "name": sh["name"], "startTime": sh["start_time"], "endTime": sh["end_time"], "breakMinutes": sh["break_minutes"],
-		"locationIds": sh["location_ids"], "status": sh["status"], "inactiveSince": sh["inactive_since"], "rules": sh["rules"]}
+		"start2Time": sh["start2_time"], "end2Time": sh["end2_time"],
+		"status": sh["status"], "inactiveSince": sh["inactive_since"], "rules": sh["rules"]}
 	vrows, err := q.C("shift_version").Find(ctx, bson.D{{Key: "shift_id", Value: id}}, options.Find().SetSort(bson.D{{Key: "effective_from", Value: -1}}))
 	if err != nil {
 		return nil, err
@@ -342,13 +276,15 @@ func shiftView(ctx context.Context, q store.Q, id string) (map[string]any, error
 	vers := []store.Row{}
 	for _, v := range vrows {
 		vers = append(vers, store.Row{"id": v["id"], "effectiveFrom": v["effective_from"], "startTime": v["start_time"], "endTime": v["end_time"],
+			"start2Time": v["start2_time"], "end2Time": v["end2_time"],
 			"breakMinutes": v["break_minutes"], "rules": v["rules"], "createdBy": str(v["created_by"]), "createdAt": v["created_at"], "note": str(v["note"])})
 	}
 	if len(vers) == 0 {
-		vers = []store.Row{{"id": 0, "effectiveFrom": "2000-01-01", "startTime": row["startTime"], "endTime": row["endTime"], "breakMinutes": row["breakMinutes"],
-			"rules": row["rules"], "createdBy": "System", "note": "Shift as it stood before shift versions"}}
+		vers = []store.Row{{"id": 0, "effectiveFrom": "2000-01-01", "startTime": row["startTime"], "endTime": row["endTime"], "start2Time": row["start2Time"],
+			"end2Time": row["end2Time"], "breakMinutes": row["breakMinutes"], "rules": row["rules"], "createdBy": "System", "note": "Shift as it stood before shift versions"}}
 	}
-	// The OT rule and "Actual hours without break" were removed: older versions read without them.
+	// The removed shift rules (the OT rule, "Actual hours without break", the punch and single punch rules): older
+	// versions read without them.
 	dropRemovedRules(row["rules"])
 	for _, v := range vers {
 		dropRemovedRules(v["rules"])
@@ -373,10 +309,24 @@ func shiftView(ctx context.Context, q store.Q, id string) (map[string]any, error
 	if err != nil {
 		return nil, err
 	}
-	a, _ := attend.Min(fmt.Sprint(cur["startTime"]))
-	b, _ := attend.Min(fmt.Sprint(cur["endTime"]))
 	locked, _ := punchdaysLastLocked(ctx, q)
-	out := map[string]any{"shift": row, "versions": vers, "current": cur, "policyDefaults": policyDefaults(p, n, attend.Shift{Start: a, End: b}), "today": t}
+	names, err := loadShiftMapNames(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	maps, err := shiftMapRows(ctx, q, id, names)
+	if err != nil {
+		return nil, err
+	}
+	hist, err := shiftMapHistory(ctx, q, id)
+	if err != nil {
+		return nil, err
+	}
+	outside, err := shiftOutside(ctx, q, id, str(row["code"]))
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{"shift": row, "versions": vers, "current": cur, "policyDefaults": policyDefaults(p, n), "today": t, "maps": maps, "mapHistory": hist, "outside": outside}
 	if locked != "" {
 		out["lockedUntil"] = policy.LastDayOf(locked)
 	}
@@ -394,24 +344,37 @@ func (s *Server) shiftGet(r *http.Request, c *Ctx) (any, error) {
 			return nil, err
 		}
 		p, _ := ts.policyFor(&emp{})
-		return map[string]any{"policyDefaults": policyDefaults(p, 0, attend.Shift{Start: 540, End: 1080}), "today": today()}, nil
+		return map[string]any{"policyDefaults": policyDefaults(p, 0), "today": today()}, nil
 	}
 	return shiftView(ctx, s.st.DB, r.PathValue("id"))
 }
 
-// windowSig is what decides how a day's punches are grouped; when it changes, past days are rebuilt.
-func windowSig(start, end string, r *attend.Rules) string {
-	if !r.Windowed() {
+// windowSig is what decides how a day's punches are grouped; when it changes, past days are rebuilt. limits: some
+// work policy sets a maximum early in or late out punch, so any shift's days may be built from its window.
+func windowSig(start, end, end2 string, r *attend.Rules, limits bool) string {
+	if !r.EndsNextDay() && !limits {
 		return ""
 	}
-	return strings.Join([]string{start, end, fmt.Sprint(r.NextDay != nil && *r.NextDay), r.ShiftIn, r.EarlyInMax, r.LateOutMax}, "|")
+	return strings.Join([]string{start, end, end2, fmt.Sprint(r.EndsNextDay())}, "|")
 }
 
-// dropRemovedRules takes the removed shift rules (otAbove, withoutBreak) out of a stored rules object.
+// policyPunchLimits: an active work policy sets a maximum early in or late out punch (Attendance › Punching).
+func policyPunchLimits(ctx context.Context, q store.Q) (bool, error) {
+	return q.C("work_policy").Exists(ctx, bson.D{{Key: "status", Value: "Active"}, {Key: "$or", Value: bson.A{
+		bson.D{{Key: "settings.att.earlyInMax", Value: bson.D{{Key: "$gt", Value: 0}}}}, bson.D{{Key: "settings.att.lateOutMax", Value: bson.D{{Key: "$gt", Value: 0}}}}}}})
+}
+
+// removedRules are the shift rules that were removed: the OT rule and "Actual hours without break" (8 Nov 2026), the
+// punch rules, the single punch rule and the attendance rules (owner, 24 Nov 2026; the work policy decides them).
+var removedRules = []string{"otAbove", "withoutBreak", "startFrom", "endFrom", "addMissingOut", "forcedOut", "earlyInMax", "lateOutMax", "officeHours",
+	"shiftIn", "singlePunch", "maxHours", "basedOn", "absentBelow", "halfBelow", "fullAbove", "weeklyAdj", "monthlyAdj", "shortfall"}
+
+// dropRemovedRules takes the removed shift rules out of a stored rules object.
 func dropRemovedRules(v any) {
 	if m, ok := v.(map[string]any); ok {
-		delete(m, "otAbove")
-		delete(m, "withoutBreak")
+		for _, k := range removedRules {
+			delete(m, k)
+		}
 	}
 }
 
@@ -422,12 +385,12 @@ func saveShiftVersion(ctx context.Context, tx store.Q, c *Ctx, shiftID string, b
 		return err
 	}
 	// The version in effect on the date before this save, and the next version after it.
-	var oldStart, oldEnd, until string
+	var oldStart, oldEnd, oldEnd2, until string
 	var oldRaw []byte
 	of := bson.D{{Key: "shift_id", Value: shiftID}}
 	if v, _ := tx.C("shift_version").FindOne(ctx, append(of, bson.E{Key: "effective_from", Value: bson.D{{Key: "$lte", Value: b.EffectiveFrom}}}),
 		options.FindOne().SetSort(bson.D{{Key: "effective_from", Value: -1}})); v != nil {
-		oldStart, oldEnd, oldRaw = str(v["start_time"]), str(v["end_time"]), timectxJSON(v["rules"])
+		oldStart, oldEnd, oldEnd2, oldRaw = str(v["start_time"]), str(v["end_time"]), str(v["end2_time"]), timectxJSON(v["rules"])
 	}
 	if v, _ := tx.C("shift_version").FindOne(ctx, append(of, bson.E{Key: "effective_from", Value: bson.D{{Key: "$gt", Value: b.EffectiveFrom}}}),
 		options.FindOne().SetSort(bson.D{{Key: "effective_from", Value: 1}})); v != nil {
@@ -444,14 +407,18 @@ func saveShiftVersion(ctx context.Context, tx store.Q, c *Ctx, shiftID string, b
 	by := c.Name + " (" + c.EmployeeID + ")"
 	// A version on the same date is replaced.
 	if _, err := tx.C("shift_version").Upsert(ctx, bson.D{{Key: "shift_id", Value: shiftID}, {Key: "effective_from", Value: b.EffectiveFrom}},
-		bson.M{"start_time": b.StartTime, "end_time": b.EndTime, "break_minutes": b.BreakMinutes, "rules": json.RawMessage(rules), "created_by": by,
-			"created_at": tx.Now(), "note": timectxNullIf(b.Note)}, nil); err != nil {
+		bson.M{"start_time": b.StartTime, "end_time": b.EndTime, "start2_time": timectxNullIf(b.Start2Time), "end2_time": timectxNullIf(b.End2Time),
+			"break_minutes": b.BreakMinutes, "rules": json.RawMessage(rules), "created_by": by, "created_at": tx.Now(), "note": timectxNullIf(b.Note)}, nil); err != nil {
 		return err
 	}
 	if _, err := ApplyShiftVersions(ctx, tx, shiftID); err != nil {
 		return err
 	}
-	if windowSig(oldStart, oldEnd, parseRules(oldRaw)) != windowSig(b.StartTime, b.EndTime, &b.Rules) {
+	limits, err := policyPunchLimits(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if windowSig(oldStart, oldEnd, oldEnd2, parseRules(oldRaw), limits) != windowSig(b.StartTime, b.EndTime, b.End2Time, &b.Rules, limits) {
 		return rebuildForShift(ctx, tx, b.EffectiveFrom)
 	}
 	return nil
@@ -475,18 +442,13 @@ func (s *Server) shiftPut(r *http.Request, c *Ctx) (any, error) {
 		if b.Code != "" && !strings.EqualFold(strings.TrimSpace(b.Code), sh["code"].(string)) {
 			return fieldErr("code", "The code of a shift cannot change. Add a new shift instead")
 		}
-		ts, err := loadTimeSet(ctx, tx)
-		if err != nil {
+		if b.Maps != nil {
+			return fieldErr("maps", "Change where the shift applies with its own rows (Add row, switch on or off, Remove), not with Save")
+		}
+		if err := validateShift(&b, false); err != nil {
 			return err
 		}
-		p, _, err := shiftPolicy(ctx, tx, ts, sh["code"].(string))
-		if err != nil {
-			return err
-		}
-		if err := validateShift(&b, p, false); err != nil {
-			return err
-		}
-		if _, err := tx.C("shift").Update(ctx, bson.D{{Key: "_id", Value: id}}, bson.M{"$set": bson.M{"name": b.Name, "location_ids": b.LocationIDs}}); err != nil {
+		if _, err := tx.C("shift").Update(ctx, bson.D{{Key: "_id", Value: id}}, bson.M{"$set": bson.M{"name": b.Name}}); err != nil {
 			return err
 		}
 		if err := saveShiftVersion(ctx, tx, c, fmt.Sprint(sh["id"]), &b); err != nil {
@@ -498,7 +460,7 @@ func (s *Server) shiftPut(r *http.Request, c *Ctx) (any, error) {
 		}
 		return audit(ctx, tx, c, "Changed shift", "shift", fmt.Sprint(sh["id"]), map[string]any{"shift": sh, "current": before["current"]},
 			map[string]any{"shift": after["shift"], "version": map[string]any{"effectiveFrom": b.EffectiveFrom, "startTime": b.StartTime, "endTime": b.EndTime,
-				"breakMinutes": b.BreakMinutes, "rules": b.Rules, "note": b.Note}})
+				"start2Time": b.Start2Time, "end2Time": b.End2Time, "breakMinutes": b.BreakMinutes, "rules": b.Rules, "note": b.Note}})
 	})
 	if err != nil {
 		return nil, err
@@ -517,12 +479,7 @@ func (s *Server) shiftCreate(r *http.Request, c *Ctx) (any, error) {
 	ctx := r.Context()
 	var id string
 	err := s.st.Tx(ctx, func(tx store.Q) error {
-		ts, err := loadTimeSet(ctx, tx)
-		if err != nil {
-			return err
-		}
-		def, _ := ts.policyFor(&emp{})
-		if err := validateShift(&b, def, true); err != nil {
+		if err := validateShift(&b, true); err != nil {
 			return err
 		}
 		if dup, _ := tx.C("shift").Exists(ctx, bson.D{{Key: "code", Value: b.Code}}); dup {
@@ -533,13 +490,17 @@ func (s *Server) shiftCreate(r *http.Request, c *Ctx) (any, error) {
 		}
 		rules, _ := json.Marshal(b.Rules)
 		v, err := tx.C("shift").Insert(ctx, bson.M{"code": b.Code, "name": b.Name, "start_time": b.StartTime, "end_time": b.EndTime, "break_minutes": b.BreakMinutes,
-			"location_ids": b.LocationIDs, "rules": json.RawMessage(rules)})
+			"start2_time": timectxNullIf(b.Start2Time), "end2_time": timectxNullIf(b.End2Time), "rules": json.RawMessage(rules)})
 		if err != nil {
 			return err
 		}
 		id = str(v)
 		if _, err := tx.C("shift_version").Insert(ctx, bson.M{"shift_id": id, "effective_from": b.EffectiveFrom, "start_time": b.StartTime, "end_time": b.EndTime,
-			"break_minutes": b.BreakMinutes, "rules": json.RawMessage(rules), "created_by": c.Name + " (" + c.EmployeeID + ")", "note": timectxNullIf(b.Note)}); err != nil {
+			"start2_time": timectxNullIf(b.Start2Time), "end2_time": timectxNullIf(b.End2Time), "break_minutes": b.BreakMinutes, "rules": json.RawMessage(rules),
+			"created_by": c.Name + " (" + c.EmployeeID + ")", "note": timectxNullIf(b.Note)}); err != nil {
+			return err
+		}
+		if _, err := createShiftMaps(ctx, tx, c, id, b.Maps); err != nil {
 			return err
 		}
 		return audit(ctx, tx, c, "Added shift", "shift", id, nil, b)
@@ -548,6 +509,29 @@ func (s *Server) shiftCreate(r *http.Request, c *Ctx) (any, error) {
 		return nil, err
 	}
 	return shiftView(ctx, s.st.DB, id)
+}
+
+// shiftOf is a shift in minutes from its stored times (start2 and end2 empty for a shift in one part), with where it
+// applies (nil: everywhere, for a timing that is no shift of the master).
+func shiftOf(code, start, end, start2, end2 string, maps []attend.ShiftMap) attend.Shift {
+	sh := attend.Shift{Code: code, Maps: maps}
+	sh.Start, _ = attend.Min(start)
+	sh.End, _ = attend.Min(end)
+	if a, ok := attend.Min(start2); ok {
+		if b, ok := attend.Min(end2); ok && b > a {
+			sh.Start2, sh.End2 = a, b
+		}
+	}
+	return sh
+}
+
+// shiftTiming is a stored shift's (or version's) timings as text: "09:00–18:00", or "06:00–10:00 + 15:00–19:00".
+func shiftTiming(x store.Row) string {
+	p2 := ""
+	if a, b := str(x["start2_time"]), str(x["end2_time"]); a != "" && b != "" {
+		p2 = a + "–" + b
+	}
+	return attend.TimingText(str(x["start_time"]), str(x["end_time"]), p2)
 }
 
 // shiftPreview shows an employee's days with the shift's rules as they stand and as they would be with the
@@ -570,11 +554,7 @@ func (s *Server) shiftPreview(r *http.Request, c *Ctx) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	p, _, err := shiftPolicy(ctx, s.st.DB, ts, code)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateShift(&b, p, false); err != nil {
+	if err := validateShift(&b, false); err != nil {
 		return nil, err
 	}
 	if b.To == "" {
@@ -600,9 +580,7 @@ func (s *Server) shiftPreview(r *http.Request, c *Ctx) (any, error) {
 	ep, _ := ts.policyFor(e)
 	old := m.span(e, ep, b.From, b.To)
 	// The same days with the new version laid into the time set.
-	st, _ := attend.Min(b.StartTime)
-	en, _ := attend.Min(b.EndTime)
-	nv := shiftVer{from: b.EffectiveFrom, sh: attend.Shift{Code: code, Start: st, End: en, Locations: ts.shifts[code].Locations}, brk: b.BreakMinutes}
+	nv := shiftVer{from: b.EffectiveFrom, sh: shiftOf(code, b.StartTime, b.EndTime, b.Start2Time, b.End2Time, ts.shifts[code].Maps), brk: b.BreakMinutes}
 	if !b.Rules.Empty() {
 		r := b.Rules
 		nv.rules = &r

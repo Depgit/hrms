@@ -31,7 +31,20 @@ const (
 	MPctOf     = "pct_of"     // % of another component (Of)
 	MRemainder = "remainder"  // the balancing figure
 	MLegacyVar = "legacy_var" // migration 014's variable: % of gross accrued and paid every cycle (automatic); kept for safety, unused since 017
+	// MPerEmp is a fixed ₹ a month entered on each employee (Input.EmpAmts by the component's code; employee_pay.comp_amts),
+	// 0 for someone with none: the "Reimbursement" component (owner, 20 Nov 2026). Since 25 Nov 2026 (owner) it is OUTSIDE
+	// the fixed gross, like variable pay: the Basic/HRA/Special allowance split is worked out as if it were not there,
+	// it is earned by the days paid as the gross is (amount × earned gross ÷ full gross), never in the PF, ESI or bonus
+	// wage, and it is added to total earnings, net pay and the CTC (Result.Reimb, CompLine.Extra).
+	MPerEmp = "per_emp"
 )
+
+// ReimbCode is the code of the per-employee "Reimbursement" component every structure carries (migration 024).
+const ReimbCode = "reimb"
+
+// ReimbComponent is the fixed "Reimbursement" component: a ₹ amount entered per employee, outside the fixed gross,
+// taxable, outside the PF, ESI and bonus wages, shown on the payslip.
+var ReimbComponent = Component{Code: ReimbCode, Name: "Reimbursement", Kind: CompFixed, Side: SideEarn, Method: MPerEmp, Taxable: true, Payslip: true}
 
 // Component roles the statutory rules read: basic and da make the labour-code wage and the Basic that PF admin,
 // EDLI, gratuity and PL encashment use; hra is shown as HRA.
@@ -75,6 +88,8 @@ type CompLine struct {
 	Cycle   int     `json:"cycle,omitempty"`
 	Taxable bool    `json:"taxable,omitempty"`
 	Payslip bool    `json:"payslip,omitempty"`
+	// Extra: a per-employee amount paid outside the fixed gross (the Reimbursement, MPerEmp; 25 Nov 2026).
+	Extra bool `json:"extra,omitempty"`
 }
 
 // LegacyComponents is the component template equivalent to a structure's percentage rates.
@@ -82,6 +97,7 @@ func LegacyComponents(S Structure) []Component {
 	return []Component{
 		{Code: "basic", Name: "Basic + DA", Kind: CompFixed, Side: SideEarn, Role: RoleBasic, Method: MPctGross, Value: S.BasicPct, Taxable: true, PF: true, ESI: true, Bonus: true, Payslip: true},
 		{Code: "hra", Name: "HRA", Kind: CompFixed, Side: SideEarn, Role: RoleHRA, Method: MPctBasic, Value: S.HraPct, Taxable: true, ESI: true, Payslip: true},
+		ReimbComponent, // 0 unless the person has an amount (migration 024), so the result is as before
 		{Code: "sa", Name: "Special allowance", Kind: CompFixed, Side: SideEarn, Method: MRemainder, Taxable: true, PF: S.PfWage == "basicSa", ESI: true, Payslip: true},
 		{Code: "var", Name: "Variable pay", Kind: CompVariable, Side: SideEarn, Method: MLegacyVar, Value: S.VarPct, Cycle: S.VarCycle, Taxable: true, Payslip: true},
 	}
@@ -96,7 +112,7 @@ func TargetComponents(S Structure) []Component {
 	if cyc != 3 && cyc != 6 && cyc != 12 {
 		cyc = 1
 	}
-	l[3] = Component{Code: "var", Name: "Variable pay", Kind: CompVariable, Side: SideEarn, Method: MRemainder, Cycle: cyc, Taxable: true, Payslip: true}
+	l[len(l)-1] = Component{Code: "var", Name: "Variable pay", Kind: CompVariable, Side: SideEarn, Method: MRemainder, Cycle: cyc, Taxable: true, Payslip: true}
 	return l
 }
 
@@ -152,9 +168,35 @@ func ymIndex(ym string) int {
 	return y*12 + m - 1
 }
 
+// WithReimb is comps with the Reimbursement component placed before the fixed balancing component (or after the
+// fixed earnings) when it has no per-employee component yet; ok is false when nothing was added.
+func WithReimb(comps []Component) ([]Component, bool) {
+	at := -1
+	for i, c := range comps {
+		if c.Method == MPerEmp || c.Code == ReimbCode {
+			return comps, false
+		}
+		if at < 0 && c.Kind == CompFixed && c.Side == SideEarn && c.Method == MRemainder {
+			at = i
+		}
+	}
+	if at < 0 {
+		at = 0
+		for i, c := range comps {
+			if c.Kind == CompFixed && c.Side == SideEarn {
+				at = i + 1
+			}
+		}
+	}
+	out := append([]Component{}, comps[:at]...)
+	out = append(out, ReimbComponent)
+	return append(out, comps[at:]...), true
+}
+
 // head is what the components (or the classic rates) give the rest of the calculation.
 type head struct {
 	basic, hra, sa      float64
+	reimb               float64 // per-employee fixed amounts (MPerEmp earnings)
 	pfWage, bonusBase   float64
 	nonESI, nonTax, ded float64
 	variable, varPay    float64
@@ -217,13 +259,20 @@ func compHead(p Input, S Structure, T TypeRules, gross, full float64, jm int) he
 	if full > 0 && gross != full {
 		ratio = gross / full
 	}
+	if p.ratio != nil { // the all-inclusive gross: the fixed gross earned is solved, the days paid are this
+		ratio = *p.ratio
+	}
+	base := full // what "% of gross" means for variable pay: the full fixed gross, or G with the all-inclusive gross
+	if p.allInG > 0 {
+		base = p.allInG
+	}
 	if p.VarTarget == nil && p.VarTargetPct != nil { // a target in %: of the full fixed monthly gross
-		t := full * *p.VarTargetPct / 100
+		t := base * *p.VarTargetPct / 100
 		p.VarTarget = &t
 	}
 	ctc := p.CTC
 	if ctc <= 0 {
-		ctc = full
+		ctc = base
 		if p.VarTarget != nil {
 			ctc += *p.VarTarget
 		}
@@ -260,6 +309,8 @@ func compHead(p Input, S Structure, T TypeRules, gross, full float64, jm int) he
 			switch c.Method {
 			case MAmount:
 				v = c.Value * scale
+			case MPerEmp:
+				v = p.EmpAmts[c.Code] * scale
 			case MPctCTC:
 				v = ctc * c.Value / 100 * scale
 			case MPctGross:
@@ -276,7 +327,7 @@ func compHead(p Input, S Structure, T TypeRules, gross, full float64, jm int) he
 			case MRemainder:
 				rem := gross
 				for _, o := range comps {
-					if o.Code == c.Code || !isFixedEarn(o) {
+					if o.Code == c.Code || !isFixedEarn(o) || o.Method == MPerEmp { // the Reimbursement is outside the gross
 						continue
 					}
 					if !done[o.Code] {
@@ -319,6 +370,19 @@ func compHead(p Input, S Structure, T TypeRules, gross, full float64, jm int) he
 			continue
 		}
 		v := val[c.Code]
+		if c.Method == MPerEmp { // outside the gross: its own earning, in no wage (paid with AllBasic too)
+			if c.Side == SideDed {
+				continue
+			}
+			h.reimb += v
+			if !c.Taxable {
+				h.nonTax += v
+			}
+			if designed && v != 0 { // a per-employee amount of 0 is no line (pay as before)
+				h.lines = append(h.lines, CompLine{Code: c.Code, Name: c.Name, Kind: CompFixed, Side: SideEarn, Amount: v, Taxable: c.Taxable, Payslip: c.Payslip, Extra: true})
+			}
+			continue
+		}
 		if p.AllBasic && c.Side != SideDed {
 			continue
 		}
@@ -328,10 +392,10 @@ func compHead(p Input, S Structure, T TypeRules, gross, full float64, jm int) he
 			}
 			h.ded += v
 		} else {
-			switch c.Role {
-			case RoleBasic, RoleDA:
+			switch {
+			case c.Role == RoleBasic || c.Role == RoleDA:
 				h.basic += v
-			case RoleHRA:
+			case c.Role == RoleHRA:
 				h.hra += v
 			default:
 				h.sa += v
@@ -390,7 +454,7 @@ func compHead(p Input, S Structure, T TypeRules, gross, full float64, jm int) he
 			case MPctCTC:
 				t = ctc * c.Value / 100
 			case MPctGross:
-				t = full * c.Value / 100
+				t = base * c.Value / 100
 			case MPctBasic:
 				t = b * c.Value / 100
 			case MPctOf:
@@ -409,7 +473,7 @@ func compHead(p Input, S Structure, T TypeRules, gross, full float64, jm int) he
 			free += t
 		}
 		if rem != nil {
-			total := ctc - full
+			total := ctc - base
 			if p.VarTarget != nil {
 				total = *p.VarTarget
 			}
@@ -444,7 +508,10 @@ func compHead(p Input, S Structure, T TypeRules, gross, full float64, jm int) he
 				cyc = 1
 			}
 			varPay := 0.0
-			if variable > 0 && p.Month > 0 && (((p.Month-jm)%cyc)+cyc)%cyc == cyc-1 {
+			if p.autoVar { // all-inclusive gross: % of G, paid every month by the days paid
+				variable, cyc = base*ratio*vp, 1
+				varPay = variable
+			} else if variable > 0 && p.Month > 0 && (((p.Month-jm)%cyc)+cyc)%cyc == cyc-1 {
 				varPay = variable * float64(cyc)
 				if p.VarTotal != nil {
 					varPay = *p.VarTotal
@@ -460,6 +527,10 @@ func compHead(p Input, S Structure, T TypeRules, gross, full float64, jm int) he
 		}
 		t := targets[c.Code]
 		paid := p.VarPaid[c.Code]
+		cyc := c.Cycle
+		if p.autoVar { // all-inclusive gross: paid every month, target × days paid ÷ days, nothing entered by HR
+			paid, cyc = t*ratio, 1
+		}
 		if !T.Variable {
 			t, paid = 0, 0
 		}
@@ -468,7 +539,6 @@ func compHead(p Input, S Structure, T TypeRules, gross, full float64, jm int) he
 		if !c.Taxable {
 			h.nonTax += paid
 		}
-		cyc := c.Cycle
 		if cyc < 1 {
 			cyc = 1
 		}

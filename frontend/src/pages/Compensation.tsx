@@ -4,6 +4,7 @@ import { api, fmtD, inr, postForm, today } from '../api';
 import { useAuth } from '../auth';
 import { Field, Loading, Modal, Pill, Switch, Tabs, download, toast, useLoad } from '../components/ui';
 import PersonPicker from '../components/PersonPicker';
+import { AllInSetting, grossWord } from '../components/AllIn';
 import { CYCLE, PAY_IN, PayEntryFields, VarTargetField, WageNote, splitPay, type PayIn, type VarMode } from '../components/PayEntry';
 
 // ---------- Shared with Onboarding: the salary statement (prototype `breakHtml`) ----------
@@ -52,13 +53,56 @@ export function Statement({ c, type, std, rules, lwf, month = 0 }: { c: any; typ
   const fixedC = comps.filter((x) => x.kind === 'fixed' && x.side === 'earn'), varC = comps.filter((x) => x.kind === 'variable'), dedC = comps.filter((x) => x.side === 'ded');
   // A retainer is shown as the retainer value only: one fee line, no Basic, HRA or Special allowance split (calc retainerOnly).
   const ret = type === 'Retainer' || c.fee > 0;
+  // The all-inclusive gross (server calc/allin.go): G is the gross salary, split into Basic, HRA, Special allowance and
+  // the statutory bonus; the employer's PF, ESI, EDLI and LWF are deducted from it; CTC adds the company's costs.
+  if (c.allIn) return <>
+    <div className="tw"><table className="stmt"><tbody>
+      {H(ret ? 'Retainer' : 'Salary')}
+      {ret ? R('Retainer fee', c.fee ?? c.gross, 'A month')
+        : comps.length ? fixedC.filter((x) => !x.extra).map((x) => <Fragment key={x.code}>{R(x.name, x.amount, how(x.code))}</Fragment>)
+        : <>{R('Basic + DA', c.basic, `${S.basicPct}% of the gross less the bonus`)}{R('HRA', c.hra, `${S.hraPct}% of basic`)}{R('Special allowance', c.sa, 'Balancing figure')}</>}
+      {!ret && c.bonus > 0 && R('Statutory bonus', c.bonus, `${S.bonusPct}% of basic up to ${inr(S.bonusCalc || 7000)}, as the gross is at most ${inr(S.bonusCeil)}`)}
+      {!ret && R('Gross salary', c.gross, month > 0 && c.offeredFull && c.offered !== c.offeredFull ? `Earned by the days paid; ${inr(c.offeredFull)} a month` : 'The gross offered', true)}
+      {H('Additional, outside the gross')}
+      {comps.length ? varC.map((x) => <Fragment key={x.code}>{R(`${x.name} (pro-rata, additional)`, x.amount, `Target ${inr(x.target)} a month × paid days ÷ days, paid every month`)}</Fragment>)
+        : R('Variable pay (pro-rata, additional)', c.varPay, 'Target × paid days ÷ days, paid every month')}
+      {!ret && R('Reimbursement (pro-rata, additional)', c.reimb, 'Set on the employee; by the days paid; not in PF, ESI or bonus wages')}
+      {H('Deductions')}
+      {T.statutory && R('Employee PF', c.eePF, `${S.pfEe}${S.pfWage === 'basicSa' ? '% of basic + special allowance' : '% of basic'}${S.pfCap ? `, wage ceiling ${inr(S.pfCeil)}` : ''}`)}
+      {T.statutory && R('Employer PF (incl. EPS)', c.erPF, `${S.pfEr}% of PF wages, deducted from the salary`)}
+      {T.statutory && R('Employee ESI', c.eeESI, c.esiOn ? `${S.esiEe}% of the gross less the bonus` : `Not applicable: gross above ${inr(S.esiCeil)}`)}
+      {T.statutory && R('Employer ESI', c.erESI, c.esiOn ? `${S.esiEr}%, deducted from the salary` : 'Not applicable')}
+      {T.statutory && R('EDLI', c.edli, `0.5% of basic up to ${inr(15000)}, deducted from the salary`)}
+      {c.lwfOn && R('Labour welfare fund', c.lwfEe, note)}
+      {c.lwfOn && R('Employer LWF', c.lwfEr, `${note}${note ? '; ' : ''}deducted from the salary`)}
+      {c.meal > 0 && R('Meal', c.meal, 'Set by HR')}
+      {c.accom > 0 && R('Accommodation', c.accom, 'Set by HR')}
+      {c.tds > 0 && R('TDS', c.tds, `${c.tdsRate ?? S.tdsRate}% of the fee (editable: structure or employee)`)}
+      {dedC.map((x) => <Fragment key={x.code}>{x.amount > 0 && R(x.name, x.amount, how(x.code))}</Fragment>)}
+      {T.ded === 'none' && <tr><td colSpan={3} className="mute">No deductions for this employment type.</td></tr>}
+      {R('Total deductions', c.ded, '', true)}
+      {R('Net in hand', c.net, 'Gross + variable pay + reimbursement − deductions; before income tax, if any', true)}
+      {H('CTC: the company\'s cost on top of the gross')}
+      {R('Gross salary', c.gross, '')}
+      {T.statutory && R('EPFO admin charges', c.admin, `${S.epfoAdm}% of basic`)}
+      {T.grat && R('Gratuity', c.grat, `${S.grat}% of basic`)}
+      {T.plEnc && R('PL encashment provision', c.plEnc, `${S.plDays} days of basic a year`)}
+      {c.med > 0 && R('Medical insurance', c.med, `${S.medPct}%, max ${inr(S.medMax)}`)}
+      {R('Variable pay target', c.variable, 'A month, by the days paid')}
+      {!ret && R('Reimbursement', c.reimb, '')}
+      {R('Total CTC a month', c.ctc, '', true)}{R('Total CTC a year', c.ctc * 12, '', true)}
+    </tbody></table></div>
+    {auto && <p className="mute" style={{ fontSize: 12, margin: '8px 0 0' }}>{auto}.</p>}
+    <WageNote c={c} />
+  </>;
   return <>
     <div className="tw"><table className="stmt"><tbody>
       {H(ret ? 'Retainer' : 'Fixed salary')}
-      {ret ? R('Retainer fee', c.fee ?? c.gross, 'A month; TDS under section 194J')
-        : comps.length ? fixedC.map((x) => <Fragment key={x.code}>{R(x.name, x.amount, how(x.code))}</Fragment>)
+      {ret ? R('Retainer fee', c.fee ?? c.gross, 'A month')
+        : comps.length ? fixedC.filter((x) => !x.extra).map((x) => <Fragment key={x.code}>{R(x.name, x.amount, how(x.code))}</Fragment>)
         : <>{R('Basic + DA', c.basic, `${S.basicPct}% of gross`)}{R('HRA', c.hra, `${S.hraPct}% of basic`)}{R('Special allowance', c.sa, 'Balancing figure')}</>}
       {!ret && R('Gross salary', c.gross, '', true)}
+      {!ret && c.reimb > 0 && R('Reimbursement, outside the gross', c.reimb, 'Set on the employee; earned by the days paid; not in PF, ESI or bonus wages')}
       {c.bonus > 0 && R('Bonus', c.bonus, `${S.bonusPct}% of basic up to ${inr(S.bonusCalc || 7000)}, for gross up to ${inr(S.bonusCeil)}`)}
       {c.variable > 0 && H('Variable pay, on top of fixed')}
       {comps.length ? varC.map((x) => <Fragment key={x.code}>{R(`${x.name}, target a month`, x.target, `Paid ${CYCLE[x.cycle] || 'monthly'}, the amount HR enters when due`)}
@@ -71,7 +115,7 @@ export function Statement({ c, type, std, rules, lwf, month = 0 }: { c: any; typ
       {c.lwfOn && R('Labour welfare fund', c.lwfEe, note)}
       {c.meal > 0 && R('Meal', c.meal, 'Set by HR')}
       {c.accom > 0 && R('Accommodation', c.accom, 'Set by HR')}
-      {c.tds > 0 && R('TDS', c.tds, `${S.tdsRate}% of gross, set in the structure`)}
+      {c.tds > 0 && R('TDS', c.tds, `${c.tdsRate ?? S.tdsRate}% of gross (editable: structure or employee)`)}
       {dedC.map((x) => <Fragment key={x.code}>{x.amount > 0 && R(x.name, x.amount, how(x.code))}</Fragment>)}
       {T.ded === 'none' && <tr><td colSpan={3} className="mute">No deductions for this employment type.</td></tr>}
       {R('Net in hand' + (month > 0 ? '' : ' (without variable)'), c.net, 'Before income tax, if any', true)}
@@ -97,7 +141,7 @@ export function compHow(d: any, all: any[] = []): string {
   const cap = [d.min > 0 ? `at least ${inr(d.min)}` : '', d.max > 0 ? `at most ${inr(d.max)}` : ''].filter(Boolean).join(', ');
   const of = all.find((x) => x.code === d.of)?.name ?? d.of;
   const base = ({ amount: `${inr(d.value)} a month`, pct_ctc: `${d.value}% of CTC`, pct_gross: `${d.value}% of fixed gross`, pct_basic: `${d.value}% of Basic`,
-    pct_of: `${d.value}% of ${of}`, remainder: d.kind === 'variable' ? 'The rest of the variable target' : 'Balancing figure', legacy_var: `${d.value}% of gross, accrued monthly` } as Record<string, string>)[d.method] ?? '';
+    pct_of: `${d.value}% of ${of}`, remainder: d.kind === 'variable' ? 'The rest of the variable target' : 'Balancing figure', per_emp: 'Amount set on each employee', legacy_var: `${d.value}% of gross, accrued monthly` } as Record<string, string>)[d.method] ?? '';
   return cap ? `${base} (${cap})` : base;
 }
 
@@ -146,10 +190,9 @@ function Guide({ x, go, hasTab }: { x: any; go: (k: TabK) => void; hasTab: (k: T
     api('/settings/company').catch(() => ({ offerTemplate: '' })),
   ]), [x]);
   if (!data.data) return <Loading error={data.error} />;
-  const [grades, desigs, structs, matrix, dir, company] = data.data;
+  const [grades, , structs, matrix, dir, company] = data.data;
   const cities = [...new Set((x.bands ?? []).map((b: any) => b.city_id))];
   const miss = (x.bands ?? []).filter((b: any) => !(b.max > 0 && b.max >= b.min)).map((b: any) => `${b.grade} in ${b.city}`);
-  const unmapped = desigs.filter((g) => !(g.grades || []).length);
   const on = structs.filter((s: any) => s.status === 'Active'), def = structs.find((s: any) => s.is_default);
   const flows = ['Operations', 'Corporate'].filter((f) => matrix.some((m) => m.wf === 'joining' && m.flow === f && (m.rules || []).some((r: any) => r.on && (r.when || []).some((c: any) => c.k === 'budget'))));
   const gaps: string[] = dir.gaps || [];
@@ -157,7 +200,6 @@ function Guide({ x, go, hasTab }: { x: any; go: (k: TabK) => void; hasTab: (k: T
   type Check = { t: string; ok: boolean; d: string; open: () => void; can?: boolean };
   const ck: Check[] = [
     { t: 'Grades are defined', ok: grades.length > 0, d: grades.length ? `${grades.length} active grades: ${grades.map((g) => g.name).join(', ')}` : 'Add grades in Masters', open: () => nav('/masters') },
-    { t: 'Every designation is mapped to grades', ok: !unmapped.length, d: unmapped.length ? `${unmapped.length} designations have no grade` : 'Offers list only the mapped grades for a designation', open: () => nav('/masters?tab=desig') },
     { t: 'Standard salary structure is set', ok: (def?.rates?.basicPct ?? 0) > 0, d: def ? `${on.length} version${on.length > 1 ? 's' : ''}. Default: ${def.name}. Basic ${def.rates.basicPct}% of gross, ESI up to ${inr(def.rates.esiCeil)}, medical above that` : 'Set a default version in Salary structure', open: () => go('structure'), can: hasTab('structure') },
     { t: 'Every city and grade has a pay band', ok: !miss.length, d: miss.length ? `${miss.length} missing, for example ${miss.slice(0, 3).join(', ')}` : `Bands set for ${cities.length} cities and ${grades.length} grades`, open: () => go('bands'), can: hasTab('bands') },
     { t: 'Over-budget offers trigger extra approval', ok: flows.length === 2, d: flows.length === 2 ? 'Offers above budget or above the pay band get extra approvers in both flows' : 'Switch on an above-budget condition for both flows in the joining workflow', open: () => nav('/approvals?tab=rules') },
@@ -293,7 +335,7 @@ const GROUPS: [string, Fld[], string?][] = [
     ['medOn', 'Medical insurance above the ESI ceiling', 'b', YN], ['medPct', 'Medical insurance, % of gross'], ['medMax', 'Medical insurance maximum, ₹']]],
   ['Bonus (automatic)', [['bonusOn', 'Pay bonus automatically', 'b', YN], ['bonusCeil', 'Applies when gross is up to, ₹ a month'],
     ['bonusCalc', 'Bonus is worked on basic up to, ₹ (law: ₹7,000 or minimum wage, whichever is higher)'], ['bonusPct', 'Bonus, % of basic, paid monthly']]],
-  ['Retainer TDS', [['tdsRate', 'TDS, % of gross']]],
+  ['Retainer TDS', [['tdsRate', 'TDS, % of gross (editable)']], 'Deducted from a retainer’s fee every month. One employee can have their own rate in Employees › Pay options.'],
   ['Other', [['grat', 'Gratuity, % of basic'], ['plDays', 'PL encashment, days of basic a year'], ['denom', 'Days basis for proration', 's', [['calendar', 'Calendar days'], ['30', '30 days'], ['26', '26 days']]]]],
 ];
 
@@ -329,6 +371,7 @@ function Structures({ x, reload }: { x: any; reload: () => void }) {
     try { await api(`/comp/types/${t}`, { method: 'PUT', body: { ...T, [k]: k === 'ded' ? v : v === 'true' } }); toast('Saved'); reload(); } catch (e: any) { toast(e.message); }
   };
   return <>
+    <AllInSetting v={x.allIn} onSaved={reload} />
     <div className="note" style={{ marginBottom: 14 }}>A salary structure is a set of rules for the breakup. Create as many versions as you need and pick one as the default for new joiners. Existing employees stay on their version until Payroll moves them, from a date, in Payroll, Structure mapping. HR enters only the monthly gross. ESI applies automatically when gross is at or below the ESI ceiling and medical insurance above it. Pay bands handle minimum wage.</div>
     <div className="card" style={{ marginBottom: 14 }}>
       <div className="row sp"><div className="seg">{list.map((y) => <button key={y.id} className={y.id === cur.id ? 'on' : ''} onClick={() => setSel(y.id)}>{y.name}{y.is_default && <b>Default</b>}{y.status !== 'Active' && <b>Off</b>}</button>)}</div>
@@ -415,7 +458,7 @@ function TryOffer({ x, cur }: { x: any; cur: any }) {
       <label className="field"><span>Employment type</span><select value={c.type} onChange={(e) => set('type', e.target.value)}>{ALL_TYPES.map((t) => <option key={t}>{t}</option>)}</select></label>
       <label className="field"><span>City</span><select value={city} onChange={(e) => set('city', e.target.value)}>{(cities.data ?? []).map((y) => <option key={y.id} value={y.id}>{y.name}</option>)}</select></label>
       <label className="field"><span>Grade</span><select value={grade} onChange={(e) => set('grade', e.target.value)}>{(grades.data ?? []).map((g) => <option key={g.id}>{g.name}</option>)}</select></label>
-      {fin('gross', 'Monthly gross')}
+      {fin('gross', grossWord(x.allIn?.from ?? ''))}
     </div>
     <h3 style={{ margin: '14px 0 8px', fontSize: 13 }}>Options HR can set</h3>
     <div className="form">
@@ -586,7 +629,7 @@ export function MapPeople({ s, onClose, onDone }: { s: { id: string; name: strin
 
 type Comp = { code: string; name: string; kind: 'fixed' | 'variable'; side: 'earn' | 'ded'; role?: string; method: string; value: number; of?: string; min?: number; max?: number; cycle?: number;
   taxable: boolean; pf: boolean; esi: boolean; bonus: boolean; payslip: boolean; id?: string; status?: string };
-const METHODS: [string, string][] = [['amount', 'Fixed ₹ a month'], ['pct_ctc', '% of CTC'], ['pct_gross', '% of fixed gross'], ['pct_basic', '% of Basic'], ['pct_of', '% of another component'], ['remainder', 'Remainder (balancing)']];
+const METHODS: [string, string][] = [['amount', 'Fixed ₹ a month'], ['pct_ctc', '% of CTC'], ['pct_gross', '% of fixed gross'], ['pct_basic', '% of Basic'], ['pct_of', '% of another component'], ['remainder', 'Remainder (balancing)'], ['per_emp', 'Amount set on each employee']];
 const ROLES: [string, string][] = [['', '—'], ['basic', 'Basic'], ['da', 'DA'], ['hra', 'HRA']];
 const CYCLES: [number, string][] = [[1, 'Monthly'], [3, 'Quarterly'], [6, 'Half-yearly'], [12, 'Yearly']];
 const FLAGS: [keyof Comp, string][] = [['taxable', 'Taxable'], ['pf', 'PF wage'], ['esi', 'ESI wage'], ['bonus', 'Bonus wage'], ['payslip', 'On payslip']];
@@ -682,7 +725,7 @@ function CompEditor({ comps, lib, readOnly, onChange }: { comps: Comp[]; lib: Co
         <td><select value={c.method} onChange={(e) => set(i, 'method', e.target.value)}>{METHODS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
           {c.method === 'pct_of' && <select value={c.of || ''} onChange={(e) => set(i, 'of', e.target.value)} style={{ marginLeft: 4 }}><option value="">of…</option>
             {comps.filter((o) => o.code !== c.code).map((o) => <option key={o.code} value={o.code}>{o.name}</option>)}</select>}</td>
-        <td>{c.method === 'remainder' ? <span className="mute">—</span> : num(i, 'value')}</td>
+        <td>{c.method === 'remainder' || c.method === 'per_emp' ? <span className="mute">—</span> : num(i, 'value')}</td>
         <td>{c.method === 'remainder' ? '' : num(i, 'min', 80)}</td><td>{c.method === 'remainder' ? '' : num(i, 'max', 80)}</td>
         <td>{c.kind === 'variable' ? <select value={c.cycle || 1} onChange={(e) => set(i, 'cycle', +e.target.value)}>{CYCLES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select> : '—'}</td>
         <td style={{ whiteSpace: 'nowrap', fontSize: 12 }}>{FLAGS.filter(([k]) => c.side === 'earn' && (c.kind === 'fixed' || k === 'taxable' || k === 'payslip') || k === 'payslip').map(([k, l]) =>
@@ -708,7 +751,7 @@ function LibEditor({ c: c0, all, onClose, onSave }: { c: Comp; all: Comp[]; onCl
       <Field label="Earning or deduction"><select value={c.side} onChange={(e) => set('side', e.target.value)}><option value="earn">Earning</option><option value="ded">Deduction</option></select></Field>
       <Field label="Worked out as"><select value={c.method} onChange={(e) => set('method', e.target.value)}>{METHODS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></Field>
       {c.method === 'pct_of' && <Field label="% of which component"><select value={c.of || ''} onChange={(e) => set('of', e.target.value)}><option value="">Choose</option>{all.filter((o) => o.code !== c.code).map((o) => <option key={o.code} value={o.code}>{o.name}</option>)}</select></Field>}
-      {c.method !== 'remainder' && <><Field label={c.method === 'amount' ? '₹ a month' : '%'}><input type="number" min={0} step="any" value={c.value || ''} onChange={(e) => set('value', +e.target.value || 0)} /></Field>
+      {c.method !== 'remainder' && <>{c.method !== 'per_emp' && <Field label={c.method === 'amount' ? '₹ a month' : '%'}><input type="number" min={0} step="any" value={c.value || ''} onChange={(e) => set('value', +e.target.value || 0)} /></Field>}
         <Field label="Minimum ₹ a month (optional)"><input type="number" min={0} value={c.min || ''} onChange={(e) => set('min', +e.target.value || 0)} /></Field>
         <Field label="Maximum ₹ a month (optional)"><input type="number" min={0} value={c.max || ''} onChange={(e) => set('max', +e.target.value || 0)} /></Field></>}
       {c.kind === 'fixed' && c.side === 'earn' && <Field label="Role"><select value={c.role || ''} onChange={(e) => set('role', e.target.value)}>{ROLES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></Field>}

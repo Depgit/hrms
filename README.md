@@ -1,6 +1,6 @@
 # Saltstayz HRMS
 
-Go API + React frontend + PostgreSQL, built from `Saltstayz_HRMS_Build_Spec.pdf` (the spec) with prototype v81 as the
+Go API + React frontend + MongoDB (a one-node replica set; PostgreSQL only for `hrms import-pg`), built from `Saltstayz_HRMS_Build_Spec.pdf` (the spec) with prototype v81 as the
 executable reference for business logic.
 
 ## Run it
@@ -18,7 +18,7 @@ make web       # http://localhost:5173
 `make seed` gives two accounts a starting password, `pass1234`: **EMP-1002** (HR Admin) and **EMP-1020**
 (employee). It is set only when the account has no password yet and skips the strength rules, so change it before
 real use. Everyone else signs in the first time with **Activate with OTP**. In development (`OTP_DEV_ECHO=true` in
-`backend/.env`) the OTP is shown on screen instead of being sent by SMS. Seeded people to try:
+`backend/.env`) the OTP is shown on screen instead of being sent by SMS. Offer letters sent by email copy (Cc) the HR who raised the offer. With a real mailbox (`SMTP_HOST`) the same OTP also goes to the person's personal email on record; the screen says where it went (mobile, email or both), and if the SMS fails the email alone is enough. Seeded people to try:
 
 | Employee ID | Person | Role views |
 |---|---|---|
@@ -28,6 +28,14 @@ real use. Everyone else signs in the first time with **Activate with OTP**. In d
 | EMP-1009 | Anil Kapoor | Line Manager (derived from reports) |
 | EMP-1011 / 1012 | Sunita Rao / Deepak Arora | Payroll / Payroll Manager |
 | EMP-1014 | sample staff | Employee only |
+
+### Deploy (production)
+
+Production runs on Google Cloud Run at https://people.saltstayz.com with its own MongoDB Atlas cluster, deployed by
+publishing a GitHub Release (`.github/workflows/deploy.yml`). The full setup is in `docs/hrms-deployment.md` of the
+loyalty-program repo. On a new installation, after the first deploy: `hrms migrate`, `hrms seed` (never `-sample`),
+then `HRMS_ADMIN_PASSWORD=… hrms create-admin -name "…" -mobile 98xxxxxxxx` once. People then activate with an OTP sent
+by SMS (`MSG91_AUTH_KEY` and `MSG91_SMS_FLOW_ID`).
 
 ### Google Drive for uploaded documents (one-time setup)
 
@@ -113,21 +121,38 @@ sign-ins, what each role sees, every page, the end-to-end flows, security, and t
   escalation) is a periodic River job every 5 minutes, scheduled only by the elected leader when several API servers
   run. `Server.Enqueue` inserts a job inside a database transaction, so later work such as payroll runs and bulk
   imports is queued only if the data change commits.
-- **"Approval hierarchy required" tick per request type and flow (18 Nov 2026; meaning changed 19 Nov).** At the top
-  of each flow in Approvals › Approval flow (every request type, the interview too; only who can edit flows,
-  `appr.setup` 2). Ticked (the default) = today's behaviour, nobody can skip. Not ticked = requests still go to the
-  approvers as usual, but HR gets **Skip approval**: next to "Send for approval" when raising one (raise forms in
-  Approvals, Payroll items, Attendance regularization; `?skipApproval=<reason>` on any raising call, refused as a
-  whole if not allowed) and as a button on a request already waiting (`POST /api/approvals/{id}/skip` `{reason}`;
-  `canSkip` on `GET /api/approvals/{id}`; `GET /api/approvals/skip-check?wf=&subject=` tells a raise form). A reason is
-  required; the request is approved at once with "Approval skipped by <name>: <reason>" in its history, an audit
-  entry "Approval skipped" and the usual next steps (finalize); nothing waits on the approvers any more. Who can skip:
-  HR roles only (HR Admin, HRBP, HRBP Corporate, CHRO) and of those HR Admin, a role with `appr.setup` at Edit, or the
-  HR person who raised it; never on a request about yourself. All flows at a glance shows "HR can skip approval"; Test
-  a request shows the route plus that note. Stored as `approval_flow.hierarchy_off` (absent = ticked, no migration);
-  `PUT /api/approvals/flows/{wf}/{flow}/hierarchy` `{on}` → `{hierarchy, waiting}`, audited. The Onboarding raise
-  forms (shortlist, offer, joining verification) can use `components/SkipApproval.tsx` the same way; until then HR
-  skips those from the waiting request.
+- **Approver names picked in the cell (owner, 26 Nov 2026).** On Approvals › Approver names, who has Role mapping at
+  Edit (`acc.users` 2) gets a searchable picker of active employees ("Name · EMP-…", the Role mapping picker) in every
+  cell of Properties, Departments and Company-wide; others see names as before. A pick asks to confirm (who gets which
+  role's access where, who loses it), then `PUT /api/approvals/approvers/slot {role, level, place, employeeId|null}`
+  saves it with the bulk upload's code (`apprSlotSet`): added to the person's mapping or a new one. A name already set
+  moves: the place leaves the old holder's mapping (switched off when it was their only place), then the new person
+  gets it, one transaction, audited "(Approver names)"; "Not mapped" clears it the same way. Refused like the bulk
+  (inactive, overlap, switched-off/area mappings) and a holder by all locations, by cluster/city/state or by every
+  department: "Change it on Access › Role mapping". `api/approver_slot.go`, test `TestApproverSlotCell`.
+- **Bulk upload of approver names (owner, 26 Nov 2026).** The red "Approver names missing" box on Approvals ›
+  Approval flow has **Bulk upload names** next to Add names (Role mapping at Edit, `acc.users` 2; also Bulk update ›
+  Approvals › Approver names, `apprnames`). Download template = one row per missing name (the same list as the box,
+  one row for every request type): Role, Level (Property / Department / Corporate department / Company), Place, Place
+  Code, Where, Needed By (flows using the role, info), Employee (drop-down of every active employee as "Name
+  (EMP-…)", the people Map a role offers). Upload saves it as Access › Role mapping does: added to the person's
+  mapping of that role (selected locations or departments) or a new mapping (Selected locations for a property, All
+  locations for a department or company role), with the same checks (active, overlap) and audit; blank Employee
+  skipped; a slot held by someone by now, a switched-off or cluster/city/state mapping are refused (change those on
+  Role mapping). Generic `bulkTemplate.fill`: the plain template carries the rows. Test `TestBulkApproverNames`.
+- **"Approval required" tick per request type and flow (18 Nov 2026; meaning set 21 Nov).** On every flow in
+  Approvals › Check a flow › All flows at a glance, only there (every request type, the shortlist and interview too;
+  only who can edit flows, `appr.setup` 2). The Approval flow tab has no tick (rules and approvers only). Ticked (the default) = the rules decide who
+  approves. **Not ticked = no approval**: every new request of that type and flow goes to nobody and is approved at
+  once, with "Approved automatically: approval hierarchy is off" in its history and the usual next steps (finalize).
+  E.g. untick Shortlist and Interview: a shortlist is approved when sent and the candidate goes straight to Selected,
+  ready for the offer. The rules and approvers are kept for when it is ticked again. Requests raised before the tick was
+  cleared and still waiting keep their approvers; HR may **Skip approval** on them with a reason
+  (`POST /api/approvals/{id}/skip` `{reason}`, `canSkip` on `GET /api/approvals/{id}`; HR Admin, an HR role with
+  `appr.setup` at Edit, or the HR person who raised it; "Approval skipped by <name>: <reason>", audited). Raise forms no
+  longer show Skip approval (`GET /api/approvals/skip-check` always says no). Test a request shows "nobody is asked".
+  Stored as `approval_flow.hierarchy_off` (absent = ticked, no migration); `PUT /api/approvals/flows/{wf}/{flow}/hierarchy`
+  `{on}` → `{hierarchy, waiting}`, audited.
 - **Approval flows are rule lists (owner, 11 Nov 2026).** Each request type has, per flow (Operations and Corporate
   tabs; leave per leave group), an ordered list of rules. A rule has a name, conditions that must all hold (grade,
   leave days in 30 days, requests this month and type, amount, pay change, above budget, outside the pay band, notice
@@ -229,16 +254,66 @@ sign-ins, what each role sees, every page, the end-to-end flows, security, and t
   keeps two servers from sweeping together. The `att_alerts` job sweeps every 5 minutes; the card shows the last
   sweep, today's counts per type and why anything was held. **Send a test to me** puts a sample in the caller's bell.
   `GET|PUT /api/attendance/alerts`, `POST /api/attendance/alerts/test`. Test `TestAttendanceAlerts`.
-- **Set shift: attendance rules per shift, the work policy as the default** (Masters › Shifts). A shift keeps versions
-  by effective date (`shift_version`, migration 022); the engine uses the version in effect on each date and the
-  `shift` row mirrors today's (the maintenance sweep moves a future version on when its date arrives). A version
-  dated in a payroll-locked month is refused. Every rule is optional; an empty rule follows the employee's work
-  policy, so an existing shift behaves as before until someone sets a rule. A day whose planned shift ends the next
-  day, is counted on the previous or next day, or has early-in / late-out punch limits is built from the punches
-  inside the shift's window (4 hours either side by default) when punches arrive, and again when a shift version or
-  a past roster cell changes; the record is stored in `attendance_day` like any other day, so every screen,
+- **Set shift: timings by version; the work policy decides the attendance rules** (Masters › Shifts). A shift keeps
+  versions by effective date (`shift_version`, migration 022); the engine uses the version in effect on each date and
+  the `shift` row mirrors today's (the maintenance sweep moves a future version on when its date arrives). A version
+  dated in a payroll-locked month is refused. The shift's own Attendance rules card was removed on 24 Nov 2026 (see
+  below): a version keeps its timings and "ends next day" only. A day whose planned shift ends the next
+  day, or whose work policy sets a maximum early in / late out punch, is built from the punches inside the shift's
+  window (4 hours either side when no limit is set) when punches arrive, and again when a shift version, the policy's
+  limits or a past roster cell changes; the record is stored in `attendance_day` like any other day, so every screen,
   regularization and report reads the same in/out and month calculation stays as fast as before. Not built until
   the client explains them: Consider NA, Configurable Attendance Calculation, IS Consider First Entry In Last Entry Out.
+- **Shifts: punch rules moved to the work policy; split shifts (owner, 24 Nov 2026).** Masters › Shifts has no Punch
+  rules or Single punch rules card any more: the server refuses those rules (startFrom, endFrom, addMissingOut,
+  forcedOut, earlyInMax, lateOutMax, officeHours, shiftIn, singlePunch) on new versions and the engine ignores them on
+  old ones (no live version had one). The work policy decides: Attendance › Punching has **Maximum early in punch
+  allowed** and **Maximum late out punch allowed** (hours and minutes, 0 to 12 h; 0 = no limit, the old behaviour;
+  `att.earlyInMax` / `att.lateOutMax`, decimal hours); saving a change rebuilds the punch-machine days from its
+  "applies from" date (never in a payroll-locked month). "If out punch is missing" and "A day with a missing punch
+  counts as" (its Half day option now reads **Half day until regularized**, same behaviour) are the policy's alone.
+  A shift may have a **second part** (Second part start / end, `shift(_version).start2_time` / `end2_time`, no
+  migration): 06:00–10:00 + 15:00–19:00. Both parts are on one day (a split shift that ends the next day is refused),
+  the second starts after the first ends. Hours are in to out less the part of it inside the gap, so the gap never
+  counts (the engine has the first in and last out only: `attendance_day` keeps one pair, and MIS uploads and
+  regularizations give one pair too); the day's status follows the hour rules (one 4 h part is a half day on an 8 h
+  policy); the late mark is measured from the first part's start; a missing out auto-closes at the second part's end;
+  early exit and the rest gap use the second part's end. Shift list, Set shift, roster cells and legend, the shift
+  pickers and the Master update workbook (Second part start / end; "None" removes it) show both parts. Payroll is
+  unaffected. The **Night shift** card (night hours, night shift allowance, women at night) is gone from Working time
+  and the allowance from payroll and the full register (it was ₹0 in every live policy); "Night shift counts on"
+  stays. Tests `TestSplitShift*` (attend, api), `TestShiftPunchWindows`.
+- **Shifts: Attendance rules card removed; a shift applies to Department + Location rows, with bulk upload (owner, 24
+  Nov 2026).** Set shift has no Attendance rules card: Max hours, Attendance based on, the Absent / Half day / Full day
+  rules, the weekly and monthly adjustments and the shortfall inclusions are gone, so **those features no longer exist
+  in the product** (the adjustments, "attendance based on" and the max-hours cap existed only on shifts). The server
+  refuses them (400, unknown field) and the engine ignores them on old versions (no live version had one set); every
+  day follows the work policy's full-day and half-day hours. A shift keeps its timings, second part, next day and break.
+  **Manager's team, two levels**: in the Line Manager view a manager sees and works on their direct reports and
+  their reports' reports (data scope `team`, `access.Scope.Managers`); the top-bar filter "Direct employees" (header
+  `X-Team: direct`, or `?team=direct`) limits every page to the first level. Rights are the role's, unchanged.
+  **Roster bulk upload** (Shift and roster › Bulk upload): download for one city, a property or all, and one, several
+  or all departments (check boxes, none ticked = All; `department` repeated or `*`), From … To dates (up to 62 days,
+  `to`, or the old `days`). Past dates: work policy › Roster discipline › "Past dates in the roster bulk upload"
+  (`rs.bulkPast`): Blocked (default) refuses any changed cell before today in both upload layouts, whatever "Dates
+  that have already passed" says; "Same as the roster screen" follows that rule.
+  **Where it applies** replaces "Locations: All / Selected locations only": a list of Department + Location rows
+  (`shift_map`, migration 029), either side All ("Front Office at Gurgaon office", "All departments at Noida", "All
+  departments at all locations"). A shift is offered to, and valid for, an employee only when a switched-on row matches
+  their department and location: roster codes and the cell picker, the roster upload, the Onboarding and joining
+  verification shift pickers, an employee's job and Bulk update, Import employees, transfers (a shift that no longer
+  applies moves to the first that does), Called to work and Master update. On Set shift each row is added, switched on
+  or off, or removed at once (no effective date), audited and shown under "Applies to: history" (`config_history`,
+  entity shift); the same pair twice is refused (409) and the last switched-on row cannot go (make the shift inactive
+  instead). Add shift needs at least one row; a shift added through the masters API (`POST /api/masters/shift`) or the Master update
+  workbook gets "All departments at all locations". Migration 029 changed no one's shifts: All locations became All departments at all
+  locations, each selected location All departments at that location. People already on a shift their rows no longer
+  cover keep it (their default shift and planned roster cells do not change, the roster warns); a new assignment is
+  refused with "Shift N does not apply to <department> at <location>". **Masters › Shifts › Bulk upload** (and Bulk
+  update › Shift mapping, `shiftmap`): Shift Code, Department, Location (blank or All = all), Active (Yes / No, blank
+  Yes), with current-data download. The Master update Shifts sheet shows the rows read-only in place of Locations.
+  `POST /api/shifts/{id}/maps`, `PUT|DELETE /api/shifts/{id}/maps/{mapId}`. Tests `TestShiftMapping`,
+  `TestBulkShiftMapping`, `TestShiftMapsFromLocations`, `TestShiftRunsFor`, `TestEmptyRulesAreToday`.
 - **Work policies clean-up (owner, 8 Nov 2026).** No overtime, comp-off credit or pay for holiday or week-off work
   (comp-off already credited stays usable until used or expired; published and locked months are unchanged); no
   break is taken off and there is no late half day; extra hours, short rest and work on an off day are not
@@ -311,6 +386,9 @@ sign-ins, what each role sees, every page, the end-to-end flows, security, and t
   joiner's. System fields, pay and fields that pick from the company's lists (grade, managers, shift, attendance mode,
   salary structure, job and place) are always HR's. Store migration `006_joiner_link` sets the defaults on existing rows
   (and every start fills any row an import left empty); new custom fields default by section.
+  **Send the offer letter again** (Offer letter dialog, once released; `onb.raise`/`onb.pipeline` Edit): email it to
+  the offer's or another address (optionally kept on the offer, audited) or share its text on WhatsApp (`wa.me`, opened
+  in HR's browser, the server sends nothing); each send is audited and on the timeline (`api/offer_share.go`).
   From the joining dialog (or, before the first day, **Joiner's link and joining details** on an accepted candidate) HR
   emails the link, copies it or shares it on WhatsApp (`wa.me/91<mobile>`). The joiner opens `/join/<token>` (no
   sign-in, phone-first), confirms a 6-digit code emailed to them, fills their fields, uploads their documents (photos
@@ -650,8 +728,8 @@ The 105 FAILs outside payroll were fixed, found already fixed, or left for a dec
 - **Sign-in:**
   - Setting the password needs the one-time `verifyToken` that `/api/auth/otp/verify` now returns, so knowing someone's
     Employee ID after they verified is not enough. Scripts that sign in must pass it (Go tests, e2e and parity do).
-  - From one address, 10 failed sign-ins (wrong password, unknown ID or wrong OTP) in 15 minutes give 429 until the
-    window passes. OTPs: 10 per address per 15 minutes and 10 per Employee ID a day. With `OTP_DEV_ECHO` (development
+  - Failures are counted per Employee ID and address (an office shares one Wi-Fi address): 10 failed sign-ins (wrong password, unknown ID or wrong OTP) for one ID from one address in 5 minutes give 429 for that ID there until the
+    window passes. OTPs: 10 per ID and address per 5 minutes; the address as a whole stops at 100 failures or 100 OTPs in 5 minutes; and 10 per Employee ID a day. With `OTP_DEV_ECHO` (development
     and test scripts only) the two per-address limits are 300.
   - Sign-in, wrong password, account lock and sign-out are in the audit log (with the address, no secrets).
   - EMP1002, emp1002 and EMP 1002 sign in as EMP-1002. A session of someone moved back to Pre-boarding ends.
@@ -776,7 +854,7 @@ Two payroll downloads next to the bank advice and the register, which are unchan
   reads "DRAFT: October 2026 not yet approved; figures may change". Columns: the employee (ID, name, designation,
   department, grade, type, city, location, joining and last working day, PAN, UAN, ESIC, bank, account, IFSC), days
   (in month, paid, LOP, outside employment), monthly gross and CTC a month (the engine on the full gross, as on the
-  employee record), each earning (Basic, HRA, Special allowance, Bonus, Variable pay, Night shift allowance, Arrears,
+  employee record), each earning (Basic, HRA, Special allowance, Bonus, Variable pay, Arrears,
   Reimbursements, Salary advance, Uniform refund, Held salary released, Other earnings: other pay lines plus
   Payroll's adjustment), each deduction (PF, ESI, LWF, TDS, Meal, Accommodation, Advance, Uniform and Asset
   recovery, Other recoveries: other lines plus Payroll's adjustment), totals, rounding off and net (the register's
@@ -809,6 +887,18 @@ Two payroll downloads next to the bank advice and the register, which are unchan
   or HR Admin, reason ≥ 5 characters, audited "PF choice changed", stale run) applies from the open payroll month;
   refused when there is a UAN, Existing UAN? is not No, the gross is not above the threshold, or (to No) the person was
   already paid PF. `PUT /api/employees/{id}/pf-choice {choice: member | optout, reason}`; `GET …/pf-exempt` has `choice`.
+- **PF on the offer (owner, 26 Nov 2026; `api/pf_offer.go`).** The offer form (normal and offer at joining) asks
+  **"Does the employee want PF?"** (`offer.data.pfWant` Yes/No, required, no default; hidden and ignored for a Retainer
+  or any type without PF). **No** with gross above `pf_exempt_gross`: the breakup and letter are the whole gross as
+  Basic with no PF (employee or employer); at Mark joined the employee gets `pf_choice` optout, `all_basic`, PF exempt
+  (`pf_choice_by` "Offer"). **No** with gross up to the threshold: check, raise and release refused with "Gross is up to
+  ₹<limit>: an employee who does not want PF must be a Retainer. Change the employment type to Retainer." **Yes**: the
+  normal structure (both PF shares from the salary under the all-inclusive gross). The answer is copied to
+  `data.pfChoice`, so the joining form asks again whenever the offer said No (and no existing UAN), prefilled; the
+  joining form's answer wins (`pf_choice_by` "Joining form"). A joiner's No on a gross up to the threshold is recorded,
+  not blocked: bell to HR Admin and Payroll at Edit, red line on the PF card (PF still applies); HR can set them back
+  to PF there. Timeline/audit: "PF choice on the offer" / "… changed on the offer", "PF choice (changed) on the
+  joining form / joining details", employee "PF choice recorded" / "PF choice changed". No migration.
 - **UAN number**: the joining form's UAN field is named "UAN number"; shown and required (12 digits) only when
   Existing UAN available? = Yes; saved as `employee_gov_id.uan` (what the UAN hold checks). Bulk update › Personal
   details has **UAN** (12 digits, government ID right at Edit, change history masked) before Existing UAN?, and a UAN
@@ -1033,33 +1123,90 @@ Two payroll downloads next to the bank advice and the register, which are unchan
   has no machine column). Tests `TestMachinePlan`, `TestMachinePool`, `internal/realtime` `TestParseMachines`,
   `TestClientMachineList`.
 
-### Sending employees to the Realtime portal (17 Nov 2026)
+### Sending employees to the Realtime portal (automatic since 19 Nov 2026)
 
-- **What.** The HRMS creates new employees on the Realtime India portal, sends their changed details and marks them
-  left, but only when HR presses **Send to portal** (employee file › Overview › Realtime portal card, the joiner's
-  card in Onboarding after Mark joined, JI- records included, or Attendance › Punch machine setup › **Realtime portal:
-  waiting to send**), sees the preview and confirms. No job or hook sends anything. Code: `internal/realtime/empwrite.go`
-  (form fill, `Preview`, `CreateEmployee`, `UpdateEmployee`, `MarkLeft`), `empform.go` (form parser), `discover.go`,
-  `api/portal_write.go`, `store/schema_portalwrite.go` (migration `016_portal_write`), `PortalCard.tsx`,
-  `PortalSend.tsx`. Right `att.portal` (View: statuses and list; Edit: map and send). HR Admin has it.
-- **How a send works.** The client opens the portal's employee form (GET), keeps its view state, sets the HRMS's
-  details on the controls that take them (found by label and name), leaves everything else as the form has it and
-  presses only the save button. The preview shows every control and value; the send re-opens the form and posts only
-  if it is identical (hash), once, never retried. The portal's own message is shown, audited with the exact fields,
-  and kept in `portal_send`. Unclear reply: status "Check on the portal" until HR says whether it is there.
-- **Details.** Code and card number (Attendance code; for a new person the next free number, editable; card padded to
-  8 digits), name, father's name, birth and joining dates, gender, phone, email, and the portal's department,
-  designation, branch and shift as mapped once under "Mapping and code rule" ("Read the lists from the portal" fills
-  the choices; a property defaults to the portal branch of its mapped machine). An unmapped value blocks the send.
-  A person "Match portal codes" proposes a portal record for is blocked from being created twice unless HR ticks
-  "someone else". After a create the code becomes the Attendance code and the machine enrol to-do is ticked when the
-  branch is in the target cluster; a mark-left ticks the remove to-do. The portal's device step ("Upload Name in
-  Device") is never pressed.
-- **Switching it on.** `realtime.Spec` (the form's page, the edit page with `{code}`, save caption) must be confirmed
-  on the live portal first: run `hrms realtime-forms` (sign-in plus GETs only; prints the employee list's buttons, the
-  linked employee pages and each form's controls), set `Spec`, rebuild. Until then every preview and send answers
-  "Sending is not switched on yet". Test `TestPortalWrite`, `internal/realtime` `TestEmployeeWrites` (fake portal
-  `internal/realtime/rtfake`).
+- **What.** The HRMS writes to the Realtime India portal by itself: **Mark joined** creates the employee (code = the
+  ID's digits, 6 wide, which becomes the Attendance code); a change of the details the portal gets (name, department,
+  designation, property/branch, shift, phone, email…) of someone the HRMS put on the portal updates them; an exit
+  (inactive, or the last working day reached) marks them left. There is no "Send to portal" button and no preview
+  any more. Code: `api/portal_auto.go` (jobs, sweep, Retry, backlog), `api/portal_write.go` (details, mapping,
+  status, waiting list), `internal/realtime/empwrite.go` (`Post`; form fill), `store/schema_joinauto.go` (migration
+  `022_join_auto`), `PortalCard.tsx`, `PortalSend.tsx`. Right `att.portal` (View: statuses and list; Edit: map,
+  Retry, Send waiting).
+- **How.** Each write is a Mongo job (`portal_write`), inserted in Mark joined's transaction or by the every-minute
+  `portal_sweep` that notices changes and exits; never inside a request. The job opens the portal's form afresh,
+  stops on any problem before the post, and posts **once**: a job is never retried (one attempt), and a failed write
+  stays failed until HR presses **Retry** (employee card or the waiting list). A refusal or error, a missing mapping
+  (held, "Map the department … first") and an unclear reply ("Check on the portal", settled by HR) go to Attendance ›
+  Punch machine setup › **Realtime portal: automatic sending** with the portal's message, and HR (HR Admin and
+  `att.portal` Edit) gets a bell. Every write is audited with the fields sent and the reply, and logged in
+  `portal_send` (by "HRMS (automatic)", or the HR name on Retry). State in `employee.portal_sync` (`want`, `phase`
+  waiting/sending/failed/blocked, `phase_msg`).
+- **Which people.** Created: joiners marked joined, and active people without an Attendance code who joined on or
+  after `company_setting.portal_write.auto_since` (the day of migration 022). Marked left: people the HRMS sent, and
+  people with a code whose last working day is on or after `auto_since`. Updated: only people the HRMS sent (their
+  last details are known). A person "Match portal codes" proposes a portal record for is held, not created twice;
+  "Retry: they are someone else" creates them.
+- **Details sent.** Code (the digits of the ID, 6 wide: JI-000006 → 000006, 25 Nov) and card number (the code padded
+  to 8 digits), name, father's name, birth and joining dates (the shift start date = the joining date on a create),
+  gender, phone, email (left out, and said so, when the portal's own check would refuse the address), and the
+  portal's department, designation, branch and shift as mapped once under "Mapping and code rule" (a property
+  defaults to the portal branch of its mapped machine), plus the portal's **Office Time Policy** and **First Weekly
+  Off** as mapped for the employee's work policy (kinds `policy` and `wo`, 25 Nov). The portal's company is left as
+  its form has it (one choice, Saltstayz). After a create the machine enrol to-do is ticked when the branch is in the
+  target cluster; a mark-left ticks the remove to-do. The portal's device step ("Upload Name in Device") is never
+  pressed.
+- **Punch machine on a create (owner, 25 Nov 2026).** A create also picks the machine in the form's **Select Devices**
+  list (`Device_List`, detail `realtime.FieldDevice`): the machine the machine pool plans for the person (Attendance ›
+  Punch machine setup › machine pool: their own property's machine first, then the next machine of the cluster with
+  space, each machine holding the capacity the admin set), matched by its serial number (the option's value, or the
+  start of its text "RSS20230761581 / Gulmohar Marg"). No machine (property without a cluster, no machine mapped to
+  the cluster, the cluster full, a machine without a serial, or a serial the portal's list does not have) does **not**
+  hold the create: it goes with the form's own choice and a note "No punch machine chosen: …; HR adds them to a
+  machine on the portal". The machine chosen and the notes are kept in `portal_send` (`device`, `notes`, no
+  migration), in the audit, and shown under "Writes" on the employee's Realtime portal card. An update or a mark left
+  never sets the device. The form's device buttons (Connect, Upload Name, Enable/Disable/Delete User) are never
+  pressed (`neverPress`). Code: `ptDevice` (`api/portal_auto.go`), `pickDevice` (`realtime/empwrite.go`).
+- **The portal's form (read 25 Nov 2026, GETs only).** The portal has no API for employees: `Third_PartyApi.aspx`
+  only pushes punches out to another system (greytHR, ZingHr or a URL). The employee form is `Employee.aspx`:
+  the list's **Add** gives `Employee.aspx?RowId=0` (confirmed by the owner, 25 Nov; the blank form; without a RowId the page fails), each row of
+  `EmployeeList.aspx` links to `Employee.aspx?RowId=<row>`. A write reads the list (GET) first: a create stops when
+  the code or card is already there ("The portal already has employee code …"), an update or mark-left finds the
+  employee's RowId by code. Controls (`ctl00$MainContent$…`): `Txtpaycode` code, `Txtcardno` card (8 digits, 9 at
+  most), `Txtempname`, `txtfartherhusname`, `txtDateofBirth`, `TxtPhoneNo`, `TxtEmailAddress`, `CboGender`,
+  `cbocompnayname`, `cbobranchname`, `cbodeptname`, `cbodesignation`, `cboofficetimepolicy`, `TxtDOJ`,
+  `txtshiftstartdate`, `cboshiftname` (GEN, NST, SFT), `cboFWOff` (Sunday … Saturday, None) and
+  `txtreginnationdate` (**mark left = the Resignation Date**; the form has no status, and "Auto Approved Gps Punch"
+  is not one). Required by the page: name, code, card, company, department (its blank first choice is not one),
+  designation, office time policy, shift. Everything else (shift type, second weekly off, branch-access ticks,
+  mobile attendance mode; on an update or mark left also the device list) is posted as the form has it. The only button pressed is **Save**
+  (`cmdsave`); Connect, upload Name, Enable/Disable/Delete User, Cancel and the OTP buttons never are. After the
+  post the HRMS looks again (GET): a create must be on the list, an update or mark-left must show the values sent
+  on the employee's form; otherwise the write is "Check on the portal". The page's own script alerts and labels are
+  not taken for the reply. Fake of this form: `internal/realtime/rtfake`.
+- **Switched on (owner, 25 Nov 2026).** `realtime.Spec` holds the live form and sending is **on** (`Spec.Send =
+  true`); the owner confirmed the employee list's **Add** button is how employees are added and that it opens
+  `Employee.aspx?RowId=0` (confirmed by the owner, 25 Nov). Writes due
+  from now go out by themselves; whatever waited while sending was off stays Waiting until HR presses **Send waiting**
+  once. Still to watch on the first live writes: what the portal says after Save (the HRMS's look on the list/form
+  covers it), that the Resignation Date alone marks someone left, and the shift list's own post-back when the shift
+  changes. To switch it off again: `Send: false`, rebuild (every write due then waits, "Sending is switched off";
+  reading the lists and mapping still work). Tests `TestPortalAutoCreate` (create with and without a machine, cluster
+  full, update, mark left), `internal/realtime` `TestEmployeeWrites`, `TestSendOff` (the off path), `TestDeviceOnCreate`,
+  `TestListRows`.
+
+### Company accommodation from the offer (19 Nov 2026)
+
+- The offer form and the release ask **Company accommodation: Yes / No**; Yes needs a cluster that has accommodation
+  units (`offer.data.accom`, `accomCluster`; `GET /api/hst/clusters` lists them with free beds). The tag shows on the
+  candidate and the offer (`{{accommodation}}` in the letter template); it has no pay effect.
+- At **Mark joined** the HRMS allocates a bed by itself in the same transaction: the cluster's active units matching
+  the joiner's gender, in the suggestion order (the unit serving their property first, then the most free beds),
+  check-in on the actual joining date, note and timeline "Allocated automatically from the offer", audited.
+- No free bed: the joiner goes on Accommodation › **Waiting for a bed** (`employee.hst_wait`, `GET /api/hst/waiting`)
+  and HR (`hst.allot`) gets a bell; the maintenance sweep (every 5 minutes) gives them the next bed freed in that
+  cluster (check-in that day). A check-in by hand takes them off the list; "No longer needed" drops them (reason,
+  audited). Code `api/hst_auto.go`; test `TestJoinAccommodation`.
 
 ### Staff accommodation: flats, leases, beds and the true cost (workforce plan module 4, 17 Nov 2026)
 
@@ -1308,6 +1455,366 @@ Two payroll downloads next to the bank advice and the register, which are unchan
   (`offer.letter_at`, `letter_released_at`); the offer screen shows the rule. Settings: `hiring.letterJoinDepts`,
   `hiring.letterJoinTypes` on `PUT /api/onboarding/settings`.
 - The old "Mark not joined" (`POST /api/candidates/{id}/not-joined`) stays on the server but no button reaches it.
+
+### All-inclusive gross from a month (owner, 26 Nov 2026; reworked the same evening)
+
+From the month set in **Compensation › Salary structure › All-inclusive gross from month** (`company_setting.allin_from`,
+"YYYY-MM", empty = off, no default; `PUT /api/comp/all-in`, right `pay.setup` Edit, audited; `GET /api/comp/all-in`
+for any signed-in user), the monthly gross HR offers or sets (G) is the gross salary and also carries the employer's
+statutory shares. `calc/allin.go`, `api/allin.go`.
+
+- **Earnings = G.** G is split by the structure into Basic, HRA, Special allowance and, when G ≤ the bonus ceiling
+  (and the type gets bonus), a **Statutory bonus** line (BonusPct of min(Basic, BonusCalc)); F + bonus = G
+  (`calc.AllInFixed` finds F to the paisa). Order everywhere: Basic, HRA, Special allowance, Statutory bonus,
+  Gross salary (= G). The bonus is inside G, never on top; not in the PF or ESI wage.
+- **Deductions** (from the employee): employee PF, **employer PF (incl. EPS)**, employee ESI, **employer ESI**,
+  **EDLI**, employee LWF, **employer LWF**, TDS and the rest, each worked out normally on G's split (PF wage and
+  ceiling, ESI wage = G less the bonus, ESI when G ≤ the ESI ceiling, EDLI on Basic up to ₹15,000, LWF on G with its
+  rates and caps). Net = G − deductions (+ variable pay and reimbursement). `Result.ErDed` holds the employer's shares;
+  ErPF/Eps/ErEpf/ErESI/Edli/LwfEr keep their amounts, so ECR, ESI and LWF challans and the statutory reports are
+  unchanged.
+- **Company cost**: EPFO admin charges, gratuity, PL encashment and (as before) medical insurance.
+  **CTC = G + admin + gratuity + PL encashment + medical + variable target + reimbursement.**
+- **Outside G, on top**: variable pay = target × paid days ÷ days, automatically every month (a % target is % of
+  G); HR payouts are refused for those months (Payroll › Variable pay, the Salary breakup bulk) and ignored if
+  entered earlier; the full and final adds nothing. The Reimbursement is unchanged.
+- **Part month**: G earned = G × paid days ÷ days, split the same way; deductions on the earned wages; no re-solving.
+- **Retainer**: no PF, ESI, bonus or LWF, so nothing of that is deducted (fee = G, TDS as set). **PF opt-out/exempt**:
+  no PF or EDLI deducted, no admin.
+- **Months**: payroll months ≥ the setting, for everyone; earlier months and approved or published payrolls never
+  change (a change that would alter one is refused).
+- **Screens**: breakups (Compensation try-an-offer, Salary calculator, pay preview, offer, employee) show the salary
+  lines, "Variable pay / Reimbursement (pro-rata, additional)", the deductions with the employer's shares, net, then
+  the CTC build-up. Payslip: "Statutory bonus" after Special allowance, the four employer lines under deductions,
+  only "EPFO admin charges" under employer contributions, a note with G. Payroll sheet and full register: "Statutory
+  bonus" and "Gross salary (G)" after Special allowance, the employer PF/ESI/EDLI/LWF deducted before Total deductions
+  (register keeps the remitted employer columns). Cost console: company contributions = admin, gratuity, PL
+  encashment (new column), bonus, medical; employer PF/ESI/LWF are 0 there (paid by the employee).
+- **TDS projection**: salary = G (with the bonus) + variable + taxable reimbursement; the employer's PF deducted from
+  the employee counts as the employee's PF does (80C in the old regime); employer ESI, EDLI and LWF are ignored like
+  the employee's ESI and LWF.
+- Without the setting nothing changes (`hrms pay-compare -against` 0 differences on a live copy, Oct and Nov 2026).
+  Tests: `calc.TestAllIn*`, `api.TestAllInGrossFromMonth`.
+
+### Offer at joining (owner, 26 Nov 2026)
+
+Lower-level hires (UT, for example) get no offer after the interview; the offer is given when they join. Any selected
+candidate can take this path (HR picks; no grade or designation rule). `api/offer_at_joining.go`.
+
+- **Choose.** Candidate › Offer › **Offer at joining** (right `onb.raise` Edit): expected joining date (today or later)
+  and an optional note (`POST /api/candidates/{id}/offer-at-joining`; `candidate.oaj_at/oaj_by/oaj_doj/oaj_note`).
+  Timeline "Offer at joining chosen", audited. The candidate sits in its own pipeline column **Offer at joining**
+  ("waiting for the joining day"). Until an offer is raised HR can still press **Raise offer v1 instead** (clears the
+  choice, timeline "Switched back to the usual offer") or **Close candidate**.
+- **Raise offer at joining** (from the expected date; earlier is refused: use Reschedule joining): the same offer form,
+  joining date prefilled; saved as offer v1 with `offer.at_joining` and sent through Offer approval exactly as usual.
+  It is never released (Release is refused), never answered and never lapses (the hiring sweep skips it).
+- **Mark joined** waits for that approval ("Waiting for offer approval"). After approval Mark joined records the
+  acceptance in the same transaction: Offer ID issued, version frozen ("Accepted at joining"), the letter released at
+  joining (`letter_at` "joining"), then the usual joining (JI- record, portal create, accommodation, machine gate).
+- **Joining outcomes** before joining: Reschedule joining moves the expected date (and the offer's), No show starts the
+  waiting window ("Came: mark joined" also needs the approved offer), Offer declined closes as today (an offer still
+  waiting for approval is cancelled). Everything after joining is unchanged; the usual offer path is untouched.
+
+### Shortlisting stage in Form setup (owner, 26 Nov 2026)
+
+Onboarding › Form setup asks every field and document at three stages: **Shortlisting**, Offer release and Joining,
+each Mandatory, Optional or Not needed (`onb_field.shortlist_state`, `onb_document.shortlist_state`;
+`store/schema_shortlist.go`, `api/onboarding_stages.go`).
+
+- **Defaults (migration `031_shortlist_stage`, one audit row):** what the shortlist asked before. Mandatory: first and
+  last name, mobile, personal email, date of birth, gender, department, designation, work city, reporting location;
+  Optional: current address; everything else and every document Not needed. Locked: the names, job and place are
+  always Mandatory; the approval flow and work policy are never asked there. A row without a value reads its default.
+- **The shortlist form** shows what is asked at shortlisting for the candidate's type (Permanent unless Employment type
+  is asked there) and, for documents, department: its own cards for names, contact, place and job, then a card per
+  section for the other fields, then **Documents**. It still always asks the existing CTC, work experience and hiring
+  manager. Mandatory is checked on the server too (`POST /api/candidates` and `/check`: 400 "… is required", "… must be
+  uploaded with the shortlist"). There is no shortlist edit.
+- **Documents** go up under a draft key (`DRAFT-SL-…`, owner kind `offer`, only the uploader sees them) and move to the
+  candidate (`owner_kind=candidate`, `SI-0001`) in the same transaction as the shortlist; someone else's draft is
+  refused (403). They then count at offer release and joining (also on the joiner's link), so they are not asked again
+  unless HR replaces them.
+- **Carry forward:** every value given at shortlisting is kept in `candidate.data`, prefills the offer form
+  (`prefill`), and is copied into the offer's data when the offer form does not send it, so the joining details and
+  the joiner's link start from it. Approvers without the government ID or bank right do not read those numbers on the
+  candidate. Tests: `api.TestShortlistStage`.
+
+### Half-day leave, short leave and the Reimbursement in fixed pay (owner, 20 Nov 2026)
+
+- **Half-day leave end to end.** When the leave plan has "Half-day leave allowed", the employee (My leave) and HR on
+  their behalf (Approvals › New leave request, "Half day": first or second half on leave) apply for half a day on any
+  type the plan offers them; `payload.half` + `payload.halfOf`, one date, `facts.days` 0.5, so the balance falls by 0.5.
+  Attendance shows "Casual leave (half day, first half) + Present": the other half is present when its hours reach the
+  half-day hours of the day's shift (the work policy's "Half-day hours" without shift rules), else "+ Absent" with 0.5
+  loss of pay; no punch follows the no-punch rule at half weight, one punch counts as present (as before). Only an
+  unpaid type adds 0.5 LOP for the leave half. Opening balances (Bulk update and Import employees) already take .5.
+- **Short leave (part of a day).** New option "Short leave" in the same dialogs: a date, from-time and to-time, reason.
+  It is a leave request (`wf` leave, `payload.short`, `ltype` "Short leave", `fromTime`/`toTime`, `facts.days` 0, group
+  C), so the leave approval flow, the approval hierarchy tick and HR's "Skip approval" apply; no balance moves. Leave
+  plan settings (Policies › leave plan › Short leave): allowed (default on), how many a month (`lv.shortN`, default 2)
+  and the most hours each (`lv.shortH`, default 2); beyond either, or on a weekly off / holiday, after the regularization
+  window, the leave closure or a paid month, it is refused. Once approved the window is excused on the day
+  (`attend.Plan.Short`): arriving after a window at the start is not late, leaving for one at the end is no early exit,
+  its hours count as worked (no short-hours or half-day penalty), and the late / not-in alerts wait for its end. The day
+  stays Present and shows "Short leave 2h". It is never a day of leave: month leave counts, the staffing limit and
+  full-day overlap checks leave it out (a full-day leave over a short one is refused until it is cancelled). Report:
+  Attendance and roster › Short leave.
+- **Reimbursement in the fixed pay.** Every salary structure has a fixed earning **Reimbursement** (`calc.ReimbComponent`,
+  method "Amount set on each employee", `per_emp`): ₹ a month entered on the employee (Employees › Edit pay options,
+  Bulk update › Salary breakup column **Reimbursement (₹)**, Payroll › Salary calculator and the pay preview), stored
+  in `employee_pay.comp_amts.reimb`. It is part of the fixed gross: Basic and HRA as the structure says, then the
+  Reimbursement, and Special allowance takes the rest, so gross and CTC stay as entered (prorated by paid days like the
+  rest). Flags: taxable, not PF, ESI or bonus wage (changeable in the component designer). An amount above what Basic
+  and HRA leave is refused ("Reimbursement ₹… is more than what is left after Basic and HRA…"); a retainer has none.
+  Shown on the breakups, payslip, payroll sheet (column only in a month with one), salary register ("Reimbursement
+  (fixed pay)"; the old "Reimbursements" column is still the claims) and the employee file. Migration
+  `024_reimbursement` adds it to the component library and to every structure before its balancing component, with
+  nobody holding an amount: `hrms pay-compare -month 2026-10,2026-11 -dump` before and `-against` after on a copy of
+  the live data gave **0 differences** (13 and 15 rows). The offer's Compensation card has "Reimbursement, ₹ a month"
+  (`offer.data.reimb`, same refusal on check and raise, shown in the offer breakup and letter `{{breakup}}`), carried to
+  `employee_pay.comp_amts.reimb` at Mark joined.
+- Tests: `calc.TestReimbursementInFixedPay`, `api.TestReimbRoom`, `api.TestOfferReimbursementToEmployee`, `leave.TestShortLeaveRules`,
+  `attend.TestShortLeaveExcusesLate`, `api.TestShortLeave`, `api.TestLeaveHalfDayBalanceAndLop`. Manual steps: Part AB
+  of [docs/manual_test.md](docs/manual_test.md).
+- **25 Nov 2026 changes (owner).**
+  - **Retainer TDS 1%, editable.** `calc.DefaultStructure.TdsRate` is 1 (was 10); migration `030_retainer_tds_1pct`
+    sets every structure still on 10 to 1 (audited). Editable per structure (Compensation › structure "Retainer TDS",
+    "TDS, % of gross (editable)") and per employee (Employees › Edit pay options for a retainer, `employee_pay.tds_pct`,
+    `PUT /api/employees/{id}/pay` with `tdsSet` + `tdsPct`, null = the structure's rate, 0–50, change history "TDS %").
+    `calc.Result.tdsRate` carries the rate used; payslip/preview notes say "N% of gross" (no "section 194J" on pay
+    screens; the Tax returns page keeps the 194J/26Q filing wording). The bulk salary template has no TDS column.
+  - **Reimbursement outside the gross**, like variable pay (replaces the 20 Nov "inside the gross" rule): the Basic/HRA/
+    Special allowance split is as if there were none; the amount is earned by the days paid (amount × earned gross ÷
+    full gross), in no PF, ESI or bonus wage, and added to total earnings, net pay and CTC/cost (`Result.Reimb`,
+    `CompLine.extra`). Any amount ≥ 0 is taken (the "what Basic and HRA leave" refusal is gone); none for a retainer.
+    Shown separately on the offer and letter, Pay options, Salary breakup and calculator, payslip ("Outside the
+    gross"), payroll sheet and register ("Reimbursement (outside the gross)" after Special allowance), Cost and budget
+    (`costLine.reimb`, Excel column; offer cost includes it) and the TDS projection (`taxFig.reimb`; taxable unless the
+    component says not).
+  - **Realtime portal code = the ID's number, 6 digits** (JI-000006 → 000006, EMP-1054 → 001054; `ptIDCode`): the
+    automatic create sends it as Employee code (card = it padded to the card width) and it becomes the Attendance code,
+    so pulled punches match (leading zeros ignored). An ID without digits takes the next free number as before; a code
+    another employee already has holds the create with a message.
+  - **Employee codes by type from one series**: with one series for everyone (`by_type` off), a Retainer gets
+    RET-<next> (the Retainer series' prefix) and everyone else EMP-<next> from the SAME counter and width, a number
+    either prefix holds being skipped for both (`employeesPrefixes`; Employee ID step, Mark joined, import, next-code).
+    A series per type behaves as before.
+  - Tests: `calc.TestReimbursementOutsideGross`, `calc.TestRetainerTds`, `store.TestTdsOldDefaultToOne`,
+    `api.TestRetainerTdsOverride`, `api.TestReimbCheck`, `api.TestPortalIDCode`, `api.TestPortalAutoCreate`,
+    `api.TestEmployeeCodesRetEmpOneSeries`. Manual steps: Part AK of [docs/manual_test.md](docs/manual_test.md).
+
+### Hiring IDs from the Employee code; blank nomination forms (owner, 24 Nov 2026)
+
+- **Hiring IDs of imported staff come from the Employee code** (replaces the 18 Nov "next number of the series" for
+  them): only the prefix changes, the digits stay exactly: EMP-000004 → SI-000004 · OI-000004 · JI-000004, EMP-1050 →
+  SI-1050, a code of digits only (1050) → SI-1050 (the code's trailing digits; `employee.hire_no` the number,
+  `employee.hire_digits` the digits). If a candidate (`candidate.no`) or another employee already has that number (two
+  series, EMP-0005 and CON-0005), or the code has no digits, the person takes the next number of the candidate series
+  as before and the timeline entry says why ("SI-0005 is already used by employee EMP-0005, so the next number…").
+  Import employees raises `candidate_seq` past the numbers used, so a later shortlist never repeats one (after
+  importing EMP-1050 the next shortlist is SI-1051 or later). Hires through Onboarding are unchanged (SI/OI/JI the
+  candidate's number, the Employee code from its own series). `hireIds.via` is `candidate`, `code` or `import`.
+  Migration `025_hire_ids_from_code` re-derives the IDs of every existing employee without a candidate record and
+  rewrites their "Hiring IDs: …" timeline entry (the old IDs kept in its reason); hires via candidates are untouched;
+  it runs again safely.
+- **Blank form soft copy for a nomination document** (Policies › Nominations › Nomination policy › Edit, "Documents
+  needed to enrol", column Blank form): HR Admin attaches a PDF, Word (.doc/.docx), JPG or PNG of up to 5 MB to a saved
+  document row (e.g. Signed nomination form → Form 2.pdf), replaces or removes it at once (audited "Blank form
+  attached / replaced / removed …"; removing marks the file replaced, nothing is deleted; a switched-off row keeps its
+  form). The employee sees "Download blank form" next to that document in My pay › Nominations, fills it and uploads
+  it as before. Stored as a company document (`owner_kind` company, `owner_id` `nomination/<id>`, `doc_key` the row's
+  id; Google Drive folder Company, "Blank form Signed nomination form (Provident fund (EPF) nomination).pdf"). Download
+  (`GET /api/files/{id}`): HR Admin, Payroll (`pay.claims`) and active employees the nomination applies to; anyone
+  else 403. `POST` / `DELETE /api/nominations/schemes/{id}/blank/{doc}`; the schemes carry `docs[].blank`.
+- Tests: `api.TestHireIDsFromCodeImport`, `api.TestHireIDsFromCodeMigration`, `api.TestNomBlankForm`. Manual steps:
+  Part AC of [docs/manual_test.md](docs/manual_test.md).
+
+### Leave earned by working days (owner, 24 Nov 2026)
+
+- **Why:** with Upfront (or Monthly) credit an employee could take a whole year's leave at once. A leave plan now has
+  a tab **Earn by working days** (Policies › Leave plans › a plan) with rules: **Paid days** (typed by the admin)
+  and under it one or more rows **Leave type** (any type with a balance in the plan) + **Days earned** (halves
+  allowed); Add rule, Add leave type, Remove. Nothing is filled in: every number is the admin's. Example an admin might
+  enter: Paid days 7 → Casual leave 1, Privilege leave 1. Stored as `lv.earn` (`[{days, types:[{type, days}]}]`),
+  saved with the plan (plan history "Earn by working days", audit). A leave type can be in only one rule ("… is
+  already in the rule for every 7 paid days. A leave type can be in only one rule"); rules need paid days, at
+  least one type and days earned (whole or half), and only balance types of the plan (`leave.EarnProblem`).
+- **Meaning (owner, 24 Nov evening: "Working days means Paid days for leaves", credited as soon as the days are
+  complete, "accrued only on active employee"):** every time the employee completes that many **paid days**, each
+  listed type is credited its days earned **from the day after the Nth paid day**, not at the month end. Example:
+  joined 15 Jan, a rule of 30 paid days, nothing lost: the 30th paid day is 13 Feb and the leave is there on 14 Feb.
+  Whole blocks only; the leftover counts toward the next block. The count runs through the leave year (a block can
+  span months) and starts again with the next leave year (balances carry forward as the type says; a block completed
+  on the year's last day is credited the next day and counts in the old year's balance). A type in a rule is earned
+  **only** this way: no monthly or upfront credit. Its Credit on the Leave types tab reads "By working days (see Earn
+  by working days)"; **Days a year** becomes an optional cap (blank or 0: no cap; with an opening balance, the share
+  of the year left).
+- **Paid days** = paid days (present, half day 0.5, paid leave, weekly off and holiday; loss of pay days do not
+  count): each day counts 1 less its loss of pay as the attendance engine settles it for payroll
+  (`attend.DayOut.Paid`, replacing `DayOut.Worked`). Present, Late and Called to work 1; Half day 0.5; paid leave 1
+  (half a day of paid leave plus the other half worked 1); Weekly off and Holiday 1 (worked or not); Absent, loss of
+  pay leave and a No punch day once it has turned to loss of pay 0. A No punch day still inside the regularization
+  window has no loss of pay yet, so it counts until it turns to loss of pay; a day beyond a deviation allowance counts
+  by its loss of pay. Days before joining, after the last working day, today and later count 0. The month's late-mark
+  half days (`Month.LateOver`, tied to no day) are not taken off, so a month's paid days for leave can be higher than
+  payroll's by those half days.
+- **When:** counted day by day from the type's accrual start (joining, or the day probation ends; all of it once
+  probation is over when "Back-date at confirmation" is Yes, credited when probation ends) up to the day before the
+  balance date, never today or later (`leave.Through`); a leave request is checked against the balance on its first
+  day (for a future date: days over by today). Nothing is stored: balances are worked out live, so a regularization
+  to present raises the count and a No punch day turning to loss of pay lowers it.
+- **Only active employees earn:** status Active; someone on notice up to the last working day; a leaver (Inactive)
+  up to the last working day (F&F encashment on the last working day counts that day once it has passed); an Inactive
+  record without a last working day (an offer declined before joining) and a joiner not active yet (Pre-boarding)
+  earn nothing. Months before the first punch or approved leave on record (from before the HRMS) are left out; the
+  count starts on the 1st of that month.
+- **Unchanged:** Monthly and Upfront types (and plans without rules) give exactly the same balances; employment types,
+  carry forward, opening balances and the negative balance limit apply as before. No migration. A plan saved with the
+  short-lived per-type "By days worked" (`credit: worked`, `perDays`) reads as its own rule (N paid days → 1 day,
+  `leave.Normalize` when plans are loaded and saved).
+- **Shown on:** the plan's type summaries and list, the policy's Leave lines and Leave simulator (type the paid days
+  in a month, empty until typed; spread evenly over each month, it shows each credit's date in "Credited on"), My leave
+  (earned so far, paid days counted up to yesterday, days to the next block, last credit date; open it for the paid
+  days by month and each credit's date), the balance line in the leave dialogs, the employee file's Privilege leave
+  line, the offer's leave text and the leave request rules. Every balance (My leave, leave checks, F&F encashment,
+  leave report) goes through `leaveBalOf`. `GET /api/leave/balances/{id}` types carry `balance.worked` (`every`,
+  `per`, `days`, `blocks`, `left`, `toNext`, `earned`, `cap`, `credit`, `through`, `credits` [{`on`, `blocks`,
+  `credit`}], `months` [{`month`, `days`}]).
+- Tests: `leave.TestEarnBlocks`, `leave.TestEarnCreditedTheDayAfter`, `leave.TestEarnStopsAtLastWorkingDay`,
+  `leave.TestEarnAcrossMonthsAndYears`, `leave.TestEarnOnlyAndCap`, `leave.TestEarnRulesChecked`,
+  `leave.TestEarnOldShape`, `leave.TestWorkedThrough`, `leave.TestEarnAfterProbation`, `leave.TestEarnCarryAndOpening`,
+  `leave.TestWorkedLeavesOtherCreditsAlone`, `attend.TestPaidDays`, `api.TestLeaveByDaysWorked`. Manual steps: Part AE
+  of [docs/manual_test.md](docs/manual_test.md).
+
+### Deviation allowances (owner, 24 Nov 2026)
+
+- **Where:** Policies › a work policy › Attendance › **Deviation allowances**: Early check-in, Late check-in and Early
+  check-out, each with On/Off, **Minutes allowed** and **Times allowed in a month**. Every rule is off on every policy
+  and both numbers are empty until the admin types them (no defaults); saving a rule that is On without both is
+  refused ("Late check-in is on: enter the minutes allowed and the times allowed in a month, or switch it off"); 1–720
+  minutes, 1–31 times. Stored as `settings.dev` (`{earlyIn, lateIn, earlyOut}`, each `{on, mins, n}`), with the
+  policy's history and audit. For one person, give them their own rules from the roster (below), or map a policy to
+  them (Applies to › Individual).
+- **Late check-in** (later than the shift start + the late-mark grace, at most M minutes): on the first N such days of
+  the calendar month the day is no late mark (Present, not counted in "Late marks allowed in a month" or its half
+  day), note "Late check-in allowed, 1 h (2 of 5)". No hours are credited: the full-day hours still decide the day.
+- **Early check-in** (earlier than the policy's early check-in allowance `rs.earlyIn` and at most M minutes before the
+  start, so ordinary early arrivals do not use up the count): on the first N days the shift runs that much earlier,
+  so hours count from the in punch whatever "Time worked before the planned start" says (08:00–16:00 on a 10:00–18:00
+  shift is 8 h) and the end moves too.
+- **Early check-out** (more than the early-out grace `att.early` and at most M minutes before the end, the slid end
+  when the same day had an allowed early check-in): on the first N days a note only and no Early exit deviation. Only
+  days that are over count (the last out punch of today may still change). No hours are credited.
+- **Counting:** per employee and calendar month, in date order; only days within the minutes use up the count. A day
+  of leave (full or half), a regularized day, a day called to work, a week off or a holiday is never a deviation day.
+  Allowed days are not roster deviations (the Shift / Early exit kind is dropped: `attend.Allow.Trim`) and get no
+  late-arrival alert. While any active policy has a rule on, the engine reads each month from its 1st (`loadMonth`).
+- **Beyond the allowance** (the N+1th day, or more than M minutes): the rule's **Action** decides the day (next
+  sections; No action = the rules exactly as before) and HR is told:
+  a bell message to every active HR Admin and the employee's reporting manager, once per employee, date and rule
+  (`notice.ref` `att-dev:<rule>:<date>:<employee>`), e.g. "Karan Khan (EMP-1020): late check-in 2 h 10 min on 24 Nov
+  2026, 6th this month (allowed 5)". The sweep runs every 5 minutes on the job queue (`att_dev`), whatever the
+  attendance alert settings say, and looks at today and the two days before, so switching a rule on does not flood the
+  bell with the month so far. The day's note says "… : beyond the allowance".
+- **Shown on:** the month register (Attendance › Records › one employee, My time › My attendance: Note column) and its
+  counts ("Late check-in allowed", "Early check-in allowed", "Early check-out allowed", "Beyond the deviation
+  allowance" in `month.counts`, shown as pills when there are any).
+- Tests: `attend.TestDevLateIn`, `attend.TestDevEarlyIn`, `api.TestDevAllowLateIn`. Manual steps: Part AG of
+  [docs/manual_test.md](docs/manual_test.md).
+
+### Called to work on a holiday or leave day (owner, 24 Nov 2026)
+
+- **Where:** Attendance › **Called to work** (HR views): the month's calls with the result, and **Call to work**: one or
+  more employees, a date and a reason (required). The date must be a holiday on the person's calendar or a day of their
+  approved leave (week offs are not covered yet; a working day is refused). Right: **att.records at Edit** (the right HR
+  uses to change attendance, as for the MIS upload), within the caller's data scope; the list needs View. Audited; a
+  leave request gets a history line "Called to work on … : <reason>". Refused in a payroll month already approved or
+  published, and, like an MIS upload, in a month locked by payroll unless an exception is open. Removable (with a
+  history line) on the same terms. `GET /api/attendance/called?ym=`, `POST /api/attendance/called`
+  (`{employeeIds, date, reason}`), `DELETE /api/attendance/called/{id}`. Stored in `work_call` (migration 027).
+- **Came** = the day has a punch (owner's rule "if they come then present": hours, a late arrival or a missing out
+  punch do not matter; hours counted under the roster's shift that day, else the employee's own). Then the day is **Present** with the note "Called
+  to work, worked 8:05" (`DayOut.called`): no loss of pay; on a leave day the date's leave is returned in every balance
+  (`leaveBalOf` → `calledReturns`: 1 day, 0.5 for a half-day leave), the request stays approved and gets the line
+  "Worked on a leave day … 1 day of Casual leave returned" (the 5-minute sweep, once); an unpaid (loss of pay) leave
+  day loses its loss of pay; paid leave pays the same. Earn by working days counts the day 1, even on a holiday.
+- **No punch**: the holiday or leave stays exactly as it was, with the note "Called to work, no punch: the holiday
+  stands". A call never adds loss of pay.
+- A call on a date that has since stopped being a holiday or leave day (roster changed, leave cancelled) does nothing
+  ("No longer a holiday or leave day" in the list).
+- Tests: `attend.TestCalledToWork`, `api.TestCalledToWork`. Manual steps: Part AG of
+  [docs/manual_test.md](docs/manual_test.md).
+
+### Individual roster changes: cell picker, called to work, other time, own deviation allowances (owner, 24 Nov 2026)
+
+- **Where:** Shift and roster › Roster. A click on a cell opens a small picker instead of cycling the codes: each shift
+  with its timing, WO, PH, **Other time for this day**, and on a holiday (PH on the employee's calendar) or a leave
+  cell **Called to work** with a shift and a reason. The employee's name opens their **Deviation allowances**. Pattern,
+  publish, alerts, deviations, discipline and the bulk upload work as before.
+- **Called to work from the roster:** choosing a shift on a holiday or approved-leave cell calls the person to work with
+  that shift: the same `work_call` record, engine, right (**att.records at Edit**), scope and refusals as Attendance ›
+  Called to work (paid month; payroll-locked month without an exception), with the reason required. The shift is
+  stored on the call (`work_call.shift_code`) and the day is measured against it (hours, late mark, the punch window).
+  Came (any punch) = Present; on a leave day the leave comes back and an unpaid leave loses its loss of pay; no punch =
+  the holiday or leave stays, no penalty; Earn by working days counts it 1. The cell shows the shift with a `*`
+  (dashed border) and the tooltip "Called to work (…): G 09:00–18:00. <reason>. By …"; the On duty count counts it.
+  "Remove the call" in the picker (`DELETE /api/attendance/called/{id}`) puts the holiday or leave back; another shift
+  in the picker changes the call's shift. A roster change on a called day is refused until the call is removed. A
+  plain shift on a calendar holiday (roster cell, roster upload) is now refused with "… is a holiday … A shift on a
+  holiday calls them to work": it no longer makes an ordinary working day. Week offs work as before. A PH that came
+  from a roster change (not the calendar) takes a shift as a plain roster change.
+  `POST /api/roster/cell {employeeId, date, code: <shift>, call: true, reason}`.
+- **Other time for this day (code OT):** a start and end with an optional second part, checked like a split shift in
+  Masters › Shifts (second part after the first, same day; a day in one part may end after midnight and is then
+  recorded like a night shift). No shift master is needed: the times are stored on the roster entry
+  (`roster_entry.start_time/end_time/start2_time/end2_time`, the log's `from_time/to_time`). The engine treats the day
+  exactly like a shift with those timings: hours (the split gap never counts), late mark from the first part's start,
+  the punch window, deviation allowances; attendance rules are the work policy's (no shift master, no shift rules).
+  It obeys the roster's lock of past dates, the late-change reason and the rest rules like any shift change, shows as
+  "OT" with the times in the tooltip and an "Other time" row in the footer, and counts in On duty. OT is now a roster
+  code: no shift master can take it (none had it). `POST /api/roster/cell {employeeId, date, code: "OT", time: {start,
+  end, start2?, end2?}, why}`.
+- **Deviation allowances for one employee:** Early check-in, Late check-in and Early check-out each **Use the policy's
+  rule** (default), **On** with Minutes allowed + Times allowed in a month (both empty until typed; On refused without
+  both; 1–720 minutes, 1–31 times, as on the policy) or **Off for this employee**, with an **Applies from** date and an
+  optional note. Kept as versions (`emp_dev_allow`, migration 028; same date replaces), audited; a date in an approved
+  or published payroll month is refused. The engine uses, for each day, the version in effect laid over the policy's
+  rules (`attend.DevIn.Rules`); a rule's count runs on through the calendar month. Notes, counts and the bell alerts
+  follow. Right to change: **pol.policies at Edit** (the right that edits work policies' allowances: giving one person
+  an allowance must not need less than giving it to a policy); view: pol.policies, ros.roster or att.records at View;
+  both within the caller's scope. `GET/POST /api/attendance/dev-allow/{id}`. The roster row says "own deviation rules"
+  when the employee has their own in effect.
+- Tests: `api.TestRosterCalledToWork`, `api.TestRosterOtherTime`, `api.TestDevOwnRules`. Manual steps: Part AH of
+  [docs/manual_test.md](docs/manual_test.md).
+
+### Deviation allowances: the Action beyond the allowance (owner, 24 Nov 2026)
+
+- **Where:** the **Action** column of Policies › a work policy › Attendance › Deviation allowances, and of the
+  employee's own rules (roster › click the name; "Use the policy's rule" takes the policy's action too). Choices: **No
+  action**, **Absent**, **Half day until regularized**, **Present until regularized**. No default: the dropdown says
+  "Select" until the admin picks; a rule saved On without minutes, times and an action is refused ("Late check-in is
+  on: choose the action for a day beyond the allowance, or switch it off"). Stored as `act` (`none`, `absent`, `half`,
+  `present`) on `settings.dev.<rule>` and on `emp_dev_allow.rules.<rule>` (with `use: on`). A rule saved On before the
+  Action existed reads as No action, so nothing changes (hrms had no rule saved on 24 Nov 2026; no migration).
+- **What a day beyond the allowance gets:** No action: the usual rules (late mark, "Late marks allowed in a month",
+  hours). **Absent**: "Absent until regularized", loss of pay 1. **Half day until regularized**: loss of pay 0.5 (as the
+  missing-punch option of that name). **Present until regularized**: no loss of pay, flagged. With these three the
+  action replaces the day's late mark (no late mark, not counted in the late-mark limit: no double penalty). The hours
+  rules still apply: when they give more loss of pay (5 h late and 3 h worked is Absent (short hours) even with Half
+  day), the hours stand, with the larger loss of pay, never both. Two rules beyond on one day: the harsher action wins
+  (Absent > Half day > Present > No action).
+- **Regularizing:** such a day carries `reg` (the action) in the month register; My time › My attendance shows
+  **Regularize** on it and Attendance › Issues lists it. The usual regularization flow applies (employee request →
+  approval; the window `rr.back`, the payroll cycle cut-off, the monthly limit, exceptions). Once approved the date is
+  a regularized day: never a deviation day, settled by the corrected times like any regularized day.
+- **Display:** the note says "Late check-in 2 h 10 min, more than the 2 h allowed: beyond the allowance → Half day
+  until regularized" (plus "the hours or punches give more loss of pay: …" when they decide); counts "Absent / Half day / Present
+  until regularized" (days beyond with that action) beside "Beyond the deviation allowance"; the absent days count with
+  No punch, the half days with Half day, the present days with Present (payroll register). The bell ends with "→ Half
+  day until regularized". The payroll cut-off reminder includes Half day until regularized days.
+- Tests: `attend.TestDevAction`, `api.TestDevAllowAction`. Manual steps: Part AI of
+  [docs/manual_test.md](docs/manual_test.md).
 
 ## Built so far (spec 22.1)
 
