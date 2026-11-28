@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
+	"html"
 	"log"
 	"math/big"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/saltstayz/hrms/internal/access"
+	"github.com/saltstayz/hrms/internal/mail"
 	"github.com/saltstayz/hrms/internal/store"
 )
 
@@ -63,6 +65,31 @@ func authMobile(ctx context.Context, q store.Q, id string) (string, error) {
 		return "", err
 	}
 	return str(p["mobile"]), nil
+}
+
+// authEmail is the personal email on record ("" when there is none).
+func authEmail(ctx context.Context, q store.Q, id string) string {
+	p, err := q.C("employee_personal").FindOne(ctx, bson.M{"employee_id": id})
+	if err != nil || p == nil {
+		return ""
+	}
+	return strings.TrimSpace(str(p["email"]))
+}
+
+// otpMail is the sign-in code by email: the same words as the SMS, and a note for someone who did not ask.
+func otpMail(company, name, to, code string) mail.Message {
+	hi := "Hello"
+	if name != "" {
+		hi = "Dear " + name
+	}
+	text := fmt.Sprintf("%s,\n\nYour %s HRMS OTP is %s. It is valid for 5 minutes. Do not share it with anyone.\n\nIf you did not ask for it, ignore this email and tell HR.\n\n%s HR\n", hi, company, code, company)
+	e := html.EscapeString
+	h := fmt.Sprintf(`<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.5;color:#111;max-width:520px">
+<p>%s,</p><p>Your %s HRMS OTP is</p>
+<p style="font-size:28px;font-weight:bold;letter-spacing:6px;font-family:monospace;margin:8px 0">%s</p>
+<p>It is valid for 5 minutes. Do not share it with anyone.</p>
+<p style="color:#666;font-size:13px">If you did not ask for it, ignore this email and tell HR.</p><p>%s HR</p></div>`, e(hi), e(company), code, e(company))
+	return mail.Message{To: to, Subject: company + " HRMS sign-in OTP", Text: text, HTML: h}
 }
 
 type idBody struct {
@@ -120,10 +147,15 @@ func (s *Server) otpSend(r *http.Request) (any, error) {
 		return nil, err
 	}
 	mask := access.MaskMobile(mobile)
-	if mask == "" {
+	// The OTP also goes to the personal email on record when the company mailbox is set up (owner, 27 Nov 2026).
+	// The development echo would write the code to the server log: never used for OTPs.
+	email := authEmail(ctx, s.st.DB, id)
+	byMail := s.mail != nil && s.mail.Kind() != "echo" && email != ""
+	bySMS := mask != "" && (s.otp != nil || s.sms != nil)
+	if mask == "" && !byMail {
 		return nil, bad("There is no mobile number on record for this Employee ID. Ask HR to add it.")
 	}
-	if s.otp == nil && s.sms == nil && !s.devOTP { // never say "sent" when nothing can be sent
+	if !bySMS && !byMail && !s.devOTP { // never say "sent" when nothing can be sent
 		return nil, bad("OTP by SMS is not set up yet. Ask HR or IT.")
 	}
 	if last, err := s.st.DB.C("auth_otp").FindOne(ctx, bson.M{"employee_id": id}, authNewest()); err == nil && last != nil {
@@ -152,17 +184,36 @@ func (s *Server) otpSend(r *http.Request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.otp != nil {
-		if err := s.otp(ctx, mobile, code); err != nil {
+	smsOK, mailOK := false, false
+	if bySMS {
+		var err error
+		if s.otp != nil {
+			err = s.otp(ctx, mobile, code)
+		} else {
+			err = s.sms(mobile, "Your Saltstayz HRMS OTP is "+code+". Valid for 5 minutes. Do not share it.")
+		}
+		if err != nil {
 			log.Printf("OTP SMS to %s failed: %v", mask, err) // the code is never logged
-			return nil, bad("We could not send the OTP right now. Try again in a minute.")
 		}
-	} else if s.sms != nil {
-		if err := s.sms(mobile, "Your Saltstayz HRMS OTP is "+code+". Valid for 5 minutes. Do not share it."); err != nil {
-			return nil, err
-		}
+		smsOK = err == nil
 	}
-	out := map[string]any{"employeeId": id, "mask": mask, "purpose": purpose}
+	if byMail {
+		err := s.mail.Send(ctx, otpMail(companyName(ctx, s.st.DB), str(e["name"]), email, code))
+		if err != nil {
+			log.Printf("OTP email to %s failed: %v", maskEmail(email), err)
+		}
+		mailOK = err == nil
+	}
+	if (bySMS || byMail) && !smsOK && !mailOK {
+		return nil, bad("We could not send the OTP right now. Try again in a minute.")
+	}
+	out := map[string]any{"employeeId": id, "purpose": purpose}
+	if smsOK || (!bySMS && !mailOK && mask != "") { // dev echo shows the SMS preview to the mobile
+		out["mask"] = mask
+	}
+	if mailOK {
+		out["emailMask"] = maskEmail(email)
+	}
 	if s.devOTP {
 		out["devOtp"] = code
 	}

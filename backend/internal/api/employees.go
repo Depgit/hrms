@@ -39,7 +39,7 @@ func employeesScopeAt(ctx context.Context, q store.Q, sc access.Scope, prefix, i
 	case "locs":
 		f[prefix+"location_id"] = bson.M{"$in": append([]string{}, sc.Locations...)}
 	case "team":
-		f[prefix+"manager_id"] = sc.EmployeeID
+		f[prefix+"manager_id"] = bson.M{"$in": sc.TeamManagers()}
 	default:
 		f[prefix+idField] = sc.EmployeeID
 	}
@@ -597,22 +597,9 @@ func ApplyJobChange(ctx context.Context, tx store.Q, c *Ctx, id string, b JobCha
 			if desig == nil {
 				return nil, bad("Designation “%s” does not exist under this department", v)
 			}
-			newID, newName = str(desig["id"]), str(desig["name"])
-			grade := e["grade"].(string)
-			if g := b.Changes["grade"]; g != "" {
-				grade = g
-			}
-			if !containsStr(strs(desig["grades"]), grade) {
-				return nil, bad("Grade %s is not mapped to %s", grade, newName)
-			}
+			newID, newName = str(desig["id"]), str(desig["name"]) // any grade (designation and grade are separate)
 		} else if newID, newName, ok = f.lookup(ctx, tx, v); !ok {
 			return nil, bad("%s “%s” is not an active value", f.label, v)
-		}
-		if k == "grade" && b.Changes["designation"] == "" && newID != str(e["grade"]) {
-			// A grade alone must be one the current designation offers, as when the designation changes (PPL-048).
-			if desig, _ := tx.C("designation").FindOne(ctx, bson.M{"_id": e["designation_id"]}); desig != nil && !containsStr(strs(desig["grades"]), newID) {
-				return nil, bad("Grade %s is not mapped to %s", newName, str(desig["name"]))
-			}
 		}
 		if k == "manager" && newID == id {
 			return nil, bad("An employee cannot report to themselves")
@@ -1129,8 +1116,6 @@ func (s *Server) employeeImport(r *http.Request, c *Ctx) (any, error) {
 				desID = g.id
 				if !g.ok {
 					add("Designation “%s” does not exist under %s", x.Designation, x.Department)
-				} else if !containsStr(g.grades, x.Grade) {
-					add("Grade %s is not mapped to %s", x.Grade, x.Designation)
 				}
 			}
 			if sh := shift(x.Shift); !sh.ok {

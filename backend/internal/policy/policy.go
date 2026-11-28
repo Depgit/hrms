@@ -113,7 +113,8 @@ type Settings struct {
 	RS struct {
 		Lead       int    `json:"lead"`
 		Reason     bool   `json:"reason"`
-		Past       string `json:"past"` // lock | free
+		Past       string `json:"past"`     // lock | free
+		BulkPast   string `json:"bulkPast"` // bulk upload of past dates: lock (always refused) | same (follows Past)
 		Alert      int    `json:"alert"`
 		DevTol     int    `json:"devTol"`
 		Pts        int    `json:"pts"`
@@ -156,6 +157,7 @@ func Defaults() Settings {
 	r := &s.RS
 	r.Lead, r.Reason, r.Past, r.Alert, r.DevTol, r.Pts, r.DevWin, r.MgrAlert = 2, true, "lock", 30, 60, 5, 3, 15
 	r.EarlyIn, r.EarlyCount, r.DevStart = 30, "no", true
+	r.BulkPast = "lock" // owner, 27 Nov 2026: the roster upload never changes a past date unless a policy opens it
 	s.Claims.On = true
 	s.Blackouts = []Blackout{}
 	return s

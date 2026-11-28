@@ -27,7 +27,8 @@ import (
 
 // Message is one email: a plain-text body and, optionally, the same content as simple HTML.
 type Message struct {
-	To      string // one address, "name@example.com"
+	To      string   // one address, "name@example.com"
+	Cc      []string // copies, shown to everyone (the HR who looks after the person); a bad address is skipped
 	Subject string
 	Text    string
 	HTML    string
@@ -138,6 +139,11 @@ func (s *SMTP) Send(ctx context.Context, m Message) error {
 	if err := c.Rcpt(to.Address); err != nil {
 		return err
 	}
+	for _, a := range ccList(m) {
+		if err := c.Rcpt(a.Address); err != nil {
+			return fmt.Errorf("copy to %s: %w", a.Address, err)
+		}
+	}
 	w, err := c.Data()
 	if err != nil {
 		return err
@@ -157,6 +163,24 @@ func helloName() string {
 
 // Build renders a message as RFC 5322 text: headers (encoded when not plain ASCII) and a multipart/alternative
 // body in quoted-printable. Line breaks in To or Subject are refused (header injection).
+// ccList is the message's valid copy addresses, without the main address or repeats.
+func ccList(m Message) []*mail.Address {
+	seen := map[string]bool{strings.ToLower(strings.TrimSpace(m.To)): true}
+	out := []*mail.Address{}
+	for _, x := range m.Cc {
+		if strings.ContainsAny(x, "\r\n") {
+			continue
+		}
+		a, err := mail.ParseAddress(strings.TrimSpace(x))
+		if err != nil || seen[strings.ToLower(a.Address)] {
+			continue
+		}
+		seen[strings.ToLower(a.Address)] = true
+		out = append(out, a)
+	}
+	return out
+}
+
 func Build(from string, m Message, now time.Time) ([]byte, error) {
 	for _, v := range []string{from, m.To, m.Subject} {
 		if strings.ContainsAny(v, "\r\n") {
@@ -179,6 +203,13 @@ func Build(from string, m Message, now time.Time) ([]byte, error) {
 	h := func(k, v string) { fmt.Fprintf(&b, "%s: %s\r\n", k, v) }
 	h("From", fa.String())
 	h("To", ta.String())
+	if cc := ccList(m); len(cc) > 0 {
+		l := make([]string, len(cc))
+		for i, a := range cc {
+			l[i] = a.String()
+		}
+		h("Cc", strings.Join(l, ", "))
+	}
 	h("Subject", mime.QEncoding.Encode("utf-8", m.Subject))
 	h("Date", now.Format(time.RFC1123Z))
 	h("Message-ID", "<"+randHex(12)+"@"+domain+">")
@@ -218,7 +249,7 @@ type Echo struct{}
 func (Echo) Kind() string { return "echo" }
 
 func (Echo) Send(_ context.Context, m Message) error {
-	log.Printf("DEV MAIL (not sent) to %s: %s\n%s", m.To, m.Subject, m.Text)
+	log.Printf("DEV MAIL (not sent) to %s (copy: %s): %s\n%s", m.To, strings.Join(m.Cc, ", "), m.Subject, m.Text)
 	return nil
 }
 

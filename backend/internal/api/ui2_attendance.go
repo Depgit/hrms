@@ -287,8 +287,18 @@ const rosterWhyCol = "Reason for late changes"
 // Without a city, property or department it is the plain template of the Bulk update page.
 func (s *Server) rosterDownload(w http.ResponseWriter, r *http.Request) {
 	qv := r.URL.Query()
-	loc, city, dept := qv.Get("location"), qv.Get("city"), qv.Get("department")
-	if loc == "" && city == "" && dept == "" {
+	// department: one or more (repeated); none, or "*", is every department in the city / property (owner, 27 Nov 2026).
+	loc, city := qv.Get("location"), qv.Get("city")
+	depts := map[string]bool{}
+	for _, d := range qv["department"] {
+		if d = strings.TrimSpace(d); d == "*" {
+			depts = map[string]bool{}
+			break
+		} else if d != "" {
+			depts[d] = true
+		}
+	}
+	if loc == "" && city == "" && len(depts) == 0 {
 		r.SetPathValue("tpl", "roster")
 		s.bulkDownload(w, r)
 		return
@@ -309,15 +319,31 @@ func (s *Server) rosterDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	from := or(qv.Get("from"), weekStart(today()))
 	n, _ := strconv.Atoi(or(qv.Get("days"), "14"))
+	if to := qv.Get("to"); to != "" { // From … To (inclusive) instead of a number of days
+		if !isDate(to) || !isDate(from) || to < from {
+			fail(bad("The To date must be on or after the From date"))
+			return
+		}
+		n = policy.DayDiff(from, to) + 1
+	}
 	if !isDate(from) || n < 1 || n > 62 {
 		fail(bad("Choose a start date and up to 62 days"))
 		return
 	}
 	ctx := r.Context()
-	emps, err := rosterEmps(ctx, s.st.DB, c, loc, city, dept)
+	emps, err := rosterEmps(ctx, s.st.DB, c, loc, city, "")
 	if err != nil {
 		fail(err)
 		return
+	}
+	if len(depts) > 0 {
+		keep := emps[:0]
+		for _, e := range emps {
+			if depts[e.Dept] {
+				keep = append(keep, e)
+			}
+		}
+		emps = keep
 	}
 	if len(emps) == 0 {
 		fail(bad("No employees match the city, property and department chosen"))
@@ -437,15 +463,22 @@ func (s *Server) rosterDownload(w http.ResponseWriter, r *http.Request) {
 	if loc != "" {
 		place += ", " + emps[0].Location
 	}
-	if dept != "" {
-		place += ", " + dept
+	if len(depts) > 0 {
+		ds := make([]string, 0, len(depts))
+		for d := range depts {
+			ds = append(ds, d)
+		}
+		sort.Strings(ds)
+		place += ", " + strings.Join(ds, ", ")
+	} else {
+		place += ", all departments"
 	}
 	notes := []string{
 		fmt.Sprintf("Roster for %s. %s to %s.", strings.TrimPrefix(place, ", "), longDate(days[0]), longDate(days[n-1])),
 		"Each date column holds the shift code for that day: a shift code, WO for weekly off or PH for public holiday. Change only the cells you need.",
 		"L means approved leave. It cannot be changed here. Cancel the leave instead.",
 		"A shift can only be used at a property it is mapped to. A change inside the lock window before the date is a late change and needs a reason in the last column.",
-		"Past dates are locked unless your roster policy allows changes.",
+		"Past dates are not changed by this upload unless the work policy allows it (Past dates in the roster bulk upload).",
 	}
 	_, _ = f.NewSheet("How to fill")
 	_ = f.SetCellValue("How to fill", "A1", "Roster upload")
@@ -561,6 +594,8 @@ func bulkRosterWide(s *Server, ctx context.Context, tx store.Q, c *Ctx, r bulkRo
 			res.Errors = append(res.Errors, lab+": outside the employment dates")
 		case lead < 0 && p.S.RS.Past == "lock":
 			res.Errors = append(res.Errors, lab+": date has passed and is locked")
+		case lead < 0 && p.S.RS.BulkPast != "same": // work policy › Past dates in the roster bulk upload
+			res.Errors = append(res.Errors, lab+": date has passed. The bulk upload does not change past dates (work policy)")
 		case lead < p.S.RS.Lead && p.S.RS.Reason && why == "":
 			res.Errors = append(res.Errors, lab+": late change, add a reason in the last column")
 		default:

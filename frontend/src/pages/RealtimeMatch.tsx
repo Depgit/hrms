@@ -96,12 +96,12 @@ export default function RealtimeMatch({ ed }: { ed: boolean }) {
           <div className="seg">{(['All', ...LEVELS] as const).map((l) => <button key={l} className={level === l ? 'on' : ''} onClick={() => setLevel(l)}>{l}<b>{l === 'All' ? all : counts[l]}</b></button>)}</div>
           <input type="search" placeholder="Search name or Employee ID" value={q} onChange={(e) => setQ(e.target.value)} style={{ maxWidth: 240 }} />
         </div>
-        <p className="mute" style={{ fontSize: 12, margin: '8px 0' }}><b>Sure</b>: the same mobile, or the same name plus a date, department or location. <b>Likely</b>: one strong sign only; check before ticking. <b>Check</b>: several portal employees fit; pick one. <b>None</b>: no portal employee looks like this person.</p>
+        <p className="mute" style={{ fontSize: 12, margin: '8px 0' }}><b>Codes only, never names</b> (many people share a name). <b>Sure</b>: the portal code or card is the number of the Employee ID, or of the Joining ID the person had before it (EMP-3201 / JI-3201 → 003201). <b>Check</b>: that number is on more than one portal employee; pick one. <b>None</b>: no portal code has that number; give the code by Bulk update › Employee master update. The portal's name is shown only for you to look at.</p>
         {ed && <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
           <button className="btn sm" disabled={!!busy || !counts.Sure} onClick={selectAllSure}>{busy === 'sure' ? 'Ticking…' : `Tick all Sure (${counts.Sure})`}</button>
           <button className="btn sm primary" disabled={!!busy || !nSel} onClick={apply}>{busy === 'apply' ? 'Applying…' : `Apply ticked (${nSel})`}</button>
           {nSel > 0 && <button className="btn sm" disabled={!!busy} onClick={() => setSel({})}>Clear ticks</button>}
-          <button className="btn sm" onClick={() => download('/attendance/realtime/match/download?levels=Sure,Likely', 'attendance-codes.xlsx').catch((e) => toast(e.message))}>Download Sure and Likely for Bulk update</button>
+          <button className="btn sm" onClick={() => download('/attendance/realtime/match/download?levels=Sure,Likely', 'attendance-codes.xlsx').catch((e) => toast(e.message))}>Download Sure for Bulk update</button>
         </div>}
         <div className="tw"><table><thead><tr>{ed && <th style={{ width: 28 }}></th>}<th>Employee</th><th>Portal employee</th><th>Level</th><th>Why</th></tr></thead><tbody>
           {rows.length === 0 && <tr><td colSpan={ed ? 5 : 4} className="mute">Nothing here.</td></tr>}

@@ -606,8 +606,8 @@ func TestMasterRenames(t *testing.T) {
 		}
 		hk := db.id("department", bson.M{"name": "Housekeeping"})
 		fb := db.id("department", bson.M{"name": "F&B"})
-		A("POST", "/api/masters/designation", map[string]any{"name": "Supervisor", "department_id": hk, "grades": []string{"G2"}})
-		sup := A("POST", "/api/masters/designation", map[string]any{"name": "Supervisor", "department_id": fb, "grades": []string{"G2"}})
+		A("POST", "/api/masters/designation", map[string]any{"name": "Supervisor", "department_id": hk})
+		sup := A("POST", "/api/masters/designation", map[string]any{"name": "Supervisor", "department_id": fb})
 		db.write(st.DB.C("work_policy_map").Insert(ctx, bson.M{"policy_id": other, "level": "designation", "ref": "Supervisor", "created_by": "test"}))
 		// The workbook renames the F&B one (by its Row ID); the Housekeeping one keeps the old name.
 		r := c.mbRun(t, "apply", "EMP-1002", "HR Admin", mbFile(t, mbSh{"Designations", [][]any{mbHeader("Name", "Department", "Grades", "Row ID"),
@@ -618,14 +618,12 @@ func TestMasterRenames(t *testing.T) {
 		if got := db.list("work_policy_map", bson.M{"level": "designation", "on_map": true, "policy_id": other}, "ref"); got != "F&B Lead,Supervisor" {
 			t.Fatalf("both names keep the policy: %s", got)
 		}
-		if got := db.texts(db.one("designation", bson.M{"_id": sup["id"]})["grades"]); got != "G2,G3" {
-			t.Fatalf("grades: %s", got)
-		}
-		A("POST", "/api/masters/designation", map[string]any{"name": "Supervisor", "department_id": db.id("department", bson.M{"name": "Front Office"}), "grades": []string{"G2"}})
+		A("POST", "/api/masters/designation", map[string]any{"name": "Supervisor", "department_id": db.id("department", bson.M{"name": "Front Office"})})
 		dup := c.mbRun(t, "check", "EMP-1002", "HR Admin", mbFile(t, mbSh{"Designations", [][]any{mbHeader("Name", "Department", "Grades"), {"Supervisor", "", "G2"}, {"Lead", "F&B", "G99"}}}))
 		rows := mbRowsOf(mbSheetOf(t, dup, "Designations"))
+		// Grades are not on designations any more (owner, 27 Nov 2026): a Grades column is ignored.
 		if len(rows) != 2 || !strings.Contains(mbText(rows[0]["errors"]), "in more than one department") && !strings.Contains(mbText(rows[0]["errors"]), "Give the Department") ||
-			!strings.Contains(mbText(rows[1]["errors"]), "Grade G99 is not in Grades") {
+			strings.Contains(mbText(rows[1]["errors"]), "G99") {
 			t.Fatalf("designation errors: %v", rows)
 		}
 	})
@@ -648,9 +646,6 @@ func TestMasterRenames(t *testing.T) {
 		}
 		if got := fmt.Sprint(db.one("region", bson.M{"_id": db.one("state", bson.M{"name": "Delhi"})["region_id"]})["name"]); got != "North India" {
 			t.Fatalf("Delhi is in %s", got)
-		}
-		if got := db.texts(db.one("designation", bson.M{"name": "Sales Head"})["grades"]); got != "Grade 6" {
-			t.Fatalf("Sales Head grades %s", got)
 		}
 	})
 
@@ -716,7 +711,7 @@ func TestMasterFixedNamesAndMoves(t *testing.T) {
 		n := db.count("employee", bson.M{"designation_id": fd, "status": "Active"})
 		refused("/api/masters/designation/"+fd, map[string]any{"department_id": hk}, n+" active employee")
 		refused("/api/masters/designation/"+fd, map[string]any{"department_id": hk}, "hold this designation in Front Office; move them first with Bulk update")
-		_, tr := c.do("POST", "/api/masters/designation", "EMP-1002", "HR Admin", map[string]any{"name": "Trainee", "department_id": db.id("department", bson.M{"name": "Front Office"}), "grades": []string{"G1"}})
+		_, tr := c.do("POST", "/api/masters/designation", "EMP-1002", "HR Admin", map[string]any{"name": "Trainee", "department_id": db.id("department", bson.M{"name": "Front Office"})})
 		if s, r := c.do("PATCH", "/api/masters/designation/"+fmt.Sprint(tr["id"]), "EMP-1002", "HR Admin", map[string]any{"department_id": hk}); s != 200 {
 			t.Fatalf("an unused designation moves: %d %v", s, r)
 		}

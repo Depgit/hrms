@@ -758,7 +758,7 @@ func timectxScopeBase(s access.Scope) bson.D {
 	case "locs":
 		return bson.D{{Key: "location_id", Value: bson.D{{Key: "$in", Value: append([]string{}, s.Locations...)}}}}
 	case "team":
-		return bson.D{{Key: "manager_id", Value: s.EmployeeID}}
+		return bson.D{{Key: "manager_id", Value: bson.D{{Key: "$in", Value: s.TeamManagers()}}}}
 	}
 	return bson.D{{Key: "_id", Value: s.EmployeeID}}
 }

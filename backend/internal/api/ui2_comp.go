@@ -619,20 +619,19 @@ func ui2CompSameText(v string) bson.M {
 	return bson.M{"$regex": "^" + regexp.QuoteMeta(v) + "$", "$options": "i"}
 }
 
-// managerRef finds an active employee by Employee ID or by exact name (the name must be unique).
+// managerRef finds an active employee by Employee ID only: never by name, people share names (owner, 28 Nov 2026).
+// "Name (EMP-1002)" as the drop-downs write it gives the ID in brackets.
 func managerRef(ctx context.Context, q store.Q, v string) (string, string) {
-	if e, _ := q.C("employee").FindOne(ctx, bson.M{"_id": ui2CompSameText(v), "status": "Active"}, options.FindOne().SetProjection(compFields("id"))); e != nil {
+	if m := reIDInBrackets.FindStringSubmatch(v); m != nil {
+		v = m[1]
+	}
+	if e, _ := q.C("employee").FindOne(ctx, bson.M{"_id": ui2CompSameText(strings.TrimSpace(v)), "status": "Active"}, options.FindOne().SetProjection(compFields("id"))); e != nil {
 		return str(e["id"]), ""
 	}
-	ids, _ := q.C("employee").Find(ctx, bson.M{"name": ui2CompSameText(v), "status": "Active"}, options.Find().SetProjection(compFields("id")).SetLimit(2))
-	switch len(ids) {
-	case 1:
-		return str(ids[0]["id"]), ""
-	case 0:
-		return "", "unknown"
-	}
-	return "", "matches more than one employee. Give the Employee ID"
+	return "", "is not an active Employee ID. Give the manager's Employee ID (names are not used)"
 }
+
+var reIDInBrackets = regexp.MustCompile(`\(([A-Za-z]+-?\d+)\)\s*$`)
 
 // bulkNewEmp checks one row of "Import employees" (prototype newEmpValidate) and creates the employee.
 // Rows are created inside the upload's transaction even on Check, which is rolled back, so codes and
@@ -713,7 +712,6 @@ func bulkNewEmp(s *Server, ctx context.Context, tx store.Q, c *Ctx, r bulkRow, a
 	}
 	var deptID, deptName, deptStatus string
 	var desID, desName, desStatus string
-	var grades []string
 	if d := byName("department", V("Department"), nil); d == nil {
 		add("Department “%s” not in master", V("Department"))
 		deptID = ""
@@ -724,7 +722,7 @@ func bulkNewEmp(s *Server, ctx context.Context, tx store.Q, c *Ctx, r bulkRow, a
 		if g := byName("designation", V("Designation"), bson.M{"department_id": deptID}); g == nil {
 			add("Designation “%s” does not exist under %s", V("Designation"), deptName)
 			desID = ""
-		} else if desID, desName, desStatus, grades = str(g["id"]), str(g["name"]), str(g["status"]), compStrs(g["grades"]); desStatus != "Active" {
+		} else if desID, desName, desStatus = str(g["id"]), str(g["name"]), str(g["status"]); desStatus != "Active" {
 			add("Designation is inactive")
 		}
 	}
@@ -733,8 +731,6 @@ func bulkNewEmp(s *Server, ctx context.Context, tx store.Q, c *Ctx, r bulkRow, a
 		add("Grade “%s” not in master", V("Grade"))
 	} else if grade, gradeStatus = str(g["name"]), str(g["status"]); gradeStatus != "Active" {
 		add("Grade is inactive")
-	} else if desID != "" && len(grades) > 0 && !containsStr(grades, grade) {
-		add("Grade %s is not mapped to %s", grade, desName)
 	}
 	shift := strings.ToUpper(or(V("Shift"), "G"))
 	var shiftStatus string

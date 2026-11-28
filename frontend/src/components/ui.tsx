@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { onBusy, session } from '../api';
+import { authHeaders, onBusy } from '../api';
 
 export const Pill = ({ children, k = 'n' }: { children: ReactNode; k?: 'ok' | 'warn' | 'bad' | 'info' | 'n' }) => <span className={`pill ${k}`}>{children}</span>;
 
@@ -66,7 +66,7 @@ export function PasswordInput(props: { value: string; onChange: (v: string) => v
 
 /** Download a file from the API (the session token travels in the header, so a plain link cannot be used). */
 export async function download(path: string, fallbackName: string) {
-  const res = await fetch('/api' + path, { headers: { Authorization: `Bearer ${session.token}`, 'X-Role': session.role } });
+  const res = await fetch('/api' + path, { headers: authHeaders() });
   if (!res.ok) {
     const d = await res.json().catch(() => ({}));
     throw new Error(d.error || 'Download failed');

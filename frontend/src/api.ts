@@ -13,7 +13,11 @@ export class ApiError extends Error {
 
 const TOKEN = 'hrms.token';
 const ROLE = 'hrms.role';
+const TEAM = 'hrms.team';
 export const session = {
+  /** Line Manager view: 'direct' = only the people reporting to me; '' = everyone under me (two levels). */
+  get team() { try { return localStorage.getItem(TEAM) || ''; } catch { return ''; } },
+  set team(v: string) { try { v ? localStorage.setItem(TEAM, v) : localStorage.removeItem(TEAM); } catch { /* private mode */ } },
   get token() { return localStorage.getItem(TOKEN) || ''; },
   set token(v: string) { v ? localStorage.setItem(TOKEN, v) : localStorage.removeItem(TOKEN); },
   get role() { return localStorage.getItem(ROLE) || 'Employee'; },
@@ -36,13 +40,19 @@ async function tracked(url: string, init: RequestInit) {
   } finally { busy(-1); }
 }
 
+/** The headers every API call carries: the session, the role view and the manager's team filter. */
+export const authHeaders = (): Record<string, string> => ({
+  ...(session.token ? { Authorization: `Bearer ${session.token}` } : {}),
+  'X-Role': session.role,
+  ...(session.role === 'Line Manager' && session.team === 'direct' ? { 'X-Team': 'direct' } : {}),
+});
+
 export async function api<T = any>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<T> {
   const { res, data } = await tracked('/api' + path, {
     method: opts.method || (opts.body !== undefined ? 'POST' : 'GET'),
     headers: {
       'Content-Type': 'application/json',
-      ...(session.token ? { Authorization: `Bearer ${session.token}` } : {}),
-      'X-Role': session.role,
+      ...authHeaders(),
     },
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
   });
@@ -70,7 +80,7 @@ export async function postForm<T = any>(path: string, fields: Record<string, str
   const fd = new FormData();
   Object.entries(fields).forEach(([k, v]) => fd.append(k, v));
   fd.append('file', file);
-  const { res, data } = await tracked('/api' + path, { method: 'POST', headers: { Authorization: `Bearer ${session.token}`, 'X-Role': session.role }, body: fd });
+  const { res, data } = await tracked('/api' + path, { method: 'POST', headers: authHeaders(), body: fd });
   if (!res.ok) throw new ApiError(res.status, data.error || 'Upload failed', data.details);
   return data as T;
 }

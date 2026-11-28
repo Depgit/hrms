@@ -182,6 +182,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("GET /api/offers/{id}", s.a(s.offerGet))
 	m.HandleFunc("POST /api/offers/{id}/joining", s.a(s.offerJoining))
 	m.HandleFunc("POST /api/offers/{id}/send", s.a(s.offerSend))
+	m.HandleFunc("POST /api/offers/{id}/letter/send", s.a(s.offerLetterSend)) // offer letter by email (any address) or WhatsApp (offer_share.go)
 	m.HandleFunc("POST /api/offers/{id}/{step}", s.a(s.offerStep))
 	m.HandleFunc("POST /api/files", s.a(s.fileUpload))
 	m.HandleFunc("GET /api/files", s.a(s.fileList))

@@ -51,8 +51,7 @@ var mbSheets = []mbSheet{
 		{Key: "cms", Head: "CMS property (read-only)", Width: 22, Read: true}}},
 	{Key: "department", Sheet: "Departments", Right: "mas.job", Cols: []mbCol{{Key: "flow", Head: "Approval flow", Width: 16, List: "flow"}}},
 	{Key: "grade", Sheet: "Grades", Right: "mas.job"},
-	{Key: "designation", Sheet: "Designations", Right: "mas.job", Cols: []mbCol{{Key: "parent", Head: "Department", Width: 22, List: "department", Warn: true},
-		{Key: "grades", Head: "Grades (comma separated)", Width: 26}}},
+	{Key: "designation", Sheet: "Designations", Right: "mas.job", Cols: []mbCol{{Key: "parent", Head: "Department", Width: 22, List: "department", Warn: true}}},
 	{Key: "shift", Sheet: "Shifts", Right: "mas.job", Cols: []mbCol{{Key: "code", Head: "Code", Width: 10}, {Key: "start", Head: "Start (HH:MM)", Width: 14},
 		{Key: "end", Head: "End (HH:MM)", Width: 14}, {Key: "break", Head: "Break minutes", Width: 14},
 		// Where the shift applies (owner, 24 Nov 2026): Department + Location rows, changed on Set shift or by Bulk update ›
@@ -438,7 +437,7 @@ func howTo(f *excelize.File, sheet string, sheets []string, partial bool) {
 		{"", "Every sheet: Name, the master's own columns, then Status, Inactive from, Inactive reason and Row ID (grey, last)."},
 		{"", "Regions: Name. States: Region. Cities: State. Clusters: City. Locations: Cluster, and CMS property (read-only, ignored on upload)."},
 		{"", "Departments: Approval flow, Operations or Corporate. Grades: Name."},
-		{"", "Designations: Department, and Grades separated by commas (at least one; each an active grade)."},
+		{"", "Designations: Department. Grades are separate: any grade can go with any designation."},
 		{"", "Shifts: Code (cannot change), Start and End as 24-hour HH:MM, Break minutes, Applies to (read-only, ignored on upload), and the second part of a split shift."},
 		{"", "Qualifications, Employment types, Attendance modes, Roles, Skills: Name. Change reasons: Used for, one of " + strings.Join(reasonUses, ", ") + "."},
 	}
@@ -820,27 +819,6 @@ func (s *Server) mbRow(ctx context.Context, tx store.Q, c *Ctx, sh *mbSheet, lin
 			body["corporate"] = f == "corporate"
 		default:
 			return fail("Approval flow must be Operations or Corporate")
-		}
-	case "designation":
-		if g := v["grades"]; g != "" {
-			l := []any{}
-			for _, x := range strings.FieldsFunc(g, func(r rune) bool { return r == ',' || r == ';' || r == '\n' }) {
-				if x = strings.TrimSpace(x); x == "" {
-					continue
-				}
-				// A grade renamed on the Grades sheet of this file is still found by its old name.
-				if id, ok := st.alias["grade"][strings.ToLower(x)]; ok {
-					if there, err := tx.C("grade").Exists(ctx, bson.M{"name": masterRulesNoCase(x)}); err != nil {
-						return res, nil, err
-					} else if !there {
-						if gr, _ := tx.C("grade").FindOne(ctx, bson.M{"_id": id}, options.FindOne().SetProjection(bson.M{"name": 1})); gr != nil {
-							x = str(gr["name"])
-						}
-					}
-				}
-				l = append(l, x)
-			}
-			body["grades"] = l
 		}
 	case "shift":
 		if code != "" {

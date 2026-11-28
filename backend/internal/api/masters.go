@@ -183,7 +183,7 @@ var masters = map[string]master{
 		impact: mastersPlaceImpact()},
 	"department": {table: "department", right: "mas.job", label: "department", fields: []field{{name: "name", kind: "text", required: true}, {name: "corporate", kind: "bool", lbl: "Approval flow"}},
 		list: mastersList(), impact: mastersIDImpact("department_id")},
-	"designation": {table: "designation", right: "mas.job", label: "designation", fields: []field{{name: "name", kind: "text", required: true}, {name: "department_id", kind: "uuid", required: true, lbl: "Department"}, {name: "grades", kind: "texts", required: true}},
+	"designation": {table: "designation", right: "mas.job", label: "designation", fields: []field{{name: "name", kind: "text", required: true}, {name: "department_id", kind: "uuid", required: true, lbl: "Department"}},
 		list:   mastersList(mastersJoin{"department", "department_id", "_d", bson.D{{Key: "department", Value: "$_d.name"}}}),
 		impact: mastersIDImpact("designation_id")},
 	"grade": {table: "grade", right: "mas.job", label: "grade", fields: []field{{name: "name", kind: "text", required: true}}, list: mastersList(),

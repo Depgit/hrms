@@ -190,10 +190,9 @@ function Guide({ x, go, hasTab }: { x: any; go: (k: TabK) => void; hasTab: (k: T
     api('/settings/company').catch(() => ({ offerTemplate: '' })),
   ]), [x]);
   if (!data.data) return <Loading error={data.error} />;
-  const [grades, desigs, structs, matrix, dir, company] = data.data;
+  const [grades, , structs, matrix, dir, company] = data.data;
   const cities = [...new Set((x.bands ?? []).map((b: any) => b.city_id))];
   const miss = (x.bands ?? []).filter((b: any) => !(b.max > 0 && b.max >= b.min)).map((b: any) => `${b.grade} in ${b.city}`);
-  const unmapped = desigs.filter((g) => !(g.grades || []).length);
   const on = structs.filter((s: any) => s.status === 'Active'), def = structs.find((s: any) => s.is_default);
   const flows = ['Operations', 'Corporate'].filter((f) => matrix.some((m) => m.wf === 'joining' && m.flow === f && (m.rules || []).some((r: any) => r.on && (r.when || []).some((c: any) => c.k === 'budget'))));
   const gaps: string[] = dir.gaps || [];
@@ -201,7 +200,6 @@ function Guide({ x, go, hasTab }: { x: any; go: (k: TabK) => void; hasTab: (k: T
   type Check = { t: string; ok: boolean; d: string; open: () => void; can?: boolean };
   const ck: Check[] = [
     { t: 'Grades are defined', ok: grades.length > 0, d: grades.length ? `${grades.length} active grades: ${grades.map((g) => g.name).join(', ')}` : 'Add grades in Masters', open: () => nav('/masters') },
-    { t: 'Every designation is mapped to grades', ok: !unmapped.length, d: unmapped.length ? `${unmapped.length} designations have no grade` : 'Offers list only the mapped grades for a designation', open: () => nav('/masters?tab=desig') },
     { t: 'Standard salary structure is set', ok: (def?.rates?.basicPct ?? 0) > 0, d: def ? `${on.length} version${on.length > 1 ? 's' : ''}. Default: ${def.name}. Basic ${def.rates.basicPct}% of gross, ESI up to ${inr(def.rates.esiCeil)}, medical above that` : 'Set a default version in Salary structure', open: () => go('structure'), can: hasTab('structure') },
     { t: 'Every city and grade has a pay band', ok: !miss.length, d: miss.length ? `${miss.length} missing, for example ${miss.slice(0, 3).join(', ')}` : `Bands set for ${cities.length} cities and ${grades.length} grades`, open: () => go('bands'), can: hasTab('bands') },
     { t: 'Over-budget offers trigger extra approval', ok: flows.length === 2, d: flows.length === 2 ? 'Offers above budget or above the pay band get extra approvers in both flows' : 'Switch on an above-budget condition for both flows in the joining workflow', open: () => nav('/approvals?tab=rules') },

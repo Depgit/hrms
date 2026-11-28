@@ -357,6 +357,38 @@ func TestUIRosterDownloadUpload(t *testing.T) {
 			t.Log("past date unchanged by default code:", errs)
 		}
 	}
+	// Past dates in the bulk upload (owner, 27 Nov 2026): with the roster screen open for past dates, the upload still
+	// refuses them by default; "same" lets it follow the screen.
+	if _, err := st.DB.C("work_policy").UpdateMany(ctx, bson.M{}, bson.M{"$set": bson.M{"settings.rs.past": "free"}}); err != nil {
+		t.Fatal(err)
+	}
+	pastCur := uiField(ctx, st, "roster_entry", bson.D{{Key: "employee_id", Value: "EMP-1020"}, {Key: "date", Value: uiDay(-2)}}, "code")
+	pastTo := map[bool]string{true: "M", false: "E"}[pastCur == "E"]
+	pastCSV := "Employee ID,Date,Code,Reason\nEMP-1020," + uiDay(-2) + "," + pastTo + ",Vacancy cover\n"
+	_, chk = c.sendFile("/api/bulk/roster/check", "EMP-1002", "HR Admin", "past.csv", []byte(pastCSV))
+	if errs := fmt.Sprint(chk["results"]); !strings.Contains(errs, "does not change past dates") && !strings.Contains(errs, "leave") && !strings.Contains(errs, "holiday") {
+		t.Fatal("a past date is refused by the upload", errs)
+	}
+	if _, err := st.DB.C("work_policy").UpdateMany(ctx, bson.M{}, bson.M{"$set": bson.M{"settings.rs.bulkPast": "same"}}); err != nil {
+		t.Fatal(err)
+	}
+	_, chk = c.sendFile("/api/bulk/roster/check", "EMP-1002", "HR Admin", "past.csv", []byte(pastCSV))
+	if errs := fmt.Sprint(chk["results"]); strings.Contains(errs, "does not change past dates") {
+		t.Fatal("same as the screen: open past dates may be uploaded", errs)
+	}
+	// Several departments, or all, and a To date instead of a number of days.
+	s, raw = c.getRaw("/api/bulk/roster/download?location="+hub+"&department=*&from="+wk2+"&to="+uiDay(20), "EMP-1002", "HR Admin")
+	if s != 200 {
+		t.Fatal(s, string(raw))
+	}
+	all, _ := excelize.OpenReader(bytes.NewReader(raw))
+	allRows, _ := all.GetRows("Roster")
+	if len(allRows) < len(rows) || allRows[0][4] != wk2 {
+		t.Fatal("all departments: at least F&B's rows, from the From date", len(allRows), len(rows))
+	}
+	if s, _ := c.getRaw("/api/bulk/roster/download?location="+hub+"&department=F%26B&from="+wk2+"&to="+uiDay(1), "EMP-1002", "HR Admin"); s != 400 {
+		t.Fatal("To before From is refused", s)
+	}
 	// The long layout still works.
 	long := "Employee ID,Date,Code,Reason\nEMP-1020," + uiDay(12) + ",E,\n"
 	if _, chk = c.sendFile("/api/bulk/roster/check", "EMP-1002", "HR Admin", "long.csv", []byte(long)); chk["results"] == nil {

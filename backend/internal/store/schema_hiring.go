@@ -62,6 +62,10 @@ var offerVersionTable = &Table{
 		{Name: "released_at", Type: TTimestamptz},
 		{Name: "expires_on", Type: TDate},
 		{Name: "frozen", Type: TBool, NotNull: true, Default: Default{Kind: DefConst, Value: false}},
+		// pay: the breakup of this version as worked out when raised and again when sent (the one sent wins):
+		// {breakup, ctcYear, rates, rules, structure, at}; later structure or rate changes do not touch it. Null on
+		// versions from before 27 Nov 2026 (owner): the screen works those out again and says so. No migration.
+		{Name: "pay", Type: TJSONB},
 		{Name: "created_by", Type: TText, NotNull: true},
 		{Name: "created_at", Type: TTimestamptz, NotNull: true, Default: Default{Kind: DefNow}},
 	},

@@ -1814,6 +1814,10 @@ func bulkRoster(s *Server, ctx context.Context, tx store.Q, c *Ctx, r bulkRow, a
 		return res, err
 	}
 	cur := m.rosterCode(e, p, d)
+	if cur != code && d < today() && p.S.RS.Past != "lock" && p.S.RS.BulkPast != "same" { // work policy › Past dates in the roster bulk upload
+		res.Errors = append(res.Errors, longDate(d)+": date has passed. The bulk upload does not change past dates (work policy)")
+		return res, nil
+	}
 	warn, late, err := s.rosterSet(ctx, tx, c, ts, e, d, code, r.V["Reason"], "")
 	if err != nil {
 		return res, err

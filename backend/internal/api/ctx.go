@@ -84,7 +84,19 @@ func loadCtx(ctx context.Context, q store.Q, employeeID, wantRole string) (*Ctx,
 	switch c.Role {
 	case "Employee":
 	case "Line Manager":
+		// Two levels (owner, 27 Nov 2026): the direct reports and their reports. ?team=direct narrows to the first
+		// (authenticate).
 		c.Scope.Access = "team"
+		direct, err := q.C("employee").Distinct(ctx, "_id", bson.M{"manager_id": employeeID, "status": bson.M{"$ne": "Inactive"}})
+		if err != nil {
+			return nil, err
+		}
+		c.Scope.Managers = []string{employeeID}
+		for _, d := range direct {
+			if id, ok := d.(string); ok && id != employeeID {
+				c.Scope.Managers = append(c.Scope.Managers, id)
+			}
+		}
 	default:
 		for _, m := range maps {
 			if m["role_name"] == c.Role {
@@ -172,7 +184,12 @@ func (s *Server) authenticate(r *http.Request) (*Ctx, error) {
 		return nil, unauthorized("Your account opens on your joining date.")
 	}
 	syncTypeRules(r.Context(), s.st.DB) // rules by employment type, as stored
-	return loadCtx(r.Context(), s.st.DB, emp, r.Header.Get("X-Role"))
+	c, err := loadCtx(r.Context(), s.st.DB, emp, r.Header.Get("X-Role"))
+	// "Direct employees" filter of a manager (team scope): only the first level (owner, 27 Nov 2026).
+	if err == nil && c.Scope.Access == "team" && (r.URL.Query().Get("team") == "direct" || r.Header.Get("X-Team") == "direct") {
+		c.Scope.Managers = []string{c.EmployeeID}
+	}
+	return c, err
 }
 
 func (c *Ctx) Level(right string) int { return c.Rights[right] }
@@ -240,7 +257,7 @@ func (c *Ctx) ScopeFilter(ctx context.Context, q store.Q, prefix string) (bson.D
 	case "locs":
 		f = append(f, bson.E{Key: prefix + "location_id", Value: bson.D{{Key: "$in", Value: append([]string{}, sc.Locations...)}}})
 	case "team":
-		f = append(f, bson.E{Key: prefix + "manager_id", Value: sc.EmployeeID})
+		f = append(f, bson.E{Key: prefix + "manager_id", Value: bson.D{{Key: "$in", Value: sc.TeamManagers()}}})
 	default:
 		f = append(f, bson.E{Key: idField, Value: sc.EmployeeID})
 	}

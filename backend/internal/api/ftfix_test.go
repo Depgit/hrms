@@ -562,7 +562,7 @@ func TestFtSearchPunctuation(t *testing.T) {
 	}
 }
 
-// PPL-048: a grade alone must be one the current designation offers. PPL-049: no reporting loop.
+// Grade is not tied to the designation (was PPL-048). PPL-049: no reporting loop.
 func TestFtJobChangeChecks(t *testing.T) {
 	c, _, st := setupFull(t)
 	c.signIn("EMP-1002")
@@ -577,9 +577,11 @@ func TestFtJobChangeChecks(t *testing.T) {
 		}
 	}
 	day := time.Now().Format("2006-01-02")
+	hireFixRoleSkill(t, st, "EMP-1016") // a job change needs Role and Skill on the record
 	if bad != "" {
-		if s, r := c.do("PATCH", "/api/employees/EMP-1016/job", "EMP-1002", "HR Admin", map[string]any{"changes": map[string]string{"grade": bad}, "reason": "Promotion", "effectiveFrom": day}); s != 400 || !strings.Contains(ftJSON(r), "is not mapped to") {
-			t.Errorf("grade %s not on %v accepted: %d %v", bad, grades, s, r)
+		// Designation and grade are separate (owner, 27 Nov 2026): any grade goes with any designation.
+		if s, r := c.do("PATCH", "/api/employees/EMP-1016/job", "EMP-1002", "HR Admin", map[string]any{"changes": map[string]string{"grade": bad}, "reason": "Promotion", "effectiveFrom": day}); s != 200 {
+			t.Errorf("grade %s outside the designation's old list refused: %d %v", bad, s, r)
 		}
 	}
 	// EMP-1009 reports to EMP-1008; making EMP-1008 report to EMP-1009 would be a loop.

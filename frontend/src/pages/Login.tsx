@@ -24,7 +24,7 @@ export default function Login() {
   const [show, setShow] = useState(false);
   const [otp, setOtp] = useState('');
   const [vt, setVt] = useState('');
-  const [sent, setSent] = useState<{ mask: string; devOtp?: string } | null>(null);
+  const [sent, setSent] = useState<{ mask?: string; emailMask?: string; devOtp?: string } | null>(null);
   const [err, setErr] = useState('');
   const [info, setInfo] = useState('');
   const [busy, setBusy] = useState(false);
@@ -50,7 +50,7 @@ export default function Login() {
   });
   const sendOtp = run(async () => {
     setInfo('');
-    const r = await api<{ employeeId: string; mask: string; purpose: 'first' | 'forgot'; devOtp?: string }>('/auth/otp', { body: { employeeId: id, purpose: mode } });
+    const r = await api<{ employeeId: string; mask?: string; emailMask?: string; purpose: 'first' | 'forgot'; devOtp?: string }>('/auth/otp', { body: { employeeId: id, purpose: mode } });
     if (mode === 'first' && r.purpose === 'forgot') setInfo('You already have a password, so this is a password reset.');
     setId(r.employeeId); setMode(r.purpose); setSent(r); setOtp(''); setStep('otp'); setWait(30);
   });
@@ -91,7 +91,7 @@ export default function Login() {
         <button className="btn primary lgbtn" disabled={busy}>Send OTP</button>
         <div className="lglinks"><Lk on={() => go('signin')}>Back to sign in</Lk></div>
       </>, sendOtp)}
-      {step === 'otp' && card('Enter the OTP', `Sent to ${sent?.mask ?? ''}. It is valid for 5 minutes.`, <>
+      {step === 'otp' && card('Enter the OTP', `Sent to ${[sent?.mask && 'your mobile ' + sent.mask, sent?.emailMask && 'your email ' + sent.emailMask].filter(Boolean).join(' and ')}. It is valid for 5 minutes.`, <>
         <label className="lgf"><span>6-digit OTP</span><input autoFocus autoComplete="one-time-code" inputMode="numeric" maxLength={6} placeholder="------" value={otp} onChange={(e) => setOtp(e.target.value)} /></label>
         <button className="btn primary lgbtn" disabled={busy}>Verify</button>
         <div className="lglinks"><Lk id="lg_resend" dim={wait > 0} on={() => { if (wait <= 0) sendOtp(); }}>{wait > 0 ? `Resend OTP in ${wait}s` : 'Resend OTP'}</Lk><Lk on={() => go('signin')}>Back to sign in</Lk></div>

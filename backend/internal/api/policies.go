@@ -125,7 +125,7 @@ func policiesScope(c *Ctx) bson.M {
 		}
 		m = bson.M{"_e.location_id": bson.M{"$in": locs}}
 	case "team":
-		m = bson.M{"_e.manager_id": sc.EmployeeID}
+		m = bson.M{"_e.manager_id": bson.M{"$in": sc.TeamManagers()}}
 	default:
 		m = bson.M{"_e._id": sc.EmployeeID}
 	}
@@ -397,6 +397,7 @@ func checkSettings(p policy.Settings) error {
 		{"No punch at all counts as", p.Att.Absent, []string{"lop", "lopnow", "present"}}, {"A missing punch counts as", p.Att.Missing, []string{"half", "absent", "present"}},
 		{"Night shift counts on", p.Att.Night, []string{"start", "end"}}, {"If out punch is missing", p.Att.AutoOut, []string{"none", "end"}},
 		{"When a roster breaks the rest gap", p.Att.RestAct, []string{"block", "warn"}}, {"Dates that have already passed", p.RS.Past, []string{"lock", "free"}},
+		{"Past dates in the roster bulk upload", p.RS.BulkPast, []string{"lock", "same"}},
 		{"Time worked before the planned start", p.RS.EarlyCount, []string{"no", "yes"}}, {"Notice buy-out", p.Ex.Buyout, []string{"no", "approve", "yes"}},
 		{"Leave to serve notice", p.Ex.Leave, []string{"no", "hr", "yes"}}, {"Notice waiver approved by", p.Ex.Waive, []string{"HR Admin", "CHRO", "Function Head"}}} {
 		if ch.v != "" && !containsStr(ch.ok, ch.v) {

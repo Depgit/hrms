@@ -100,19 +100,19 @@ function useLookups(d: Data) {
   const types = useLoad(() => api<any[]>('/masters/employment_type?status=Active'), []);
   const depts = useLoad(() => api<any[]>('/masters/department?status=Active'), []);
   const desigs = useLoad(() => api<any[]>('/masters/designation?status=Active'), []);
+  const grades = useLoad(() => api<any[]>('/masters/grade?status=Active'), []);
   const cities = useLoad(() => api<any[]>('/masters/city?status=Active'), []);
   const locs = useLoad(() => api<any[]>('/masters/location?status=Active'), []);
   const shifts = useLoad(() => api<any[]>('/masters/shift?status=Active'), []);
   const modes = useLoad(() => api<any[]>('/masters/attendance_mode?status=Active'), []);
   const quals = useLoad(() => api<any[]>('/masters/qualification?status=Active'), []);
   const structs = useLoad(() => api<any[]>('/salary/structures').catch(() => []), []);
-  const desig = desigs.data?.find((x) => x.name === d.desig && x.department === d.dept);
   const opts = (key: string, f?: SetupField): [string, string][] => {
     switch (key) {
       case 'type': return typeNames(types.data).map((x: string) => [x, x]);
       case 'dept': return (depts.data ?? []).map((x) => [x.name, x.name]);
       case 'desig': return (desigs.data ?? []).filter((x) => x.department === d.dept).map((x) => [x.name, x.name]);
-      case 'grade': return (desig?.grades ?? []).map((g: string) => [g, g]);
+      case 'grade': return (grades.data ?? []).map((g) => [g.name, g.name]); // any grade: not tied to the designation (owner, 27 Nov 2026)
       case 'city': return (cities.data ?? []).map((x) => [x.id, x.name]);
       case 'loc': return (locs.data ?? []).filter((x) => x.city_id === d.city).map((x) => [x.id, x.name]);
       case 'shift': { // the shifts mapped to the department and location (shift_maps.go)
@@ -486,7 +486,7 @@ function CandidateModal({ id, onClose, onOffer }: { id: string; onClose: () => v
     {!x.hiring?.bgvOff && (c.bgv || x.bgv) && <><h3 className="sec">Background check</h3><BgvPanel x={x} reload={reload} /></>}
 
     <h3 className="sec">Timeline</h3>
-    <Timeline events={x.timeline} />
+    <Timeline events={x.timeline} versions={x.offerVersions} />
 
     {closing && <div className="card" style={{ marginTop: 14 }}>
       <Field label={closing === 'not-joined' ? 'Why did the candidate not join?' : 'Why is the candidate closed?'}><input type="text" value={why} onChange={(e) => setWhy(e.target.value)} /></Field>
@@ -706,6 +706,8 @@ function OfferModal({ id, onClose }: { id: string; onClose: () => void }) {
         ? <div className="mute" style={{ border: '1px dashed var(--line)', borderRadius: 10, padding: 14, margin: '12px 0', fontSize: 13 }}>The offer letter is held until joining. It is generated when the candidate is marked joined.</div>
         : <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.6, border: '1px solid var(--line)', borderRadius: 10, padding: 14, margin: '12px 0' }}>{o.letter}</div>}
       {o.accommodation && <p style={{ fontSize: 13 }}>{o.accommodation}</p>}
+      {(can('onb.raise', 2) || can('onb.pipeline', 2)) && !o.letterHeld && (o.released_at || o.letterReleasedAt) && !['Declined', 'Lapsed'].includes(o.status) &&
+        <LetterShare id={id} name={o.candidate_name} email={String(o.data?.email || '')} mobile={String(o.data?.phone || '')} reload={reload} />}
       {o.status === 'Approved' && canRel && o.candidate_id && !o.at_joining && <AccomCard d={accom} set={(k, v) => setAcc({ ...accom, [k]: v, ...(k === 'accom' && v === 'No' ? { accomCluster: '' } : {}) })} show plain />}
       {declining && <Field label="Why did the candidate decline?"><input value={why} onChange={(e) => setWhy(e.target.value)} /></Field>}
       <div className="row" style={{ justifyContent: 'flex-end' }}>
@@ -717,6 +719,41 @@ function OfferModal({ id, onClose }: { id: string; onClose: () => void }) {
       {o.candidate_id && o.status === 'Approved' && !o.at_joining && <p className="mute" style={{ fontSize: 12 }}>On release the answer is due within the days set in Form setup › Hiring; without an answer by then the offer lapses. Record the candidate's answer on the candidate.</p>}
     </>}
   </Modal>;
+}
+
+// Send the offer letter again (offer_share.go): by email to the offer's or another address, or on WhatsApp.
+function LetterShare({ id, name, email, mobile, reload }: { id: string; name: string; email: string; mobile: string; reload: () => void }) {
+  const [to, setTo] = useState(email);
+  const [save, setSave] = useState(false);
+  const [phone, setPhone] = useState(mobile.replace(/\D/g, '').slice(-10));
+  const [busy, setBusy] = useState(false);
+  const first = name.split(' ')[0];
+  const send = async (via: 'email' | 'whatsapp') => {
+    // WhatsApp opens inside the click (Safari blocks a window opened after a network call), pointed at wa.me after.
+    const w = via === 'whatsapp' ? window.open('about:blank', '_blank') : null;
+    setBusy(true);
+    try {
+      const r = await api(`/offers/${id}/letter/send`, { body: via === 'email' ? { via, to, save } : { via, to: phone } });
+      if (via === 'whatsapp') {
+        const url = `https://wa.me/91${phone.replace(/\D/g, '').slice(-10)}?text=${encodeURIComponent(r.text)}`;
+        if (w) { w.opener = null; w.location.href = url; } else window.open(url, '_blank', 'noopener');
+      }
+      toast(r.message); reload();
+    } catch (x: any) { w?.close(); toast(x.message); } finally { setBusy(false); }
+  };
+  return <div className="card" style={{ margin: '12px 0', padding: 12 }}>
+    <h3 className="sec" style={{ marginTop: 0 }}>Send the letter again</h3>
+    <p className="mute" style={{ fontSize: 12.5, margin: '0 0 8px' }}>If {first} did not get the letter, email it to another address or share it on WhatsApp. Each send is recorded on the timeline.</p>
+    <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+      <input type="email" placeholder="Email address" value={to} onChange={(e) => setTo(e.target.value)} style={{ minWidth: 240 }} />
+      <button className="btn" disabled={busy || !to.trim()} onClick={() => send('email')}>Email the letter</button>
+      {to.trim().toLowerCase() !== email.toLowerCase() && to.trim() && <label style={{ fontSize: 12.5 }}><input type="checkbox" checked={save} onChange={(e) => setSave(e.target.checked)} /> Use this address on the offer from now on</label>}
+    </div>
+    <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
+      <input inputMode="numeric" placeholder="WhatsApp number (10 digits)" value={phone} onChange={(e) => setPhone(e.target.value)} style={{ minWidth: 240 }} />
+      <button className="btn" disabled={busy || phone.replace(/\D/g, '').length < 10} onClick={() => send('whatsapp')}>Share on WhatsApp</button>
+    </div>
+  </div>;
 }
 
 function JoiningModal({ id, onClose }: { id: string; onClose: () => void }) {

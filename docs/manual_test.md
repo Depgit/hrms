@@ -126,6 +126,7 @@ Sign in as **HR Admin** unless a line says otherwise.
 - [ ] Activate with OTP: the code shows; a weak password is refused, with the rule shown.
 - [ ] The ID typed as EMP1002, emp1002 or EMP 1002 signs in as EMP-1002.
 - [ ] Forgot password: same OTP flow; afterwards the old password no longer works.
+- [ ] With a real mailbox (`SMTP_HOST`) and a personal email on the employee: the OTP arrives by SMS and by email (subject "… HRMS sign-in OTP", code only in the body); the screen says "Sent to your mobile 98••••45 and your email ab•••@…."
 - [ ] The header shows name · ID · Sign out. Sign out returns to sign-in, and Back does not reopen the app.
 - [ ] A person with several roles can switch role in the header. The menu changes to match Part C.
 
@@ -1592,6 +1593,27 @@ is a real joiner (README, "Sending employees to the Realtime portal").
 - [ ] Add a role copied from HRBP while a report is unticked: the new role has it unticked too.
 - [ ] Activity log shows "Reports of role “HRBP” changed" with before and after.
 
+## Manager sees two levels, filter Direct / All under me (27 Nov)
+1. Sign in as a manager whose reports also have reports; switch to Line Manager view.
+- [ ] Top bar shows a drop-down "All employees under me" / "Direct employees" (only in Line Manager view).
+- [ ] All under me: Employees, Roster, Attendance list the direct reports and their reports; the roster cells of the second level can be changed.
+- [ ] Direct employees: only the people reporting to me; the page reloads on change and the choice stays after a refresh.
+
+## Roster bulk upload: several departments, From–To, past dates (27 Nov)
+1. Shift and roster › Bulk upload.
+- [ ] Department is a list of check boxes with "All departments" on top; tick two: the employee count and the downloaded file cover both (rows grouped by property and department).
+- [ ] Tick "All departments": every department of the city/property.
+- [ ] From and To dates: the file has one column per date from From to To; To before From, or more than 62 days, is refused.
+- [ ] Upload a file with a changed cell for yesterday: refused "date has passed. The bulk upload does not change past dates" (even when the work policy's "Dates that have already passed" is Open to edit).
+- [ ] Work policies › Roster discipline › "Past dates in the roster bulk upload" = Same as the roster screen, with past dates Open to edit: the same file is accepted.
+
+## Offer letter again by email or WhatsApp (27 Nov)
+1. Release an offer, open the candidate › Offer letter: a "Send the letter again" box shows the offer's email and mobile.
+- [ ] Type another address, Email the letter: the mail arrives there (email must be set up; otherwise a clear message); the offer's email is unchanged.
+- [ ] Again with "Use this address on the offer from now on" ticked: the offer's email changes (audit line).
+- [ ] Share on WhatsApp with another number: WhatsApp opens with the letter text for that number.
+- [ ] Each send is a line on the candidate's timeline. Before release, or with the letter held until joining, the box is not shown.
+
 ## Part X. Role and Skill required, hiring IDs for every employee, offer letter at joining (18 Nov)
 
 1. **Role and Skill.** Bulk update › Import employees: download the template; Role and Skill are required columns.
@@ -2059,3 +2081,19 @@ Expected:   what should happen (quote the prototype if it is a look/wording issu
 Got:        what happened (exact message; screenshot; console error if any)
 Data:       request or employee IDs involved (e.g. LV-3005, EMP-1020, November 2026)
 ```
+
+## Offer breakup later, HR copied, grade not tied to designation (27–28 Nov 2026)
+
+- [ ] Masters › Designations: no Grades field; add a designation with just a department.
+- [ ] Offer form: pick any designation; the Grade list shows every active grade.
+- [ ] Employee › Job change: any grade with the current designation is accepted.
+- [ ] Raise and release an offer; open the candidate: in the versions table the gross is a link, and on the timeline "gross ₹20,000" on "Offer v1 raised" (and "See the breakup" on "Offer v1 sent") opens the breakup as it was decided.
+- [ ] Change the salary structure afterwards: the version's breakup does not change.
+- [ ] An offer raised before this change shows the breakup with a yellow note "worked out again".
+- [ ] With a real mailbox, Offer letter › Send the letter again by email: the HR who raised the offer gets a copy (Cc); the timeline says "(copy to <name>)".
+
+## People are matched by codes only, never names (28 Nov 2026)
+
+- [ ] Attendance › Realtime match › Fetch: Sure only where the portal code (or card) is the Employee ID's number (or the old Joining ID's); two people with the same name and different codes each get their own code; a name-only match is None.
+- [ ] An earlier fetch's list is not shown until you fetch again.
+- [ ] Import employees with "Reporting Manager L1" given as a name: refused "is not an active Employee ID"; with EMP-… or "Name (EMP-…)": accepted.

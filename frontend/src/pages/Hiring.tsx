@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { api, fmtD, inr, openDoc, today, uploadDoc } from '../api';
 import { useAuth } from '../auth';
-import { Field, Loading, Pill, toast, useLoad } from '../components/ui';
+import { Field, Loading, Modal, Pill, toast, useLoad } from '../components/ui';
+import { Statement } from './Compensation';
 
 /* The hiring lifecycle (hiring.go, workforce plan module 1): offer versions and HR-recorded answers, the Offer ID at
    acceptance, joining-day outcomes, the waiting window, early exit, the background check, the status timeline, the
@@ -15,15 +16,39 @@ const VTONE: Record<string, Tone> = { Accepted: 'ok', Sent: 'info', Approved: 'i
 const fmtDT = (s?: string | null) => (s ? new Date(s).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '');
 const addDays = (d: string, n: number) => { const x = new Date(d + 'T00:00:00'); x.setDate(x.getDate() + n); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
 
-/** The status timeline: every change, who, when, from → to and why. Newest first. */
-export function Timeline({ events, empty = 'Nothing recorded yet.' }: { events?: LifeEvent[] | null; empty?: string }) {
+/** The status timeline: every change, who, when, from → to and why. Newest first. With the offer versions, an
+ *  "Offer vN …" line opens that version's breakup: tap the gross (owner, 27 Nov 2026). */
+export function Timeline({ events, empty = 'Nothing recorded yet.', versions }: { events?: LifeEvent[] | null; empty?: string; versions?: any[] }) {
+  const [pv, setPv] = useState<any>(null);
   const l = [...(events ?? [])].reverse();
   if (!l.length) return <p className="mute" style={{ margin: 0, fontSize: 13 }}>{empty}</p>;
-  return <ul className="log">{l.map((e, i) => <li key={i}>
+  const verOf = (a: string) => { const m = /^Offer v(\d+)\b/.exec(a); return m ? (versions ?? []).find((v) => v.version === +m[1] && v.pay) : undefined; };
+  const reason = (e: LifeEvent, v: any) => {
+    const r = e.reason || '';
+    const m = v && /gross ₹[\d,]+/.exec(r);
+    if (!v) return r;
+    if (!m) return <>{r}{r ? ' · ' : ''}<a role="button" tabIndex={0} className="lnk" onClick={() => setPv(v)}>See the breakup</a></>;
+    return <>{r.slice(0, m.index)}<a role="button" tabIndex={0} className="lnk" title="See the breakup of this offer" onClick={() => setPv(v)}>{m[0]}</a>{r.slice(m.index + m[0].length)}</>;
+  };
+  return <><ul className="log">{l.map((e, i) => { const v = verOf(e.action); return <li key={i}>
     <b>{e.action}</b>{e.from || e.to ? <span className="ink2"> · {e.from || '—'} → {e.to || '—'}</span> : null}
     <span className="mute"> · {e.by} · {fmtDT(e.at)}{e.date ? ` · effective ${fmtD(e.date)}` : ''}</span>
-    {e.reason && <div className="ink2" style={{ fontSize: 12.5 }}>{e.reason}</div>}
-  </li>)}</ul>;
+    {(e.reason || v) && <div className="ink2" style={{ fontSize: 12.5 }}>{reason(e, v)}</div>}
+  </li>; })}</ul>
+    {pv && <VersionPay v={pv} onClose={() => setPv(null)} />}</>;
+}
+
+/** One offer version's breakup as it was decided (offer_version.pay), or worked out again for an old version. */
+export function VersionPay({ v, onClose }: { v: any; onClose: () => void }) {
+  const p = v.pay || {};
+  return <Modal wide onClose={onClose}>
+    <h2 style={{ marginTop: 0 }}>Offer v{v.version} breakup · gross {inr(v.gross)} a month</h2>
+    <p className="ink2" style={{ fontSize: 13, margin: '0 0 10px' }}>{v.type} · joining {fmtD(v.doj)}{v.grade ? ` · grade ${v.grade}` : ''}{p.structure ? ` · structure ${p.structure}` : ''}{p.ctcYear ? ` · CTC ${inr(p.ctcYear)} a year` : ''}</p>
+    {p.live ? <div className="note warn" style={{ marginBottom: 10 }}>This version was raised before breakups were kept, so it is worked out again from its gross and details with today's salary structure. If the structure or rates changed since, the amounts sent may have differed.</div>
+      : <p className="mute" style={{ fontSize: 12.5, margin: '0 0 10px' }}>As worked out {v.releasedAt ? 'when the offer was sent' : 'when the offer was raised'}{p.at ? ` (${fmtDT(p.at)})` : ''}. Later changes to the structure do not change it.</p>}
+    {p.breakup ? <Statement c={p.breakup} type={v.type} std={p.rates} rules={p.rules ? { [v.type]: p.rules } : undefined} /> : <p className="mute">No breakup for this version.</p>}
+    <div className="row" style={{ marginTop: 12 }}><button className="btn" onClick={onClose}>Close</button></div>
+  </Modal>;
 }
 
 /** A small inline form: a reason (and maybe a date or days) before an action. */
@@ -46,13 +71,14 @@ function Ask({ label, date, days, rehire, minDate, maxDate, onCancel, onGo, go, 
 /** Offer versions (v1, v2…) and the candidate's answer, recorded by HR: Accepted, Question about the breakup, Declined. */
 export function OfferVersions({ x, act, busy }: { x: any; act: Act; busy: boolean }) {
   const [ask, setAsk] = useState<'' | 'query' | 'decline' | 'expiry'>('');
+  const [pv, setPv] = useState<any>(null);
   const c = x.can || {};
   const vs: any[] = x.offerVersions || [];
   const step = (s: string, body: any, ok: string) => act(() => api(`/offers/${x.offer_id}/${s}`, { body }), (r) => r?.result || ok).then(() => setAsk(''));
   return <>
     {vs.length > 0 && <div className="tw" style={{ marginTop: 8 }}><table><thead><tr><th>Version</th><th>Status</th><th className="num">Gross a month</th><th>Joining</th><th>Answer due</th><th>Answer</th></tr></thead>
       <tbody>{vs.map((v) => <tr key={v.version}><td className="mono">v{v.version}{v.frozen ? ' · frozen' : ''}</td><td><Pill k={VTONE[v.status] ?? 'n'}>{v.status}</Pill></td>
-        <td className="num">{inr(v.gross)}</td><td>{fmtD(v.doj)}</td><td>{v.expiresOn ? fmtD(v.expiresOn) : '—'}</td>
+        <td className="num">{v.pay ? <a role="button" tabIndex={0} className="lnk" title="See the breakup" onClick={() => setPv(v)}>{inr(v.gross)}</a> : inr(v.gross)}</td><td>{fmtD(v.doj)}</td><td>{v.expiresOn ? fmtD(v.expiresOn) : '—'}</td>
         <td style={{ fontSize: 12.5 }}>{v.answer || <span className="mute">—</span>}{v.answeredBy && <div className="mute">{v.answeredBy} · {fmtDT(v.answeredAt)}</div>}</td></tr>)}</tbody></table></div>}
     {c.accept && <div className="row" style={{ marginTop: 10 }}>
       <span className="ink2" style={{ fontSize: 13 }}>Candidate's answer{x.expires_on ? ` (due by ${fmtD(x.expires_on)})` : ''}:</span>
@@ -64,6 +90,7 @@ export function OfferVersions({ x, act, busy }: { x: any; act: Act; busy: boolea
     {x.query_text && !x.accepted_at && !x.declined_at && <div className="note warn" style={{ marginTop: 10 }}><b>Question about the breakup:</b> {x.query_text}<div className="mute" style={{ fontSize: 12 }}>Revise the offer: a new version goes for approval and is sent again.</div></div>}
     {ask === 'query' && <Ask label="What did the candidate ask?" go="Record the question" onCancel={() => setAsk('')} onGo={(v) => step('query', { reason: v.reason }, 'Question recorded')} />}
     {ask === 'decline' && <Ask label="Why did the candidate decline?" go="Mark declined" tone="bad" onCancel={() => setAsk('')} onGo={(v) => step('decline', { reason: v.reason }, 'Marked declined')} />}
+    {pv && <VersionPay v={pv} onClose={() => setPv(null)} />}
     {ask === 'expiry' && <Ask label="Why move it?" date={x.expires_on || today()} minDate={today()} go="Move the expiry date" onCancel={() => setAsk('')} onGo={(v) => step('expiry', { expires: v.date, reason: v.reason }, 'Expiry moved')} />}
   </>;
 }

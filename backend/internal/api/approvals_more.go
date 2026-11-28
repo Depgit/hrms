@@ -163,14 +163,7 @@ func checkTransfer(ctx context.Context, q store.Q, employeeID string, p *request
 		if ok, _ := q.C("designation").Exists(ctx, bson.M{"department_id": bson.M{"$in": depts}, "name": p.ToDesignation, "status": "Active"}); !ok {
 			return bad("Pick the new designation in %s", p.ToDepartment)
 		}
-		// The designation must be open to the employee's grade (a NULL grade matches no list).
-		open := false
-		if grade, ok := e["grade"].(string); ok {
-			open, _ = q.C("designation").Exists(ctx, bson.M{"department_id": bson.M{"$in": depts}, "name": p.ToDesignation, "grades": grade})
-		}
-		if !open {
-			return bad("%s is not open to the employee's grade", p.ToDesignation)
-		}
+		// Designation and grade are separate (owner, 27 Nov 2026): any designation fits any grade.
 	}
 	if p.ToLocation == locID && p.ToDepartment == "" {
 		return bad("That is the employee's current location and department")

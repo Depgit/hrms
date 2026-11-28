@@ -5,11 +5,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -26,15 +24,13 @@ import (
 // HR ticks the proposals and applies them, or downloads them in the Employee master update format to edit and
 // upload through Bulk update.
 //
-// Levels:
-//   - Sure: the only portal employee with the same mobile (the number used by one person on each side) and the
-//     name or a date agrees; or the only one with the same name and at least one more thing agrees (date of birth,
-//     date of joining, department, designation, location).
-//   - Likely: the same mobile but a different name; the same name and nothing else to go by; one of several with
-//     the name whose date of birth or joining agrees; or the only similar name (spelling, word order, initials)
-//     with the department or a date agreeing.
-//   - Check: several candidates; HR picks one.
-//   - None: no candidate (the person may have no portal code yet).
+// Codes only (owner, 28 Nov 2026): many people share a name, so names, similar names, mobiles and dates never decide.
+//   - Sure: the only free portal employee whose code (EmpCode, else CardNo) is the number of the employee's Employee
+//     ID, or of a Joining ID they had before the Employee ID (alias), ignoring leading zeros: EMP-3201 / JI-3201 ↔
+//     003201.
+//   - Check: that number is on more than one portal employee, or proposed for two HRMS employees; HR picks.
+//   - None: no portal code has that number. HR gives the code by Bulk update (Employee master update).
+// The portal's name is shown next to the code for HR to look at; it is never used to choose.
 //
 // A portal code already given to an HRMS employee is never proposed, and a code proposed for two people is shown
 // as Check for both. Only what the proposals need is kept (code, card, name, department, designation, branch, date
@@ -70,7 +66,18 @@ var rtFetchEmployees = func(ctx context.Context, cfg realtime.Config) ([]realtim
 
 // rmHR is an HRMS employee to find a portal code for.
 type rmHR struct {
-	ID, Name, Dept, Desig, Loc, Mobile, DOB, DOJ string
+	ID, Name, Dept, Desig, Loc, DOJ string   // name and the rest are shown, never matched on
+	Aliases                         []string // Joining IDs the record had before its Employee ID
+}
+
+// rmIDNumber is the number in an Employee or Joining ID without leading zeros ("" when it has no digits): the
+// portal code the HRMS gives (ptIDCode pads it to 6 digits).
+func rmIDNumber(id string) string {
+	d := reDigitsOnly(id)
+	if d == "" {
+		return ""
+	}
+	return rtNorm(d)
 }
 
 // rmCand is a portal employee as shown with a proposal.
@@ -102,143 +109,6 @@ type rmPlan struct {
 	Used     int      // portal employees whose code an HRMS employee already has
 }
 
-var rmHonorifics = map[string]bool{"mr": true, "mrs": true, "ms": true, "miss": true, "dr": true, "shri": true, "sri": true, "smt": true,
-	"kumari": true, "km": true, "kum": true}
-
-// rmTokens is a name's words in lower case, without punctuation and honorifics; nil for a name with no letters
-// (the portal lists some people under their card number).
-func rmTokens(s string) []string {
-	var out []string
-	for _, w := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool { return !unicode.IsLetter(r) }) {
-		if !rmHonorifics[w] {
-			out = append(out, w)
-		}
-	}
-	return out
-}
-
-// rmSameName: the same words (order does not matter).
-func rmSameName(a, b []string) bool {
-	if len(a) == 0 || len(a) != len(b) {
-		return false
-	}
-	x, y := append([]string(nil), a...), append([]string(nil), b...)
-	sort.Strings(x)
-	sort.Strings(y)
-	return strings.Join(x, " ") == strings.Join(y, " ")
-}
-
-// rmSimilarName: one name's words all in the other (at least two of them, or one and the other's initial), or a
-// small spelling difference (Vikas Kumar / Vikash Kumar).
-func rmSimilarName(a, b []string) bool {
-	if len(a) == 0 || len(b) == 0 {
-		return false
-	}
-	if rmSameName(a, b) {
-		return true
-	}
-	small, big := a, b
-	if len(small) > len(big) {
-		small, big = big, small
-	}
-	in := map[string]bool{}
-	for _, w := range big {
-		in[w] = true
-	}
-	shared := 0
-	for _, w := range small {
-		if in[w] {
-			shared++
-		}
-	}
-	if shared == len(small) && shared >= 2 {
-		return true
-	}
-	x, y := strings.Join(a, " "), strings.Join(b, " ")
-	if len(x) >= 6 && len(y) >= 6 {
-		d := rmLev(x, y)
-		if n := max(len(x), len(y)); float64(n-d)/float64(n) >= 0.85 {
-			return true
-		}
-	}
-	return false
-}
-
-func rmLev(a, b string) int {
-	ra, rb := []rune(a), []rune(b)
-	prev := make([]int, len(rb)+1)
-	cur := make([]int, len(rb)+1)
-	for j := range prev {
-		prev[j] = j
-	}
-	for i := 1; i <= len(ra); i++ {
-		cur[0] = i
-		for j := 1; j <= len(rb); j++ {
-			cost := 1
-			if ra[i-1] == rb[j-1] {
-				cost = 0
-			}
-			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
-		}
-		prev, cur = cur, prev
-	}
-	return prev[len(rb)]
-}
-
-// rmText compares masters loosely: lower case letters and digits only; equal, or one contains the other (4+).
-func rmText(a, b string, drop ...string) bool {
-	norm := func(s string) string {
-		var sb strings.Builder
-		for _, w := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }) {
-			skip := false
-			for _, d := range drop {
-				if w == d {
-					skip = true
-				}
-			}
-			if !skip {
-				sb.WriteString(w)
-			}
-		}
-		return sb.String()
-	}
-	x, y := norm(a), norm(b)
-	if x == "" || y == "" {
-		return false
-	}
-	return x == y || (len(x) >= 4 && len(y) >= 4 && (strings.Contains(x, y) || strings.Contains(y, x)))
-}
-
-// rmAgree lists what else agrees between an HRMS employee and a portal employee.
-func rmAgree(e rmHR, p realtime.Employee) []string {
-	var out []string
-	if e.DOB != "" && e.DOB == p.DOB {
-		out = append(out, "date of birth")
-	}
-	if e.DOJ != "" && e.DOJ == p.DOJ {
-		out = append(out, "date of joining")
-	}
-	if rmText(e.Dept, p.Dept) {
-		out = append(out, "department")
-	}
-	if rmText(e.Desig, p.Desig) {
-		out = append(out, "designation")
-	}
-	if rmText(e.Loc, p.Branch, "saltstayz", "pause", "office") {
-		out = append(out, "location")
-	}
-	return out
-}
-
-func rmHas(l []string, s string) bool {
-	for _, x := range l {
-		if x == s {
-			return true
-		}
-	}
-	return false
-}
-
 func rmCandOf(p realtime.Employee, why string) rmCand {
 	return rmCand{Code: p.Code, Card: p.Card, Name: p.Name, Dept: p.Dept, Desig: p.Desig, Branch: p.Branch, DOJ: p.DOJ, Why: why}
 }
@@ -251,8 +121,9 @@ func rmCodeOf(p realtime.Employee) string {
 	return strings.TrimSpace(p.Card)
 }
 
-// rmPlanFor proposes a portal code for each HRMS employee. used holds the normalised codes HRMS employees already
-// have.
+// rmPlanFor proposes a portal code for each HRMS employee, by code only: the portal employee whose code (or card)
+// is the number of the employee's Employee ID or earlier Joining ID. used holds the normalised codes HRMS employees
+// already have.
 func rmPlanFor(hr []rmHR, portal []realtime.Employee, used map[string]bool) rmPlan {
 	var plan rmPlan
 	free := make([]realtime.Employee, 0, len(portal))
@@ -263,115 +134,54 @@ func rmPlanFor(hr []rmHR, portal []realtime.Employee, used map[string]bool) rmPl
 		}
 		free = append(free, p)
 	}
-	toks := make([][]string, len(free))
-	pPhone := map[string]int{}
+	byNo := map[string][]int{} // normalised code or card → free portal rows
 	for i, p := range free {
-		toks[i] = rmTokens(p.Name)
-		if p.Phone != "" {
-			pPhone[p.Phone]++
-		}
-	}
-	hPhone := map[string]int{}
-	for _, e := range hr {
-		if e.Mobile != "" {
-			hPhone[e.Mobile]++
+		seen := map[string]bool{}
+		for _, k := range []string{rtNorm(p.Code), rtNorm(p.Card)} {
+			if k != "" && !seen[k] {
+				seen[k] = true
+				byNo[k] = append(byNo[k], i)
+			}
 		}
 	}
 	touched := map[int]bool{} // portal rows proposed or listed as a candidate
-	pickOf := map[int][]int{} // portal row → proposals (Sure/Likely) that picked it
+	pickOf := map[int][]int{} // portal row → proposals that picked it
 	for _, e := range hr {
-		et := rmTokens(e.Name)
-		pr := rmProp{EmployeeID: e.ID, Name: e.Name, Dept: e.Dept, Level: rmLevelNone, Reason: "No portal employee with this mobile or a similar name"}
-		pick := -1
-		var phone, same, similar []int
-		for i, p := range free {
-			if e.Mobile != "" && p.Phone == e.Mobile && pPhone[p.Phone] == 1 && hPhone[e.Mobile] == 1 {
-				phone = append(phone, i)
+		pr := rmProp{EmployeeID: e.ID, Name: e.Name, Dept: e.Dept, Level: rmLevelNone,
+			Reason: "No portal code is this Employee ID's number. Give the code by Bulk update › Employee master update"}
+		var hits []int
+		var via []string
+		seen := map[int]bool{}
+		for _, id := range append([]string{e.ID}, e.Aliases...) {
+			n := rmIDNumber(id)
+			if n == "" {
+				continue
 			}
-			if rmSameName(et, toks[i]) {
-				same = append(same, i)
-			} else if rmSimilarName(et, toks[i]) {
-				similar = append(similar, i)
+			for _, i := range byNo[n] {
+				if !seen[i] {
+					seen[i] = true
+					hits = append(hits, i)
+					via = append(via, id)
+				}
 			}
 		}
-		cands := func(ix []int, why func(int) string) []rmCand {
-			var out []rmCand
-			for _, i := range ix {
-				if len(out) == rmMaxCands {
+		switch len(hits) {
+		case 0:
+		case 1:
+			i := hits[0]
+			c := rmCandOf(free[i], "")
+			pr.Level, pr.Reason, pr.Pick = rmLevelSure, "Portal code "+rmCodeOf(free[i])+" is the number of "+via[0], &c
+			touched[i] = true
+			pickOf[i] = append(pickOf[i], len(plan.Props))
+		default:
+			pr.Level, pr.Reason = rmLevelCheck, fmt.Sprintf("%d portal employees have this number as code or card", len(hits))
+			for k, i := range hits {
+				if k == rmMaxCands {
 					break
 				}
-				out = append(out, rmCandOf(free[i], why(i)))
+				pr.Cands = append(pr.Cands, rmCandOf(free[i], "number of "+via[k]))
 				touched[i] = true
 			}
-			return out
-		}
-		agreeText := func(i int) string {
-			if a := rmAgree(e, free[i]); len(a) > 0 {
-				return "same " + strings.Join(a, ", ")
-			}
-			return ""
-		}
-		switch {
-		case len(phone) == 1:
-			i := phone[0]
-			a := rmAgree(e, free[i])
-			pick = i
-			if rmSimilarName(et, toks[i]) || rmHas(a, "date of birth") || rmHas(a, "date of joining") {
-				pr.Level, pr.Reason = rmLevelSure, "Same mobile"
-				if rmSameName(et, toks[i]) {
-					pr.Reason += " and name"
-				} else if rmSimilarName(et, toks[i]) {
-					pr.Reason += ", similar name"
-				}
-			} else {
-				pr.Level, pr.Reason = rmLevelLikely, "Same mobile, but the name differs ("+free[i].Name+")"
-			}
-			if len(a) > 0 {
-				pr.Reason += "; same " + strings.Join(a, ", ")
-			}
-		case len(same) == 1:
-			i := same[0]
-			pick = i
-			if a := rmAgree(e, free[i]); len(a) > 0 {
-				pr.Level, pr.Reason = rmLevelSure, "Same name; same "+strings.Join(a, ", ")
-			} else {
-				pr.Level, pr.Reason = rmLevelLikely, "Same name only (nothing else to compare)"
-			}
-		case len(same) > 1:
-			var dated []int
-			for _, i := range same {
-				if a := rmAgree(e, free[i]); rmHas(a, "date of birth") || rmHas(a, "date of joining") {
-					dated = append(dated, i)
-				}
-			}
-			if len(dated) == 1 {
-				pick = dated[0]
-				pr.Level, pr.Reason = rmLevelLikely, fmt.Sprintf("One of %d with this name; same %s", len(same), strings.Join(rmAgree(e, free[dated[0]]), ", "))
-			} else {
-				pr.Level, pr.Reason = rmLevelCheck, fmt.Sprintf("%d portal employees have this name", len(same))
-				pr.Cands = cands(same, agreeText)
-			}
-		case len(similar) == 1:
-			i := similar[0]
-			a := rmAgree(e, free[i])
-			if rmHas(a, "department") || rmHas(a, "date of birth") || rmHas(a, "date of joining") {
-				pick = i
-				pr.Level, pr.Reason = rmLevelLikely, "Similar name ("+free[i].Name+"); same "+strings.Join(a, ", ")
-			} else {
-				pr.Level, pr.Reason = rmLevelCheck, "Similar name only"
-				pr.Cands = cands(similar, agreeText)
-			}
-		case len(similar) > 1:
-			pr.Level, pr.Reason = rmLevelCheck, fmt.Sprintf("%d portal employees have a similar name", len(similar))
-			// the ones with something else agreeing first
-			sort.SliceStable(similar, func(x, y int) bool { return len(rmAgree(e, free[similar[x]])) > len(rmAgree(e, free[similar[y]])) })
-			pr.Cands = cands(similar, agreeText)
-		}
-		if pick >= 0 {
-			c := rmCandOf(free[pick], "")
-			pr.Pick = &c
-			touched[pick] = true
-			pickOf[pick] = append(pickOf[pick], len(plan.Props))
 		}
 		plan.Props = append(plan.Props, pr)
 	}
@@ -450,7 +260,7 @@ func rmRunning(m bson.M) map[string]any {
 // rmHRMS is every HRMS employee who is not inactive, with the details matching uses, and the codes already given.
 func rmHRMS(ctx context.Context, q store.Q) ([]rmHR, map[string]bool, error) {
 	emps, err := q.C("employee").Find(ctx, bson.M{"status": bson.M{"$ne": "Inactive"}}, options.Find().SetSort(bson.D{{Key: "_id", Value: 1}}).
-		SetProjection(bson.M{"_id": 1, "name": 1, "doj": 1, "department_id": 1, "designation_id": 1, "location_id": 1, "attendance_code": 1}))
+		SetProjection(bson.M{"_id": 1, "name": 1, "doj": 1, "department_id": 1, "designation_id": 1, "location_id": 1, "attendance_code": 1, "alias_ids": 1}))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -475,31 +285,14 @@ func rmHRMS(ctx context.Context, q store.Q) ([]rmHR, map[string]bool, error) {
 			ids = append(ids, str(e["id"]))
 		}
 	}
-	pers := map[string]store.Row{}
-	if len(ids) > 0 {
-		rows, err := q.C("employee_personal").Find(ctx, bson.M{"employee_id": bson.M{"$in": ids}}, options.Find().SetProjection(bson.M{"employee_id": 1, "mobile": 1, "dob": 1}))
-		if err != nil {
-			return nil, nil, err
-		}
-		for _, r := range rows {
-			pers[str(r["employee_id"])] = r
-		}
-	}
 	var out []rmHR
 	for _, e := range emps {
 		id := str(e["id"])
 		if str(e["attendance_code"]) != "" {
 			continue
 		}
-		p := pers[id]
-		mob := reDigitsOnly(str(p["mobile"]))
-		if len(mob) > 10 {
-			mob = mob[len(mob)-10:]
-		} else if len(mob) < 10 {
-			mob = ""
-		}
 		out = append(out, rmHR{ID: id, Name: str(e["name"]), Dept: names["department"][str(e["department_id"])], Desig: names["designation"][str(e["designation_id"])],
-			Loc: names["location"][str(e["location_id"])], Mobile: mob, DOB: str(p["dob"]), DOJ: str(e["doj"])})
+			Loc: names["location"][str(e["location_id"])], DOJ: str(e["doj"]), Aliases: strs(e["alias_ids"])})
 	}
 	return out, used, nil
 }
@@ -563,7 +356,7 @@ func (s *Server) rmRun(ctx context.Context, by string) error {
 		left[i] = p
 	}
 	return rmSet(ctx, s.st.DB, bson.M{"running": nil, "error": nil, "error_at": nil, "fetched_at": time.Now(), "by": by,
-		"portal": len(portal), "used": plan.Used, "hr": len(hr), "codes": codes, "props": props, "leftover": left})
+		"portal": len(portal), "used": plan.Used, "hr": len(hr), "codes": codes, "props": props, "leftover": left, "by_code": true})
 }
 
 // RealtimeMatchArgs is a "Fetch employee list" run.
@@ -660,6 +453,9 @@ func rmDecodeCands(v any) []rmCand {
 // dropped, and codes given since are no longer proposed (a Sure or Likely whose code is gone becomes None, or
 // Check when other candidates remain).
 func rmCurrent(ctx context.Context, q store.Q, m bson.M) ([]rmProp, []rmCand, error) {
+	if m["by_code"] != true { // a list from before 28 Nov 2026 was matched by names: never offered, fetch again
+		return nil, nil, nil
+	}
 	props, left := rmDecodeProps(m["props"]), rmDecodeCands(m["leftover"])
 	if len(props) == 0 && len(left) == 0 {
 		return props, left, nil

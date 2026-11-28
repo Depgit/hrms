@@ -130,7 +130,13 @@ func hireView(ctx context.Context, q store.Q, c *Ctx, x store.Row) {
 	w := waitOf(x["waiting_window"], now)
 	x["waitingWindow"] = w
 	delete(x, "waiting_window")
-	x["offerVersions"] = offerVersions(ctx, q, x)
+	vs := offerVersions(ctx, q, x)
+	if c.Level("onb.raise") < 1 && c.Level("onb.pipeline") < 1 { // the breakup only for onboarding (an approver of the shortlist does not)
+		for _, v := range vs {
+			delete(v, "pay")
+		}
+	}
+	x["offerVersions"] = vs
 	x["timeline"] = timelineRows(ctx, q, bson.D{{Key: "candidate_id", Value: x["id"]}})
 	hs := loadHireSettings(ctx, q)
 	x["hiring"] = hs
@@ -877,14 +883,20 @@ func offerVersions(ctx context.Context, q store.Q, x store.Row) []map[string]any
 	rows, _ := q.C(store.OfferVersionColl).Find(ctx, bson.D{{Key: "candidate_id", Value: x["id"]}}, options.Find().SetSort(bson.D{{Key: "version", Value: 1}}))
 	cur := toInt(x["offer_version"])
 	out := []map[string]any{}
+	locs := map[string]string{} // offer id → its location, for versions worked out again
 	for _, v := range rows {
+		oid := str(v["offer_id"])
+		if _, ok := locs[oid]; !ok {
+			o, _ := q.C("offer").FindOne(ctx, bson.D{{Key: "_id", Value: oid}})
+			locs[oid] = str(o["location_id"])
+		}
 		st := str(v["status"])
 		if toInt(v["version"]) == cur && !(v["frozen"] == true) && st != "Question" && st != "Declined" && st != "Lapsed" {
 			st = liveOfferState(x)
 		}
 		out = append(out, map[string]any{"version": v["version"], "status": st, "gross": v["gross"], "type": v["type"], "doj": v["doj"], "grade": v["grade"],
 			"answer": v["answer"], "answeredAt": v["answered_at"], "answeredBy": v["answered_by"], "releasedAt": v["released_at"], "expiresOn": v["expires_on"],
-			"frozen": v["frozen"], "createdAt": v["created_at"], "createdBy": v["created_by"]})
+			"frozen": v["frozen"], "createdAt": v["created_at"], "createdBy": v["created_by"], "pay": offerVersionPay(ctx, q, v, locs[oid])})
 	}
 	return out
 }
@@ -954,7 +966,8 @@ func offerAnswer(ctx context.Context, tx store.Q, c *Ctx, o store.Row, step, rea
 	now := tx.Now()
 	switch step {
 	case "release":
-		if err := offerVersionSet(ctx, tx, cand, ver, bson.D{{Key: "status", Value: "Sent"}, {Key: "released_at", Value: now}, {Key: "expires_on", Value: expires}}); err != nil {
+		if err := offerVersionSet(ctx, tx, cand, ver, bson.D{{Key: "status", Value: "Sent"}, {Key: "released_at", Value: now}, {Key: "expires_on", Value: expires},
+			{Key: "pay", Value: offerPaySnap(ctx, tx, o)}}); err != nil { // the breakup the candidate got (offer_paysnap.go)
 			return err
 		}
 		return lifeEvent(ctx, tx, c, lifeEv{Cand: cand, Action: "Offer " + vs + " sent", From: "Approved", To: "Sent", Reason: "Answer due by " + longDate(expires)})

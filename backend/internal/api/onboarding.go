@@ -209,7 +209,7 @@ func onboardingScope(ctx context.Context, q store.Q, sc access.Scope) (bson.D, e
 		}
 		f = append(f, bson.E{Key: "location_id", Value: bson.D{{Key: "$in", Value: locs}}})
 	case "team":
-		f = append(f, bson.E{Key: "manager_id", Value: sc.EmployeeID})
+		f = append(f, bson.E{Key: "manager_id", Value: bson.D{{Key: "$in", Value: sc.TeamManagers()}}})
 	default:
 		f = append(f, bson.E{Key: "_id", Value: sc.EmployeeID})
 	}
@@ -646,8 +646,6 @@ func resolveJob(ctx context.Context, q store.Q, d map[string]string, errs *[]str
 			add("Designation “%s” does not exist under %s", d["desig"], j.Dept)
 		} else if j.DesigID, j.Desig = str(x["id"]), str(x["name"]); x["status"] != "Active" {
 			add("Designation “%s” is inactive now. Choose an active one", j.Desig)
-		} else if j.Grade != "" && !containsStr(onboardingStrings(x["grades"]), j.Grade) {
-			add("Grade %s is not mapped to %s", j.Grade, j.Desig)
 		}
 	}
 	if j.Grade != "" {
@@ -1220,7 +1218,8 @@ func (s *Server) offerCreate(r *http.Request, c *Ctx) (any, error) {
 		}
 		if _, err := tx.C(store.OfferVersionColl).Insert(ctx, bson.D{{Key: "candidate_id", Value: b.Candidate}, {Key: "offer_id", Value: id}, {Key: "version", Value: int32(version)},
 			{Key: "type", Value: j.Type}, {Key: "doj", Value: j.DOJ}, {Key: "grade", Value: j.Grade}, {Key: "gross", Value: j.Gross}, {Key: "data", Value: d},
-			{Key: "status", Value: "Pending approval"}, {Key: "created_by", Value: c.Name}}); err != nil {
+			{Key: "status", Value: "Pending approval"}, {Key: "created_by", Value: c.Name},
+			{Key: "pay", Value: offerPaySnap(ctx, tx, store.Row{"type": j.Type, "gross": j.Gross, "location_id": j.LocID, "doj": j.DOJ, "data": d})}}); err != nil {
 			return err
 		}
 		if _, err := tx.C("candidate").Update(ctx, bson.D{{Key: "_id", Value: b.Candidate}}, bson.D{{Key: "$set", Value: bson.D{{Key: "name", Value: j.Name},

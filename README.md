@@ -18,7 +18,7 @@ make web       # http://localhost:5173
 `make seed` gives two accounts a starting password, `pass1234`: **EMP-1002** (HR Admin) and **EMP-1020**
 (employee). It is set only when the account has no password yet and skips the strength rules, so change it before
 real use. Everyone else signs in the first time with **Activate with OTP**. In development (`OTP_DEV_ECHO=true` in
-`backend/.env`) the OTP is shown on screen instead of being sent by SMS. Seeded people to try:
+`backend/.env`) the OTP is shown on screen instead of being sent by SMS. Offer letters sent by email copy (Cc) the HR who raised the offer. With a real mailbox (`SMTP_HOST`) the same OTP also goes to the person's personal email on record; the screen says where it went (mobile, email or both), and if the SMS fails the email alone is enough. Seeded people to try:
 
 | Employee ID | Person | Role views |
 |---|---|---|
@@ -289,6 +289,14 @@ sign-ins, what each role sees, every page, the end-to-end flows, security, and t
   in the product** (the adjustments, "attendance based on" and the max-hours cap existed only on shifts). The server
   refuses them (400, unknown field) and the engine ignores them on old versions (no live version had one set); every
   day follows the work policy's full-day and half-day hours. A shift keeps its timings, second part, next day and break.
+  **Manager's team, two levels**: in the Line Manager view a manager sees and works on their direct reports and
+  their reports' reports (data scope `team`, `access.Scope.Managers`); the top-bar filter "Direct employees" (header
+  `X-Team: direct`, or `?team=direct`) limits every page to the first level. Rights are the role's, unchanged.
+  **Roster bulk upload** (Shift and roster › Bulk upload): download for one city, a property or all, and one, several
+  or all departments (check boxes, none ticked = All; `department` repeated or `*`), From … To dates (up to 62 days,
+  `to`, or the old `days`). Past dates: work policy › Roster discipline › "Past dates in the roster bulk upload"
+  (`rs.bulkPast`): Blocked (default) refuses any changed cell before today in both upload layouts, whatever "Dates
+  that have already passed" says; "Same as the roster screen" follows that rule.
   **Where it applies** replaces "Locations: All / Selected locations only": a list of Department + Location rows
   (`shift_map`, migration 029), either side All ("Front Office at Gurgaon office", "All departments at Noida", "All
   departments at all locations"). A shift is offered to, and valid for, an employee only when a switched-on row matches
@@ -378,6 +386,9 @@ sign-ins, what each role sees, every page, the end-to-end flows, security, and t
   joiner's. System fields, pay and fields that pick from the company's lists (grade, managers, shift, attendance mode,
   salary structure, job and place) are always HR's. Store migration `006_joiner_link` sets the defaults on existing rows
   (and every start fills any row an import left empty); new custom fields default by section.
+  **Send the offer letter again** (Offer letter dialog, once released; `onb.raise`/`onb.pipeline` Edit): email it to
+  the offer's or another address (optionally kept on the offer, audited) or share its text on WhatsApp (`wa.me`, opened
+  in HR's browser, the server sends nothing); each send is audited and on the timeline (`api/offer_share.go`).
   From the joining dialog (or, before the first day, **Joiner's link and joining details** on an accepted candidate) HR
   emails the link, copies it or shares it on WhatsApp (`wa.me/91<mobile>`). The joiner opens `/join/<token>` (no
   sign-in, phone-first), confirms a 6-digit code emailed to them, fills their fields, uploads their documents (photos

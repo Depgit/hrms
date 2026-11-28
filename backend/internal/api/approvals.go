@@ -123,7 +123,11 @@ func approvalsScopeValue(sc access.Scope, e store.Row, deptName string) any {
 			base = containsStr(sc.Locations, v)
 		}
 	case "team":
-		base = cmp("manager_id", sc.EmployeeID)
+		if v, ok := e["manager_id"].(string); ok {
+			base = containsStr(sc.TeamManagers(), v)
+		} else {
+			base = nil
+		}
 	default:
 		base = cmp("id", sc.EmployeeID)
 	}
